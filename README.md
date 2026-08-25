@@ -196,10 +196,10 @@ self-supported.
 
 ## Security scope
 
-Journeyman is intended for trusted organisational automation. Before public
-release, applicable OWASP ASVS requirements must be tracked and verified through
-automated tests, manual review, deployment hardening, threat modelling, and
-independent penetration testing.
+Journeyman is intended for trusted organisational automation. Applicable OWASP
+ASVS requirements are tracked and verified through automated tests, manual 
+review, deployment hardening, threat modelling, and independent penetration
+testing.
 
 Security policy, design principles, the threat model, and the ASVS coverage
 framework are documented in [`SECURITY.md`](SECURITY.md) and
