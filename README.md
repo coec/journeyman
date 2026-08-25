@@ -59,8 +59,7 @@ This is a deliberate operational design, not a temporary development limitation.
 - **Environments** select System Ansible or a managed Python virtual environment.
 - **Jobs** are immutable execution records.
 - **Teams** map Active Directory groups to Package execution permissions.
-- **Runners** execute queued Jobs locally and on remote nodes (not thoroughly 
-  tested).
+- **Runners** execute queued Jobs locally and on remote nodes.
 
 ## Projects and Packages
 
