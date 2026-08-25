@@ -1,0 +1,465 @@
+#!/usr/bin/env python3
+"""Export/import portable Journeyman configuration."""
+
+import argparse
+import os
+import sys
+import zipfile
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from journeyman_configuration import (
+    configuration_path,
+    load_journeyman_configuration,
+)
+
+if len(sys.argv) == 2 and sys.argv[1] == "validate":
+    try:
+        load_journeyman_configuration(required=True)
+    except ValueError as exc:
+        sys.stderr.write("Journeyman configuration error: {}\n".format(exc))
+        raise SystemExit(2)
+    print("Journeyman configuration is valid: {}".format(configuration_path()))
+    raise SystemExit(0)
+
+load_journeyman_configuration()
+
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write(
+        "PyYAML is required. Install/update Journeyman requirements first.\n"
+    )
+    raise SystemExit(2)
+
+from app import create_app
+from app.models import Repository
+from app.services.config_portability import (
+    ConfigPortabilityError,
+    collect_export_payload,
+    export_configuration,
+    import_configuration,
+    prepare_payload_import,
+)
+from app.services.git import GitError, install_imported_payload
+
+
+def _parser():
+    parser = argparse.ArgumentParser(
+        prog="journeyman-config",
+        description=(
+            "Export or import portable Journeyman configuration. "
+            "Secret values are never exported."
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--export",
+        dest="export_path",
+        metavar="FILE",
+        help="Write a portable .jxf archive.",
+    )
+    mode.add_argument(
+        "--import",
+        dest="import_path",
+        metavar="FILE",
+        help="Import a portable .jxf archive or legacy YAML export.",
+    )
+    parser.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help=(
+            "Export enabled Projects/Packages plus the dependencies required "
+            "to reconstruct them."
+        ),
+    )
+    parser.add_argument(
+        "--package",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Export only this Package and its dependency closure. "
+            "May be specified more than once."
+        ),
+    )
+    parser.add_argument(
+        "--internal",
+        action="store_true",
+        help=(
+            "Include installation-specific repository and credential metadata "
+            "in an export. Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--repository",
+        metavar="NAME",
+        help=(
+            "Destination Journeyman Repository for JXF payload files. "
+            "Required when importing an archive containing payload."
+        ),
+    )
+    parser.add_argument(
+        "--payload-prefix",
+        metavar="PATH",
+        help=(
+            "Override the destination directory for imported payload files. "
+            "Must be a relative repository path."
+        ),
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help=(
+            "Push the JXF payload commit to the destination Repository remote. "
+            "Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and plan an import, then roll back all changes.",
+    )
+    parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help=(
+            "Allow an import to replace existing named Journeyman objects. "
+            "Off by default so portable JXF cannot silently modify live "
+            "destination configuration."
+        ),
+    )
+    return parser
+
+
+
+def _print_export_summary(document):
+    metadata = document.get(
+        "journeyman_export",
+        {},
+    )
+    selected_packages = metadata.get(
+        "selected_packages",
+        [],
+    ) or []
+
+    if selected_packages:
+        print("Selected Package(s):")
+        for name in selected_packages:
+            print("  - {}".format(name))
+
+    print("Included:")
+    print(
+        "  Packages:      {}".format(
+            len(document.get("packages", []) or [])
+        )
+    )
+    print(
+        "  Projects:      {}".format(
+            len(document.get("projects", []) or [])
+        )
+    )
+    print(
+        "  Project steps: {}".format(
+            sum(
+                len(project.get("steps", []) or [])
+                for project
+                in document.get("projects", []) or []
+            )
+        )
+    )
+    print(
+        "  Payload files: {}".format(
+            len(document.get("payload", []) or [])
+        )
+    )
+    print(
+        "  Repositories:  {}".format(
+            len(document.get("repositories", []) or [])
+        )
+    )
+    print(
+        "  Inventories:   {}".format(
+            len(document.get("inventories", []) or [])
+        )
+    )
+    print(
+        "  Environments:  {}".format(
+            len(document.get("environments", []) or [])
+        )
+    )
+    print(
+        "  Runner crews:  {}".format(
+            len(document.get("runner_crews", []) or [])
+        )
+    )
+
+    credentials = (
+        document.get("credentials_required", [])
+        or []
+    )
+
+    if credentials:
+        print("Required credentials:")
+        for ref in credentials:
+            if ref.get("name"):
+                print(
+                    "  - {} (ref={}, type={})"
+                    .format(
+                        ref.get("name"),
+                        ref.get("ref") or "",
+                        ref.get("type") or "",
+                    )
+                )
+            else:
+                print(
+                    "  - ref={} (type={})"
+                    .format(
+                        ref.get("ref") or "",
+                        ref.get("type") or "",
+                    )
+                )
+    else:
+        print("Required credentials: none")
+
+    if metadata.get("package_exchange"):
+        print(
+            "Project schedules exported: NO "
+            "(Package exchange safety policy)"
+        )
+
+    print("Secret material exported: NO")
+
+
+
+def _print_result(result):
+    label = "Would apply" if result["dry_run"] else "Applied"
+    print(label + ":")
+    for name, counts in result["counts"].items():
+        print(
+            "  {:14s} create={} update={}".format(
+                name + ":",
+                counts["create"],
+                counts["update"],
+            )
+        )
+    for warning in result.get("warnings", []):
+        print("WARNING: " + warning)
+
+
+def _write_jxf(path, document, payload_files):
+    manifest = yaml.safe_dump(
+        document,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    ).encode("utf-8")
+    with zipfile.ZipFile(
+        path,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        archive.writestr("journeyman.yml", manifest)
+        for member, content in sorted(payload_files.items()):
+            archive.writestr(member, content)
+
+
+def _read_import(path):
+    if not zipfile.is_zipfile(path):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return document, {}, False
+
+    with zipfile.ZipFile(path, mode="r") as archive:
+        if "journeyman.yml" not in archive.namelist():
+            raise ConfigPortabilityError(
+                "JXF archive does not contain journeyman.yml."
+            )
+        files = {}
+        total_size = 0
+        for info in archive.infolist():
+            member = Path(info.filename)
+            if (
+                member.is_absolute()
+                or ".." in member.parts
+                or info.is_dir()
+            ):
+                if info.is_dir():
+                    continue
+                raise ConfigPortabilityError(
+                    "JXF archive contains unsafe member {!r}.".format(info.filename)
+                )
+            if info.file_size > 16 * 1024 * 1024:
+                raise ConfigPortabilityError(
+                    "JXF archive member {!r} exceeds 16 MiB.".format(info.filename)
+                )
+            total_size += info.file_size
+            if total_size > 64 * 1024 * 1024:
+                raise ConfigPortabilityError(
+                    "JXF archive exceeds the 64 MiB uncompressed limit."
+                )
+            files[info.filename] = archive.read(info)
+        try:
+            document = yaml.safe_load(files.pop("journeyman.yml").decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise ConfigPortabilityError(
+                "Unable to parse journeyman.yml: {}".format(exc)
+            ) from exc
+        if not isinstance(document, dict):
+            return document, files, True
+        expected = {
+            str(item.get("path") or "")
+            for item in document.get("payload", []) or []
+            if item.get("path")
+        }
+        unexpected = sorted(set(files) - expected)
+        if unexpected:
+            raise ConfigPortabilityError(
+                "JXF archive contains unreferenced member(s): {}."
+                .format(", ".join(repr(name) for name in unexpected))
+            )
+        return document, files, True
+
+
+def main():
+    args = _parser().parse_args()
+    if args.enabled_only and not args.export_path:
+        raise SystemExit("--enabled-only is valid only with --export.")
+    if args.package and not args.export_path:
+        raise SystemExit("--package is valid only with --export.")
+    if args.package and args.enabled_only:
+        raise SystemExit(
+            "--package and --enabled-only are mutually exclusive."
+        )
+    if args.internal and not args.export_path:
+        raise SystemExit("--internal is valid only with --export.")
+    if args.dry_run and not args.import_path:
+        raise SystemExit("--dry-run is valid only with --import.")
+    if args.replace_existing and not args.import_path:
+        raise SystemExit("--replace-existing is valid only with --import.")
+    if args.repository and not args.import_path:
+        raise SystemExit("--repository is valid only with --import.")
+    if args.payload_prefix and not args.import_path:
+        raise SystemExit("--payload-prefix is valid only with --import.")
+    if args.push and not args.import_path:
+        raise SystemExit("--push is valid only with --import.")
+    if args.push and not args.repository:
+        raise SystemExit("--push requires --repository.")
+
+    app = create_app()
+    with app.app_context():
+        if args.export_path:
+            try:
+                document = export_configuration(
+                    enabled_only=args.enabled_only,
+                    package_names=args.package,
+                    internal=args.internal,
+                )
+            except ConfigPortabilityError as exc:
+                sys.stderr.write(str(exc) + "\n")
+                return 2
+            document["journeyman_export"]["journeyman_version"] = (
+                app.config.get("JOURNEYMAN_VERSION")
+            )
+            path = Path(args.export_path)
+            try:
+                payload_files = collect_export_payload(document)
+                _write_jxf(path, document, payload_files)
+            except (ConfigPortabilityError, OSError, zipfile.BadZipFile) as exc:
+                sys.stderr.write(str(exc) + "\n")
+                return 2
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            print(
+                "Exported Journeyman JXF archive to {}.".format(path)
+            )
+            _print_export_summary(document)
+            return 0
+
+        path = Path(args.import_path)
+        try:
+            document, archive_files, is_archive = _read_import(path)
+        except (ConfigPortabilityError, OSError, zipfile.BadZipFile) as exc:
+            sys.stderr.write("Unable to read import: {}\n".format(exc))
+            return 2
+
+        if not isinstance(document, dict):
+            sys.stderr.write("Import document must be a YAML mapping.\n")
+            return 2
+
+
+        payload_entries = document.get("payload", []) or []
+        if payload_entries and not is_archive:
+            sys.stderr.write("Payload-bearing JXF must be a ZIP archive.\n")
+            return 2
+        if payload_entries and not args.repository:
+            sys.stderr.write(
+                "This JXF contains payload files; select a destination with "
+                "--repository NAME.\n"
+            )
+            return 2
+
+        try:
+            writes = prepare_payload_import(
+                document,
+                archive_files,
+                args.repository,
+                payload_prefix=args.payload_prefix,
+            ) if payload_entries else []
+
+            # Validate the complete rebinding before touching the checkout.
+            preview = import_configuration(
+                document,
+                dry_run=True,
+                replace_existing=args.replace_existing,
+            )
+            if args.dry_run:
+                _print_result(preview)
+                if writes:
+                    print("Payload files that would be installed:")
+                    for relative_name, _content in writes:
+                        print("  - {}".format(relative_name))
+                return 0
+
+            if writes:
+                repository = Repository.query.filter_by(name=args.repository).first()
+                try:
+                    commit = install_imported_payload(
+                        repository,
+                        app.config["REPOSITORY_ROOT"],
+                        writes,
+                        push=args.push,
+                    )
+                except GitError as exc:
+                    raise ConfigPortabilityError(
+                        "Unable to install JXF payload: {}".format(exc)
+                    ) from exc
+                print(
+                    "Installed {} payload file(s) into Repository {!r} at commit {}."
+                    .format(len(writes), repository.name, commit)
+                )
+                if not args.push:
+                    print(
+                        "Payload commit was not pushed; use --push during import "
+                        "or push it with your normal Git workflow."
+                    )
+
+            result = import_configuration(
+                document,
+                dry_run=False,
+                replace_existing=args.replace_existing,
+            )
+        except ConfigPortabilityError as exc:
+            sys.stderr.write(str(exc) + "\n")
+            return 2
+
+        _print_result(result)
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

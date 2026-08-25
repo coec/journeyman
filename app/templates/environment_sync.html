@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Sync Environment · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Sync Environment</h1>
+    <p>{{ environment.name }}</p>
+  </div>
+  <a class="button" href="{{ url_for('main.environments') }}">Back to Environments</a>
+</div>
+
+<section class="panel">
+  <div class="panel-header"><h2>Remote runners</h2></div>
+  {% if not syncable %}
+    <p class="warning-text">
+      This Environment cannot be synchronized. It must be enabled and successfully validated;
+      Journeyman-managed environments must also have a successful managed build.
+    </p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('main.environment_sync', environment_id=environment.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <table>
+      <thead>
+        <tr><th></th><th>Runner</th><th>Host</th><th>Installed state</th><th>Last sync</th></tr>
+      </thead>
+      <tbody>
+      {% for item in runners %}
+        <tr>
+          <td><input type="checkbox" name="runner_ids" value="{{ item.runner.id }}" {% if not syncable or not item.sync_supported %}disabled{% endif %}></td>
+          <td><strong>{{ item.runner.name }}</strong>{% if not item.sync_supported %}<br><small class="warning-text">Update runner to {{ item.required_runner_version }} first.</small>{% endif %}</td>
+          <td>{{ item.runner.hostname or '—' }}</td>
+          <td>
+            {% if item.state == 'ready' %}
+              <span class="status-label status-healthy">Ready</span>
+            {% elif item.state == 'failed' %}
+              <span class="status-label status-failed">Failed</span>
+            {% elif item.state == 'queued' %}
+              <span class="status-label status-warning">Queued</span>
+            {% elif item.state == 'building' %}
+              <span class="status-label status-warning">Building</span>
+            {% elif item.state == 'out_of_date' %}
+              <span class="status-label status-warning">Out of date</span>
+            {% else %}
+              <span class="status-label status-warning">Not installed</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.sync %}
+              <strong>{{ item.sync.status|replace('_',' ')|title }}</strong>
+              {% if item.sync.message %}<br><small>{{ item.sync.message }}</small>{% endif %}
+              {% if item.sync.completed_at %}<br><small class="utc-datetime" data-utc="{{ item.sync.completed_at.isoformat() }}">{{ item.sync.completed_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</small>{% endif %}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">No enabled, registered remote runners are available.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="form-actions">
+      <button class="button primary" type="submit" {% if not syncable or not runners %}disabled{% endif %}>Sync to selected runners</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Journeyman Project Scheduler
+After=network-online.target journeyman.service
+Wants=network-online.target
+PartOf=journeyman.service
+Requires=journeyman.service
+
+[Service]
+Type=simple
+User=journeyman
+Group=journeyman
+WorkingDirectory=/opt/journeyman
+Environment=JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+ExecStart=/opt/journeyman/venv/bin/flask --app run.py run-scheduler --poll-seconds 30
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true

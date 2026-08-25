@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Sources · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Sources</h1><p>Trusted origins that provide Signals to Journeyman.</p></div><a class="button primary" href="{{ url_for('main.source_new') }}">＋ Add Source</a></div>
+<section class="panel">
+<table class="data-table"><thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Last Signal</th><th>Accepted</th><th>Rejected</th><th></th></tr></thead><tbody>
+{% for source in sources %}<tr><td><strong>{{ source.name }}</strong><br><small>{{ source.description }}</small></td><td>{{ "SNMP Trap" if source.source_type == "snmp_trap" else source.source_type|title }}</td><td>{{ 'Enabled' if source.enabled else 'Disabled' }}{% if source.enabled and source.source_type == 'snmp_trap' and source.runner_id %}{% set capability = capability_states.get(source.runner_id, {}).get('snmp_trap_receiver') %}{% if capability and capability.state == 'update_required' %}<br><small>Runner update required</small>{% elif capability and capability.state == 'warning' %}<br><small>Receiver warning</small>{% endif %}{% endif %}</td><td>{{ source.last_signal_at or '—' }}</td><td>{{ source.accepted_count }}</td><td>{{ source.rejected_count }}</td><td><a class="button" href="{{ url_for('main.source_edit', source_id=source.id) }}">Edit</a></td></tr>{% else %}<tr><td colspan="7">No Sources configured.</td></tr>{% endfor %}
+</tbody></table>
+{% include "_pagination.html" %}
+</section>
+{% endblock %}

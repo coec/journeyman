@@ -1,0 +1,570 @@
+{% extends "base.html" %}
+
+{% block title %}System Settings — Journeyman{% endblock %}
+
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .settings-page {
+    max-width: 1180px;
+  }
+
+  .settings-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 18px 0;
+    flex-wrap: wrap;
+  }
+
+  .settings-tabs a {
+    padding: 9px 13px;
+    border: 1px solid #dbe3ee;
+    border-radius: 6px;
+    background: #ffffff;
+  }
+
+  .settings-tabs a.active {
+    color: #ffffff;
+    background: #1769e0;
+    border-color: #1769e0;
+  }
+
+  .settings-intro {
+    margin-bottom: 1.25rem;
+  }
+
+  .settings-intro h1 {
+    margin-bottom: 0.25rem;
+  }
+
+  .settings-intro p {
+    margin: 0;
+    color: #5f6f82;
+  }
+
+  .settings-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+  }
+
+  .settings-card {
+    background: #ffffff;
+    border: 1px solid #d8e0ea;
+    border-radius: 10px;
+    padding: 1.5rem;
+    box-shadow: 0 1px 2px rgba(15, 35, 55, 0.04);
+  }
+
+  .settings-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+  }
+
+  .settings-card-header h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.15rem;
+  }
+
+  .settings-card-header p {
+    margin: 0;
+    color: #66778a;
+    font-size: 0.92rem;
+  }
+
+  .settings-status {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    border-radius: 999px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: capitalize;
+    background: #eef2f6;
+    color: #46586b;
+  }
+
+  .settings-status-pending {
+    background: #fff4d6;
+    color: #805b00;
+  }
+
+  .settings-status-applied {
+    background: #ddf7e8;
+    color: #17633a;
+  }
+
+  .settings-status-failed {
+    background: #fde4e4;
+    color: #8b2525;
+  }
+
+  .settings-form-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(140px, 1fr);
+    gap: 1.2rem;
+  }
+
+  .settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .settings-field-wide {
+    grid-column: 1 / -1;
+  }
+
+  .settings-field label {
+    display: block;
+    font-weight: 650;
+    color: #172b3f;
+  }
+
+  .settings-field input[type="text"],
+  .settings-field input[type="number"] {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid #bdc9d7;
+    border-radius: 6px;
+    padding: 0.65rem 0.75rem;
+    background: #ffffff;
+    color: #16283a;
+    font: inherit;
+  }
+
+  .settings-field input:focus {
+    border-color: #2876d2;
+    outline: 3px solid rgba(40, 118, 210, 0.14);
+  }
+
+  .settings-field small {
+    display: block;
+    color: #68798b;
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  .settings-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    margin-top: 1.35rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid #d8e0ea;
+    border-radius: 7px;
+    background: #f8fafc;
+  }
+
+  .settings-checkbox input {
+    margin-top: 0.15rem;
+  }
+
+  .settings-checkbox strong {
+    display: block;
+    margin-bottom: 0.15rem;
+  }
+
+  .settings-checkbox span {
+    display: block;
+    color: #68798b;
+    font-size: 0.85rem;
+  }
+
+  .settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #e3e9f0;
+  }
+
+  .settings-actions button {
+    min-width: 140px;
+  }
+
+  .settings-error {
+    margin-bottom: 1.25rem;
+    border-left: 4px solid #c93c3c;
+  }
+
+  .settings-error h2 {
+    margin-top: 0;
+    font-size: 1.05rem;
+  }
+
+  .settings-error ul {
+    margin-bottom: 0;
+  }
+
+  .settings-summary {
+    display: grid;
+    gap: 1.1rem;
+  }
+
+  .settings-summary-item {
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e3e9f0;
+  }
+
+  .settings-summary-item:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .settings-summary-item dt {
+    margin-bottom: 0.3rem;
+    color: #68798b;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .settings-summary-item dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: #172b3f;
+  }
+
+  .settings-apply-message {
+    margin: 0 0 1.25rem;
+    padding: 0.8rem 0.9rem;
+    border-radius: 6px;
+    background: #f3f6f9;
+    color: #536579;
+    font-size: 0.9rem;
+  }
+
+  .settings-apply-panel {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1.25rem;
+    margin-top: 1.25rem;
+    padding: 1rem;
+    border: 1px solid #d8e0ea;
+    border-radius: 7px;
+    background: #f8fafc;
+  }
+
+  .settings-apply-panel h3 {
+    margin: 0 0 0.25rem;
+    font-size: 0.98rem;
+  }
+
+  .settings-apply-panel p {
+    margin: 0;
+    color: #68798b;
+    font-size: 0.85rem;
+    line-height: 1.4;
+  }
+
+  .settings-apply-panel form {
+    flex: 0 0 auto;
+  }
+
+  @media (max-width: 700px) {
+    .settings-apply-panel {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .settings-apply-panel button {
+      width: 100%;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .settings-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 650px) {
+    .settings-form-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .settings-field-wide {
+      grid-column: auto;
+    }
+
+    .settings-card-header {
+      flex-direction: column;
+    }
+  }
+</style>
+
+<div class="settings-page">
+  <header class="settings-intro">
+    <h1>System Settings</h1>
+    <p>
+      Configure Journeyman's public HTTPS identity and TLS file paths.
+    </p>
+  </header>
+
+  <nav class="settings-tabs" aria-label="Settings sections">
+    <a class="active" href="{{ url_for('main.system_settings') }}">Web and TLS</a>
+    <a href="{{ url_for('main.directory_settings') }}">Directory and Authentication</a>
+    <a href="{{ url_for('main.environment_build_settings') }}">Environment Builds</a>
+    <a href="{{ url_for('main.data_retention_settings') }}">Data Retention</a>
+    <a href="{{ url_for('main.release_testing_settings') }}">Release Testing</a>
+  </nav>
+
+  {% if errors %}
+    <section class="settings-card settings-error">
+      <h2>Settings were not saved</h2>
+
+      <ul>
+        {% for error in errors %}
+          <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <div class="settings-layout">
+    <section class="settings-card">
+      <div class="settings-card-header">
+        <div>
+          <h2>Public web configuration</h2>
+          <p>
+            Only filesystem paths are stored. Certificate and private-key
+            contents remain outside the Journeyman database.
+          </p>
+        </div>
+
+        <span
+          class="
+            settings-status
+            settings-status-{{ settings.apply_status }}
+          "
+        >
+          {{ settings.apply_status | replace('_', ' ') }}
+        </span>
+      </div>
+
+      {% if settings.apply_message %}
+        <p class="settings-apply-message">
+          {{ settings.apply_message }}
+        </p>
+      {% endif %}
+
+      <form method="post">
+        <input
+          type="hidden"
+          name="csrf_token"
+          value="{{ csrf_token() }}"
+        >
+
+        <div class="settings-form-grid">
+          <div class="settings-field">
+            <label for="public_fqdn">Public FQDN</label>
+
+            <input
+              id="public_fqdn"
+              type="text"
+              name="public_fqdn"
+              value="{{ form_data.public_fqdn }}"
+              maxlength="253"
+              required
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="journeyman.example.com"
+            >
+
+            <small>
+              Hostname only. Do not include a protocol, path or port.
+            </small>
+          </div>
+
+          <div class="settings-field">
+            <label for="https_port">HTTPS port</label>
+
+            <input
+              id="https_port"
+              type="number"
+              name="https_port"
+              value="{{ form_data.https_port }}"
+              min="1"
+              max="65535"
+              required
+            >
+
+            <small>
+              Normally 443.
+            </small>
+          </div>
+
+          <div class="settings-field settings-field-wide">
+            <label for="tls_certificate_path">
+              Certificate path
+            </label>
+
+            <input
+              id="tls_certificate_path"
+              type="text"
+              name="tls_certificate_path"
+              value="{{ form_data.tls_certificate_path }}"
+              maxlength="500"
+              required
+              autocomplete="off"
+              spellcheck="false"
+            >
+
+            <small>
+              Must be beneath {{ config.TLS_ROOT }}.
+            </small>
+          </div>
+
+          <div class="settings-field settings-field-wide">
+            <label for="tls_private_key_path">
+              Private-key path
+            </label>
+
+            <input
+              id="tls_private_key_path"
+              type="text"
+              name="tls_private_key_path"
+              value="{{ form_data.tls_private_key_path }}"
+              maxlength="500"
+              required
+              autocomplete="off"
+              spellcheck="false"
+            >
+
+            <small>
+              Journeyman stores the path only and never reads the private
+              key through the web application.
+            </small>
+          </div>
+
+          <div class="settings-field settings-field-wide">
+            <label for="tls_chain_path">
+              Certificate-chain path
+            </label>
+
+            <input
+              id="tls_chain_path"
+              type="text"
+              name="tls_chain_path"
+              value="{{ form_data.tls_chain_path }}"
+              maxlength="500"
+              autocomplete="off"
+              spellcheck="false"
+            >
+
+            <small>
+              Optional. Leave empty when the certificate PEM already
+              includes the intermediate chain.
+            </small>
+          </div>
+        </div>
+
+        <label class="settings-checkbox">
+          <input
+            type="checkbox"
+            name="redirect_http_to_https"
+            {% if form_data.redirect_http_to_https %}checked{% endif %}
+          >
+
+          <span>
+            <strong>Redirect HTTP requests to HTTPS</strong>
+            <span>
+              Requests received on port 80 will be redirected to the
+              configured public HTTPS address.
+            </span>
+          </span>
+        </label>
+
+        <div class="settings-actions">
+          <button
+            type="submit"
+            class="button primary"
+          >
+            Save Settings
+          </button>
+        </div>
+      </form>
+
+      <div class="settings-apply-panel">
+        <div>
+          <h3>Apply configuration to Nginx</h3>
+          <p>
+            Validates the FQDN, certificate, private key and generated
+            Nginx configuration before reloading the service.
+          </p>
+        </div>
+
+        <form
+          method="post"
+          action="{{ url_for('main.apply_system_settings') }}" data-confirm="Apply these settings to Nginx now?"
+        >
+          <input
+            type="hidden"
+            name="csrf_token"
+            value="{{ csrf_token() }}"
+          >
+
+          <button
+            type="submit"
+            class="button"
+          >
+            Apply to Nginx
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <aside class="settings-card">
+      <div class="settings-card-header">
+        <div>
+          <h2>Application status</h2>
+          <p>
+            Current desired configuration state.
+          </p>
+        </div>
+      </div>
+
+      <dl class="settings-summary">
+        <div class="settings-summary-item">
+          <dt>Public address</dt>
+          <dd>
+            https://{{ settings.public_fqdn }}
+            {% if settings.https_port != 443 %}
+              :{{ settings.https_port }}
+            {% endif %}
+          </dd>
+        </div>
+
+        <div class="settings-summary-item">
+          <dt>Last updated by</dt>
+          <dd>{{ settings.updated_by }}</dd>
+        </div>
+
+        <div class="settings-summary-item">
+          <dt>Nginx state</dt>
+          <dd>
+            {{ settings.apply_status | replace('_', ' ') | title }}
+          </dd>
+        </div>
+
+        <div class="settings-summary-item">
+          <dt>Configuration application</dt>
+          <dd>
+            The privileged Nginx apply helper will be added next.
+          </dd>
+        </div>
+      </dl>
+    </aside>
+  </div>
+</div>
+{% endblock %}

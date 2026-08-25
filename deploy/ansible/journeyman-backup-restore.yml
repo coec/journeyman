@@ -1,0 +1,684 @@
+---
+- name: Back up or restore the Journeyman control plane
+  hosts: localhost
+  gather_facts: true
+  become: true
+
+  vars:
+    # The built-in backup Project uses a Machine credential.  Connect back to
+    # this server over SSH so ansible_user/password/key from that credential
+    # are actually used.  connection: local would run as the journeyman
+    # service account and ignore the credential's login username.
+    ansible_connection: ssh
+    ansible_host: 127.0.0.1
+    # Safe defaults allow the built-in backup Project to be scheduled directly.
+    # Explicit extra vars always override these values; restore therefore still
+    # requires var_action=restore and the exact backup archive path.
+    var_action: backup
+    path: /tmp
+    journeyman_root: /opt/journeyman
+    journeyman_etc: /etc/journeyman
+    journeyman_config_file: /etc/journeyman/journeyman.yml
+    journeyman_default_environment_root: /opt/journeyman/environments
+    journeyman_python: /opt/journeyman/venv314/bin/python
+    journeyman_backup_format_version: 1
+    journeyman_services:
+      - journeyman.service
+      - journeyman-runner.service
+      - journeyman-environment-builder.service
+      - journeyman-scheduler.service
+
+  pre_tasks:
+    - name: Validate requested action
+      ansible.builtin.assert:
+        that:
+          - var_action is defined
+          - var_action in ['backup', 'restore']
+          - path is defined
+          - path | string | trim | length > 0
+        fail_msg: >-
+          Required extra vars are var_action=backup|restore and
+          path=<destination-directory|backup-archive>.
+
+    - name: Require an SSH login identity
+      ansible.builtin.assert:
+        that:
+          - ansible_user is defined
+          - ansible_user | string | trim | length > 0
+        fail_msg: >-
+          This playbook connects back to the Journeyman server over SSH.
+          Select a Machine credential on the Project step, or provide
+          ansible_user and suitable SSH authentication when running manually.
+
+    - name: Require Journeyman configuration
+      ansible.builtin.stat:
+        path: "{{ journeyman_config_file }}"
+      register: journeyman_config_stat
+
+    - name: Verify Journeyman configuration exists
+      ansible.builtin.assert:
+        that:
+          - journeyman_config_stat.stat.exists
+          - journeyman_config_stat.stat.isreg
+        fail_msg: "Journeyman configuration was not found at {{ journeyman_config_file }}."
+
+    - name: Read configured database and environment paths
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_python }}"
+          - -c
+          - |
+            import json
+            from pathlib import Path
+            from urllib.parse import urlsplit, unquote
+
+            import yaml
+
+            config = yaml.safe_load(
+                Path("{{ journeyman_config_file }}").read_text(encoding="utf-8")
+            ) or {}
+            uri = (config.get("database") or {}).get(
+                "uri",
+                "sqlite:////opt/journeyman/instance/journeyman.db",
+            )
+            env_root = (config.get("environments") or {}).get(
+                "managed_root",
+                "{{ journeyman_default_environment_root }}",
+            )
+
+            result = {
+                "database_uri": uri,
+                "environment_root": env_root,
+                "database_type": None,
+                "sqlite_path": None,
+                "postgres": None,
+            }
+
+            if uri.startswith("sqlite:///"):
+                result["database_type"] = "sqlite"
+                db_path = uri[len("sqlite:///"):]
+                if not db_path.startswith("/"):
+                    db_path = str((Path("{{ journeyman_root }}") / db_path).resolve())
+                result["sqlite_path"] = db_path
+            elif uri.startswith("postgresql"):
+                result["database_type"] = "postgresql"
+                _scheme, rest = uri.split("://", 1)
+                parsed = urlsplit("postgresql://" + rest)
+                dbname = parsed.path.lstrip("/")
+                if not dbname:
+                    raise SystemExit("PostgreSQL URI has no database name")
+                result["postgres"] = {
+                    "host": parsed.hostname or "",
+                    "port": parsed.port or 5432,
+                    "user": unquote(parsed.username or ""),
+                    "password": unquote(parsed.password or ""),
+                    "database": unquote(dbname),
+                }
+            else:
+                raise SystemExit("Unsupported database URI: {}".format(uri))
+
+            print(json.dumps(result))
+      register: journeyman_config_raw
+      changed_when: false
+      no_log: true
+
+    - name: Set Journeyman configuration facts
+      ansible.builtin.set_fact:
+        journeyman_config: "{{ journeyman_config_raw.stdout | from_json }}"
+      no_log: true
+
+  tasks:
+    - name: Backup Journeyman
+      when: var_action == 'backup'
+      block:
+        - name: Require existing backup destination directory
+          ansible.builtin.stat:
+            path: "{{ path }}"
+          register: backup_destination
+
+        - name: Verify backup destination
+          ansible.builtin.assert:
+            that:
+              - backup_destination.stat.exists
+              - backup_destination.stat.isdir
+            fail_msg: >-
+              Backup path {{ path }} must already exist and be a directory.
+              Existing contents are never removed or modified.
+
+        - name: Verify backup destination is writable
+          ansible.builtin.command:
+            argv:
+              - test
+              - -w
+              - "{{ path }}"
+          changed_when: false
+
+        - name: Generate UTC timestamp
+          ansible.builtin.command:
+            argv: [date, -u, +%Y%m%d-%H%M%SZ]
+          register: backup_timestamp
+          changed_when: false
+
+        - name: Read Journeyman version
+          ansible.builtin.slurp:
+            src: "{{ journeyman_root }}/VERSION"
+          register: version_raw
+
+        - name: Set backup paths
+          ansible.builtin.set_fact:
+            journeyman_version: "{{ version_raw.content | b64decode | trim }}"
+            backup_archive: >-
+              {{ path | regex_replace('/+$', '') }}/journeyman-backup-{{ version_raw.content | b64decode | trim }}-{{ backup_timestamp.stdout }}.tar.gz
+
+        - name: Refuse to overwrite an existing archive
+          ansible.builtin.stat:
+            path: "{{ backup_archive }}"
+          register: backup_archive_stat
+
+        - name: Verify backup archive does not exist
+          ansible.builtin.assert:
+            that:
+              - not backup_archive_stat.stat.exists
+            fail_msg: "Backup archive already exists: {{ backup_archive }}"
+
+        - name: Show backup destination and archive
+          ansible.builtin.debug:
+            msg:
+              - "Journeyman backup"
+              - "Destination directory: {{ path }}"
+              - "Archive to create: {{ backup_archive }}"
+              - "Existing files in {{ path }} will not be modified."
+
+        - name: Create protected backup staging directory
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: journeyman-backup-
+          register: backup_stage
+
+        - name: Protect staging directory
+          ansible.builtin.file:
+            path: "{{ backup_stage.path }}"
+            owner: root
+            group: root
+            mode: '0700'
+
+        - name: Create staging structure
+          ansible.builtin.file:
+            path: "{{ backup_stage.path }}/{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0700'
+          loop:
+            - etc
+            - database
+            - environments
+
+        - name: Preserve Journeyman configuration
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              - "{{ journeyman_etc }}/."
+              - "{{ backup_stage.path }}/etc/"
+          changed_when: true
+
+        - name: Check managed environment root
+          ansible.builtin.stat:
+            path: "{{ journeyman_config.environment_root }}"
+          register: environment_root_stat
+
+        - name: Preserve managed environments
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              - "{{ journeyman_config.environment_root }}/."
+              - "{{ backup_stage.path }}/environments/"
+          when:
+            - environment_root_stat.stat.exists
+            - environment_root_stat.stat.isdir
+          changed_when: true
+
+        - name: Create transactionally consistent online SQLite snapshot
+          when: journeyman_config.database_type == 'sqlite'
+          ansible.builtin.command:
+            argv:
+              - "{{ journeyman_python }}"
+              - -c
+              - |
+                import sqlite3, sys
+                source, target = sys.argv[1], sys.argv[2]
+                src = sqlite3.connect("file:{}?mode=ro".format(source), uri=True, timeout=30)
+                dst = sqlite3.connect(target, timeout=30)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+                    src.close()
+              - "{{ journeyman_config.sqlite_path }}"
+              - "{{ backup_stage.path }}/database/journeyman.db"
+          changed_when: true
+
+        - name: Set PostgreSQL connection environment
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.set_fact:
+            pg_environment:
+              PGHOST: "{{ journeyman_config.postgres.host }}"
+              PGPORT: "{{ journeyman_config.postgres.port | string }}"
+              PGUSER: "{{ journeyman_config.postgres.user }}"
+              PGPASSWORD: "{{ journeyman_config.postgres.password }}"
+              PGDATABASE: "{{ journeyman_config.postgres.database }}"
+          no_log: true
+
+        - name: Create transactionally consistent PostgreSQL dump
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.command:
+            argv:
+              - pg_dump
+              - --format=custom
+              - "--file={{ backup_stage.path }}/database/journeyman.pgdump"
+          environment: "{{ pg_environment }}"
+          changed_when: true
+          no_log: true
+
+        - name: Read SQLite Alembic revision
+          when: journeyman_config.database_type == 'sqlite'
+          ansible.builtin.command:
+            argv:
+              - "{{ journeyman_python }}"
+              - -c
+              - |
+                import sqlite3, sys
+                db = sqlite3.connect(sys.argv[1])
+                try:
+                    row = db.execute("SELECT version_num FROM alembic_version").fetchone()
+                    print(row[0] if row else "unknown")
+                finally:
+                    db.close()
+              - "{{ backup_stage.path }}/database/journeyman.db"
+          register: sqlite_revision
+          changed_when: false
+
+        - name: Read PostgreSQL Alembic revision
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --no-align
+              - --tuples-only
+              - "--command=SELECT version_num FROM alembic_version;"
+          environment: "{{ pg_environment }}"
+          register: postgres_revision
+          changed_when: false
+          no_log: true
+
+        - name: Record jobs active at backup time
+          ansible.builtin.command:
+            argv:
+              - "{{ journeyman_python }}"
+              - -c
+              - |
+                import json, sys
+                from sqlalchemy import create_engine, text
+                engine = create_engine(sys.argv[1])
+                try:
+                    with engine.connect() as conn:
+                        rows = conn.execute(text(
+                            "SELECT id, status FROM job WHERE status IN "
+                            "('queued','pending','running','dispatching','assigned','cancelling') "
+                            "ORDER BY id"
+                        )).all()
+                    print(json.dumps([{"id": row[0], "status": row[1]} for row in rows]))
+                finally:
+                    engine.dispose()
+              - "{{ journeyman_config.database_uri }}"
+          register: active_jobs_raw
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Set manifest facts
+          ansible.builtin.set_fact:
+            backup_revision: >-
+              {{ sqlite_revision.stdout | trim if journeyman_config.database_type == 'sqlite' else postgres_revision.stdout | trim }}
+            active_jobs_at_backup: >-
+              {{ active_jobs_raw.stdout | from_json if active_jobs_raw.rc == 0 and (active_jobs_raw.stdout | trim | length > 0) else [] }}
+
+        - name: Write backup manifest
+          ansible.builtin.copy:
+            dest: "{{ backup_stage.path }}/manifest.json"
+            owner: root
+            group: root
+            mode: '0600'
+            content: |
+              {
+                "format_version": {{ journeyman_backup_format_version }},
+                "journeyman_version": {{ journeyman_version | to_json }},
+                "created_utc": {{ backup_timestamp.stdout | to_json }},
+                "database_type": {{ journeyman_config.database_type | to_json }},
+                "alembic_revision": {{ backup_revision | to_json }},
+                "environment_root": {{ journeyman_config.environment_root | to_json }},
+                "active_jobs_at_backup": {{ active_jobs_at_backup | to_json }}
+              }
+
+        - name: Generate SHA-256 checksums
+          ansible.builtin.shell:
+            cmd: |
+              set -euo pipefail
+              cd {{ backup_stage.path | quote }}
+              find . -type f ! -name checksums.sha256 -print0 \
+                | sort -z \
+                | xargs -0 sha256sum > checksums.sha256
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Create final backup archive
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -C
+              - "{{ backup_stage.path }}"
+              - -czf
+              - "{{ backup_archive }}"
+              - .
+          changed_when: true
+
+        - name: Protect final backup archive
+          ansible.builtin.file:
+            path: "{{ backup_archive }}"
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Remove backup staging directory
+          ansible.builtin.file:
+            path: "{{ backup_stage.path }}"
+            state: absent
+
+        - name: Report successful backup
+          ansible.builtin.debug:
+            msg:
+              - "Journeyman backup completed: {{ backup_archive }}"
+              - "Database type: {{ journeyman_config.database_type }}"
+              - "Alembic revision: {{ backup_revision }}"
+              - "Active jobs recorded: {{ active_jobs_at_backup | length }}"
+              - "WARNING: The archive contains Journeyman secrets and credential encryption material."
+
+    - name: Restore Journeyman
+      when: var_action == 'restore'
+      block:
+        - name: Require restore archive
+          ansible.builtin.stat:
+            path: "{{ path }}"
+          register: restore_archive_stat
+
+        - name: Verify exact restore archive path
+          ansible.builtin.assert:
+            that:
+              - restore_archive_stat.stat.exists
+              - restore_archive_stat.stat.isreg
+            fail_msg: >-
+              Restore path must be the exact Journeyman backup archive file.
+              Archive not found: {{ path }}
+
+        - name: Check Journeyman service states
+          ansible.builtin.command:
+            argv: [systemctl, is-active, "{{ item }}"]
+          loop: "{{ journeyman_services }}"
+          register: service_states
+          changed_when: false
+          failed_when: false
+
+        - name: Refuse restore onto an active Journeyman server
+          ansible.builtin.assert:
+            that:
+              - >-
+                (service_states.results | selectattr('stdout', 'equalto', 'active') | list | length) == 0
+            fail_msg: >-
+              Restore refused because one or more Journeyman services are active.
+              Restore is intended for a new/non-functioning Journeyman control plane.
+
+        - name: Look for running Journeyman processes
+          ansible.builtin.shell:
+            cmd: |
+              pgrep -af '(/opt/journeyman/|journeyman-(runner|scheduler|environment-builder))' || true
+          args:
+            executable: /bin/bash
+          register: journeyman_processes
+          changed_when: false
+
+        - name: Refuse restore while Journeyman processes exist
+          ansible.builtin.assert:
+            that:
+              - journeyman_processes.stdout | trim | length == 0
+            fail_msg: >-
+              Restore refused because Journeyman processes appear to be running:
+              {{ journeyman_processes.stdout | trim }}
+
+        - name: Create protected restore staging directory
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: journeyman-restore-
+          register: restore_stage
+
+        - name: Protect restore staging directory
+          ansible.builtin.file:
+            path: "{{ restore_stage.path }}"
+            owner: root
+            group: root
+            mode: '0700'
+
+        - name: Inspect archive member names before extraction
+          ansible.builtin.command:
+            argv: [tar, -tzf, "{{ path }}"]
+          register: archive_listing
+          changed_when: false
+
+        - name: Reject unsafe archive paths
+          ansible.builtin.assert:
+            that:
+              - item is not match('^/')
+              - item is not search('(^|/)\\.\\.(/|$)')
+            fail_msg: "Unsafe path found in backup archive: {{ item }}"
+          loop: "{{ archive_listing.stdout_lines }}"
+
+        - name: Extract archive into staging area
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -C
+              - "{{ restore_stage.path }}"
+              - -xzf
+              - "{{ path }}"
+              - --no-same-owner
+          changed_when: true
+
+        - name: Verify required restore metadata
+          ansible.builtin.stat:
+            path: "{{ restore_stage.path }}/{{ item }}"
+          loop:
+            - manifest.json
+            - checksums.sha256
+          register: restore_metadata
+
+        - name: Require manifest and checksums
+          ansible.builtin.assert:
+            that:
+              - restore_metadata.results | map(attribute='stat.exists') | min
+            fail_msg: "Backup archive is missing manifest.json or checksums.sha256."
+
+        - name: Verify backup checksums
+          ansible.builtin.command:
+            argv: [sha256sum, -c, checksums.sha256]
+          args:
+            chdir: "{{ restore_stage.path }}"
+          changed_when: false
+
+        - name: Read backup manifest
+          ansible.builtin.slurp:
+            src: "{{ restore_stage.path }}/manifest.json"
+          register: manifest_raw
+
+        - name: Parse backup manifest
+          ansible.builtin.set_fact:
+            restore_manifest: "{{ manifest_raw.content | b64decode | from_json }}"
+
+        - name: Verify backup compatibility
+          ansible.builtin.assert:
+            that:
+              - restore_manifest.format_version | int == journeyman_backup_format_version
+              - restore_manifest.database_type in ['sqlite', 'postgresql']
+              - restore_manifest.database_type == journeyman_config.database_type
+            fail_msg: >-
+              Unsupported backup format or database type mismatch. Configure the
+              replacement server for the same database type before restore.
+
+        - name: Preserve replacement server database URI
+          ansible.builtin.set_fact:
+            restore_target_database_uri: "{{ journeyman_config.database_uri }}"
+          no_log: true
+
+        - name: Restore Journeyman configuration files
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              - "{{ restore_stage.path }}/etc/."
+              - "{{ journeyman_etc }}/"
+          changed_when: true
+
+        - name: Preserve replacement server PostgreSQL/SQLite target configuration
+          ansible.builtin.shell: |
+            set -euo pipefail
+            {{ journeyman_python }} - <<'PY'
+            import yaml
+            from pathlib import Path
+            path = Path("{{ journeyman_config_file }}")
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data.setdefault("database", {})["uri"] = {{ restore_target_database_uri | to_json }}
+            path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+            PY
+          args:
+            executable: /bin/bash
+          no_log: true
+          changed_when: true
+
+        - name: Ensure managed environment root exists
+          ansible.builtin.file:
+            path: "{{ journeyman_config.environment_root }}"
+            state: directory
+            owner: journeyman
+            group: journeyman
+            mode: '0750'
+
+        - name: Restore managed environments
+          ansible.builtin.command:
+            argv:
+              - cp
+              - -a
+              - "{{ restore_stage.path }}/environments/."
+              - "{{ journeyman_config.environment_root }}/"
+          changed_when: true
+
+        - name: Restore SQLite database snapshot
+          when: journeyman_config.database_type == 'sqlite'
+          ansible.builtin.copy:
+            src: "{{ restore_stage.path }}/database/journeyman.db"
+            dest: "{{ journeyman_config.sqlite_path }}"
+            remote_src: true
+            owner: journeyman
+            group: journeyman
+            mode: '0640'
+
+        - name: Set PostgreSQL restore environment
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.set_fact:
+            pg_restore_environment:
+              PGHOST: "{{ journeyman_config.postgres.host }}"
+              PGPORT: "{{ journeyman_config.postgres.port | string }}"
+              PGUSER: "{{ journeyman_config.postgres.user }}"
+              PGPASSWORD: "{{ journeyman_config.postgres.password }}"
+              PGDATABASE: "{{ journeyman_config.postgres.database }}"
+          no_log: true
+
+        - name: Require empty target PostgreSQL database
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --no-align
+              - --tuples-only
+              - "--command=SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name NOT LIKE 'pg_%';"
+          environment: "{{ pg_restore_environment }}"
+          register: postgres_table_count
+          changed_when: false
+          no_log: true
+
+        - name: Refuse to overwrite populated PostgreSQL database
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.assert:
+            that:
+              - postgres_table_count.stdout | trim | int == 0
+            fail_msg: >-
+              Target PostgreSQL database is not empty. Restore refuses to overwrite it.
+              Supply a clean target Journeyman database.
+
+        - name: Restore PostgreSQL database
+          when: journeyman_config.database_type == 'postgresql'
+          ansible.builtin.command:
+            argv:
+              - pg_restore
+              - --no-owner
+              - --no-privileges
+              - --exit-on-error
+              - "--dbname={{ journeyman_config.postgres.database }}"
+              - "{{ restore_stage.path }}/database/journeyman.pgdump"
+          environment: "{{ pg_restore_environment }}"
+          changed_when: true
+          no_log: true
+
+        - name: Mark jobs active at backup time as failed after recovery
+          ansible.builtin.command:
+            argv:
+              - "{{ journeyman_python }}"
+              - -c
+              - |
+                import json, sys
+                from sqlalchemy import create_engine, text
+
+                ids = [int(x["id"]) for x in json.loads(sys.argv[2]) if "id" in x]
+                if not ids:
+                    raise SystemExit(0)
+
+                engine = create_engine(sys.argv[1])
+                try:
+                    with engine.begin() as conn:
+                        stmt = text(
+                            "UPDATE job SET status='failed' "
+                            "WHERE id IN :ids AND status IN "
+                            "('queued','pending','running','dispatching','assigned','cancelling')"
+                        ).bindparams(ids=ids, expanding=True)
+                        conn.execute(stmt)
+                finally:
+                    engine.dispose()
+              - "{{ restore_target_database_uri }}"
+              - "{{ restore_manifest.active_jobs_at_backup | default([]) | to_json }}"
+          changed_when: "{{ restore_manifest.active_jobs_at_backup | default([]) | length > 0 }}"
+          no_log: true
+
+        - name: Remove restore staging directory
+          ansible.builtin.file:
+            path: "{{ restore_stage.path }}"
+            state: absent
+
+        - name: Report successful restore
+          ansible.builtin.debug:
+            msg:
+              - "Journeyman restore completed."
+              - "Backup version: {{ restore_manifest.journeyman_version }}"
+              - "Database type: {{ restore_manifest.database_type }}"
+              - "Alembic revision: {{ restore_manifest.alembic_revision }}"
+              - "Journeyman services were not started. Review the restored server before startup."
+              - "Jobs active at backup time were not resumed or retried."

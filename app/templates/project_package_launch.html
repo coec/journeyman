@@ -1,0 +1,527 @@
+{% extends "base.html" %}
+
+{% block title %}
+Dispatch {{ package.name }} · Journeyman
+{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>{{ package.name }}</h1>
+
+    <p>
+      {{ package.description or package.project.name }}
+    </p>
+  </div>
+
+  <a
+    class="button"
+    href="{{ url_for('main.packages') }}"
+  >
+    Back to Packages
+  </a>
+</div>
+
+{% for error in errors %}
+  <div class="flash error">
+    {{ error }}
+  </div>
+{% endfor %}
+
+{% if package.warning_message %}
+  <section class="panel package-launch-warning">
+    <strong>Warning</strong>
+    <p>{{ package.warning_message }}</p>
+  </section>
+{% endif %}
+
+<section class="panel form-panel package-launch-form">
+  <form method="post" id="package-launch-form" data-dispatch-progress>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {% if package.get_fixed_vars() %}
+      <div class="package-locked-values">
+        <h2>Locked values</h2>
+
+        <dl class="detail-grid">
+          {% for name, value in package.get_fixed_vars().items() %}
+            <div>
+              <dt>{{ name }}</dt>
+              <dd><code>{{ value }}</code></dd>
+            </div>
+          {% endfor %}
+        </dl>
+      </div>
+    {% endif %}
+
+    {% for field in fields %}
+      <div
+        class="package-launch-field"
+        data-package-launch-field
+        data-variable-name="{{ field.variable_name }}"
+        data-input-type="{{ field.input_type }}"
+        data-base-required="{{ 'true' if field.required else 'false' }}"
+        data-conditions='{{ field.conditions | tojson }}'
+        {% if not field.visible %}
+          hidden
+        {% endif %}
+      >
+        {% if field.input_type == "boolean" %}
+          <label class="checkbox-label">
+            <input
+              type="checkbox"
+              name="{{ field.html_name }}"
+              value="true"
+              {% if field.checked %}
+                checked
+              {% endif %}
+            >
+
+            {{ field.label }}
+          </label>
+
+        {% elif field.input_type == "choice" %}
+          <label>
+            {{ field.label }}
+
+            <select
+              name="{{ field.html_name }}"
+              {% if field.dynamic_host_input %}
+                data-dynamic-host-input="{{ field.dynamic_host_input }}"
+                data-dynamic-choices='{{ field.dynamic_choices_by_host | tojson }}'
+              {% endif %}
+              {% if field.required %}
+                required
+              {% endif %}
+            >
+              <option value="">
+                Select a value
+              </option>
+
+              {% for choice in field.choices %}
+                <option
+                  value="{{ choice.key }}"
+                  {% if choice.key == field.selected_choice_key %}
+                    selected
+                  {% endif %}
+                >
+                  {{ choice.label }}
+                </option>
+              {% endfor %}
+            </select>
+          </label>
+
+        {% elif field.input_type == "email_addresses" %}
+          <label>
+            {{ field.label }}
+
+            <textarea
+              name="{{ field.html_name }}"
+              rows="4"
+              data-email-addresses
+              placeholder="alice@example.com, bob@example.com"
+              {% if field.required %}
+                required
+              {% endif %}
+            >{{ field.value }}</textarea>
+          </label>
+
+          <small>
+            Separate multiple addresses with commas, semicolons, or new lines.
+          </small>
+
+        {% else %}
+          <label>
+            {{ field.label }}
+
+            <input
+              type="{% if field.input_type == 'password' %}password{% elif field.input_type == 'integer' %}number{% elif field.input_type == 'url' %}url{% else %}text{% endif %}"
+              name="{{ field.html_name }}"
+              value="{{ field.value }}"
+              autocomplete="{% if field.is_secret %}new-password{% else %}off{% endif %}"
+              {% if field.binding_type == "step_limit" and step_limit_host_options %}
+                list="package-step-limit-hosts"
+              {% endif %}
+              {% if field.required %}
+                required
+              {% endif %}
+              {% if field.readonly | default(false) %}
+                readonly
+              {% endif %}
+            >
+          </label>
+        {% endif %}
+
+        {% if field.help_text %}
+          <small>{{ field.help_text }}</small>
+        {% endif %}
+
+        {% if field.display_role == "operational_target" %}
+          <small class="package-field-role">
+            Operational target
+          </small>
+        {% elif field.display_role == "confirmation_critical" %}
+          <small class="package-field-role">
+            Shown prominently during confirmation
+          </small>
+        {% endif %}
+      </div>
+    {% endfor %}
+
+    {% if step_limit_host_options %}
+      <datalist id="package-step-limit-hosts">
+        {% for host in step_limit_host_options %}
+          <option value="{{ host }}"></option>
+        {% endfor %}
+      </datalist>
+    {% endif %}
+
+    <div class="form-actions">
+      <button
+        class="button primary"
+        type="submit"
+      >
+        Review Package Dispatch
+      </button>
+
+      <a
+        class="button"
+        href="{{ url_for('main.packages') }}"
+      >
+        Cancel
+      </a>
+    </div>
+  </form>
+</section>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  const fields = Array.from(
+    document.querySelectorAll(
+      "[data-package-launch-field]"
+    )
+  );
+
+  function valueForField(field) {
+    const control = field.querySelector(
+      "input, select, textarea"
+    );
+
+    if (!control) {
+      return null;
+    }
+
+    const inputType =
+      field.dataset.inputType;
+
+    if (inputType === "boolean") {
+      return control.checked;
+    }
+
+    if (!control.value) {
+      return null;
+    }
+
+    if (inputType === "integer") {
+      const number = Number(control.value);
+
+      return Number.isNaN(number)
+        ? null
+        : number;
+    }
+
+    if (inputType === "choice") {
+      try {
+        return JSON.parse(control.value);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    return control.value;
+  }
+
+  function ruleMatches(rule, values) {
+    if (
+      !rule
+      || typeof rule !== "object"
+      || Array.isArray(rule)
+    ) {
+      return false;
+    }
+
+    return Object.entries(rule).every(
+      function (entry) {
+        const variableName = entry[0];
+        const expectedValue = entry[1];
+
+        if (
+          variableName === "all"
+          || variableName === "any"
+        ) {
+          if (
+            !Array.isArray(expectedValue)
+            || expectedValue.length === 0
+          ) {
+            return false;
+          }
+
+          if (variableName === "all") {
+            return expectedValue.every(
+              function (nestedRule) {
+                return ruleMatches(
+                  nestedRule,
+                  values
+                );
+              }
+            );
+          }
+
+          return expectedValue.some(
+            function (nestedRule) {
+              return ruleMatches(
+                nestedRule,
+                values
+              );
+            }
+          );
+        }
+
+        if (variableName === "not") {
+          return (
+            expectedValue
+            && typeof expectedValue === "object"
+            && !Array.isArray(expectedValue)
+            && !ruleMatches(
+              expectedValue,
+              values
+            )
+          );
+        }
+
+        return (
+          Object.prototype.hasOwnProperty.call(
+            values,
+            variableName
+          )
+          && (
+            Array.isArray(expectedValue)
+              ? expectedValue.some(
+                  function (candidate) {
+                    return JSON.stringify(
+                      values[variableName]
+                    ) === JSON.stringify(candidate);
+                  }
+                )
+              : JSON.stringify(
+                  values[variableName]
+                ) === JSON.stringify(
+                  expectedValue
+                )
+          )
+        );
+      }
+    );
+  }
+
+  function updateDynamicChoices() {
+    fields.forEach(function (field) {
+      const control = field.querySelector(
+        "select[data-dynamic-host-input]"
+      );
+      if (!control) {
+        return;
+      }
+
+      const hostVariable =
+        control.dataset.dynamicHostInput;
+      const hostField = fields.find(
+        function (candidate) {
+          return candidate.dataset.variableName
+            === hostVariable;
+        }
+      );
+      const hostValue = hostField
+        ? valueForField(hostField)
+        : null;
+      let choicesByHost = {};
+      try {
+        choicesByHost = JSON.parse(
+          control.dataset.dynamicChoices || "{}"
+        );
+      } catch (error) {
+        choicesByHost = {};
+      }
+
+      const choices = (
+        hostValue !== null
+        && Object.prototype.hasOwnProperty.call(
+          choicesByHost,
+          String(hostValue)
+        )
+      )
+        ? choicesByHost[String(hostValue)]
+        : [];
+      const previousValue = control.value;
+
+      control.replaceChildren();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = hostValue
+        ? "Select a value"
+        : "Select a host first";
+      control.appendChild(placeholder);
+
+      choices.forEach(function (choice) {
+        const option = document.createElement("option");
+        option.value = choice.key;
+        option.textContent = choice.label;
+        control.appendChild(option);
+      });
+
+      if (Array.from(control.options).some(
+        function (option) {
+          return option.value === previousValue;
+        }
+      )) {
+        control.value = previousValue;
+      }
+    });
+  }
+
+  function updateAll() {
+    updateDynamicChoices();
+    updateConditions();
+  }
+
+  function updateConditions() {
+    const values = {};
+
+    fields.forEach(function (field) {
+      const conditions = JSON.parse(
+        field.dataset.conditions || "{}"
+      );
+
+      const visibleWhen =
+        conditions.visible_when;
+
+      const requiredWhen =
+        conditions.required_when;
+
+      const visible = (
+        !visibleWhen
+        || ruleMatches(
+          visibleWhen,
+          values
+        )
+      );
+
+      field.hidden = !visible;
+
+      const controls = field.querySelectorAll(
+        "input, select, textarea"
+      );
+
+      controls.forEach(function (control) {
+        control.disabled = !visible;
+
+        if (
+          control.type !== "checkbox"
+        ) {
+          const baseRequired =
+            field.dataset.baseRequired
+            === "true";
+
+          control.required = (
+            visible
+            && (
+              baseRequired
+              || (
+                requiredWhen
+                && ruleMatches(
+                  requiredWhen,
+                  values
+                )
+              )
+            )
+          );
+        }
+      });
+
+      if (visible) {
+        const value =
+          valueForField(field);
+
+        if (value !== null) {
+          values[
+            field.dataset.variableName
+          ] = value;
+        }
+      }
+    });
+  }
+
+  fields.forEach(function (field) {
+    field
+      .querySelectorAll("input, select, textarea")
+      .forEach(function (control) {
+        control.addEventListener(
+          "change",
+          updateAll
+        );
+
+        control.addEventListener(
+          "input",
+          updateAll
+        );
+      });
+  });
+
+  const emailPattern = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/;
+
+  document.querySelectorAll(
+    "[data-email-addresses]"
+  ).forEach(function (control) {
+    function validateEmailAddresses() {
+      const values = control.value
+        .split(/[,;\n\r]+/)
+        .map(function (value) {
+          return value.trim();
+        })
+        .filter(Boolean);
+
+      const invalid = values.find(
+        function (value) {
+          return (
+            value.length > 254
+            || !emailPattern.test(value)
+          );
+        }
+      );
+
+      control.setCustomValidity(
+        invalid
+          ? `Invalid email address: ${invalid}`
+          : ""
+      );
+    }
+
+    control.addEventListener(
+      "input",
+      validateEmailAddresses
+    );
+    control.addEventListener(
+      "change",
+      validateEmailAddresses
+    );
+    validateEmailAddresses();
+  });
+
+  updateAll();
+}());
+</script>
+
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Edit Environment · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><h1>Edit Environment</h1><p>{{ environment.name }}</p></div>
+  <a class="button" href="{{ url_for('main.environments') }}">Back to Environments</a>
+</div>
+<section class="panel form-panel">
+  {% if environment.is_managed %}
+    <h2>Managed environment</h2>
+    <p>Changing these fields queues a rebuild using the same settings available when creating a managed Environment.</p>
+    {% set form_action = url_for('main.environment_edit', environment_id=environment.id) %}
+    {% set submit_label = 'Queue rebuild' %}
+    {% include "_environment_managed_form.html" %}
+  {% else %}
+    <h2>Registered virtual environment</h2>
+    <p>Journeyman does not recreate or remove this virtual environment. Declared Python packages and Ansible collections are installed in-place when you save.</p>
+    {% set form_action = url_for('main.environment_edit', environment_id=environment.id) %}
+    {% set submit_label = 'Save and validate' %}
+    {% include "_environment_external_form.html" %}
+  {% endif %}
+</section>
+{% endblock %}

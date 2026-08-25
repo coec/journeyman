@@ -1,0 +1,146 @@
+---
+- name: Remove Journeyman remote runner
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    journeyman_runner_user: journeyman
+    journeyman_runner_group: journeyman
+    journeyman_runner_home: /var/lib/journeyman
+    journeyman_runner_install_root: /opt/journeyman
+    journeyman_runner_config_root: /etc/journeyman
+    journeyman_runner_config: /etc/journeyman/remote-runner.env
+    journeyman_runner_venv: /opt/journeyman/venv314
+    journeyman_runner_executable: /opt/journeyman/bin/journeyman-remote-runner
+
+    # true: remove the Runner row from the control-plane database. Journeyman
+    # refuses this if Projects or Jobs still reference the runner.
+    # false: revoke the credential and retain the row as unregistered history.
+    journeyman_delete_runner_record: true
+
+    # Software removal is deliberately opt-in. When false, the service is left
+    # disabled and the files/configuration remain on the node.
+    journeyman_remove_runner_software: false
+
+  pre_tasks:
+    - name: Check remote runner configuration
+      ansible.builtin.stat:
+        path: "{{ journeyman_runner_config }}"
+      register: journeyman_runner_config_stat
+
+    - name: Require an existing registered remote runner
+      ansible.builtin.assert:
+        that:
+          - journeyman_runner_config_stat.stat.exists
+          - journeyman_runner_config_stat.stat.isreg
+        fail_msg: >-
+          {{ journeyman_runner_config }} does not exist. This playbook only
+          removes a runner that still has its registration credentials.
+
+    - name: Confirm destructive software removal
+      ansible.builtin.assert:
+        that:
+          - journeyman_confirm_remove_all | default(false) | bool
+        fail_msg: >-
+          journeyman_remove_runner_software=true deletes /opt/journeyman,
+          /etc/journeyman, /var/lib/journeyman, the systemd unit, and the
+          journeyman service account/group. Also set
+          journeyman_confirm_remove_all=true to confirm.
+      when: journeyman_remove_runner_software | bool
+
+  tasks:
+    - name: Check whether Journeyman remote runner is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - journeyman-remote-runner
+      changed_when: false
+      failed_when: false
+      register: journeyman_runner_was_active
+
+    - name: Stop and disable Journeyman remote runner
+      ansible.builtin.systemd_service:
+        name: journeyman-remote-runner
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Unregister runner from Journeyman control plane
+      block:
+        - name: Delete unused runner record from Journeyman
+          ansible.builtin.command:
+            argv:
+              - "{{ journeyman_runner_venv }}/bin/python3"
+              - "{{ journeyman_runner_executable }}"
+              - unregister
+              - --config
+              - "{{ journeyman_runner_config }}"
+          changed_when: true
+          no_log: true
+          when: journeyman_delete_runner_record | bool
+
+        - name: Revoke runner credential but retain registry record
+          ansible.builtin.command:
+            argv:
+              - "{{ journeyman_runner_venv }}/bin/python3"
+              - "{{ journeyman_runner_executable }}"
+              - unregister
+              - --config
+              - "{{ journeyman_runner_config }}"
+              - --keep-record
+          changed_when: true
+          no_log: true
+          when: not (journeyman_delete_runner_record | bool)
+      rescue:
+        - name: Restart runner after failed control-plane removal
+          ansible.builtin.systemd_service:
+            name: journeyman-remote-runner
+            state: started
+            enabled: true
+          when: journeyman_runner_was_active.rc == 0
+          failed_when: false
+
+        - name: Stop removal because Journeyman rejected unregister/delete
+          ansible.builtin.fail:
+            msg: >-
+              Journeyman did not accept the runner removal. No software was
+              deleted. Check the control-plane logs/UI; a hard delete is
+              refused while Projects or historical Jobs still reference the
+              runner.
+
+    - name: Remove Journeyman remote runner systemd unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/journeyman-remote-runner.service
+        state: absent
+      when: journeyman_remove_runner_software | bool
+
+    - name: Remove Journeyman runner software and data directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ journeyman_runner_install_root }}"
+        - "{{ journeyman_runner_config_root }}"
+        - "{{ journeyman_runner_home }}"
+      when: journeyman_remove_runner_software | bool
+
+    - name: Remove Journeyman runner service account
+      ansible.builtin.user:
+        name: "{{ journeyman_runner_user }}"
+        state: absent
+        remove: true
+      when: journeyman_remove_runner_software | bool
+
+    - name: Remove Journeyman runner service group
+      ansible.builtin.group:
+        name: "{{ journeyman_runner_group }}"
+        state: absent
+      when: journeyman_remove_runner_software | bool
+      failed_when: false
+
+    - name: Reload systemd after runner removal
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: journeyman_remove_runner_software | bool

@@ -1,0 +1,1348 @@
+{% extends "base.html" %}
+
+{% macro filter_rule_row(prefix, group_id, rule) %}
+<div class="filter-rule-row">
+    <input
+        type="hidden"
+        name="{{ prefix }}_rule_group"
+        value="{{ group_id }}"
+    >
+
+    <label>
+        Field
+        <select name="{{ prefix }}_field">
+            <option value="">Select a field</option>
+            {% for value, label in filter_field_choices %}
+            <option
+                value="{{ value }}"
+                {% if rule.field == value %}selected{% endif %}
+            >{{ label }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    <label class="filter-parameter-field">
+        <span class="filter-parameter-label">Parameter name</span>
+        <input
+            name="{{ prefix }}_parameter"
+            value="{{ rule.parameter or '' }}"
+            placeholder="foreman_params.foo"
+            data-filter-parameter-input
+        >
+    </label>
+
+    <label>
+        Operator
+        <select name="{{ prefix }}_operator">
+            <option value="">Select an operator</option>
+            {% for value, label in filter_operator_choices %}
+            <option
+                value="{{ value }}"
+                {% if rule.operator == value %}selected{% endif %}
+            >{{ label }}</option>
+            {% endfor %}
+        </select>
+    </label>
+
+    <label class="filter-value-field">
+        Value
+        <input name="{{ prefix }}_value" value="{{ rule.value or '' }}">
+    </label>
+
+    <button class="button danger" type="button" data-remove-filter-rule>
+        Remove
+    </button>
+
+    <small class="filter-rule-binding-help">
+        Package-bound inventory values may be referenced in Parameter name
+        and Value using <code>{{ '{{' }} binding_name {{ '}}' }}</code>.
+    </small>
+</div>
+{% endmacro %}
+
+{% macro filter_rule_group(prefix, group) %}
+<div
+    class="filter-rule-group"
+    data-filter-rule-group
+    data-group-id="{{ group.id }}"
+>
+    <div class="filter-rule-group-heading">
+        <label>
+            Rules in this group
+            <input
+                type="hidden"
+                name="{{ prefix }}_group_id"
+                value="{{ group.id }}"
+            >
+            <select name="{{ prefix }}_group_match">
+                <option value="all" {% if group.match != 'any' %}selected{% endif %}>Match ALL</option>
+                <option value="any" {% if group.match == 'any' %}selected{% endif %}>Match ANY</option>
+            </select>
+        </label>
+
+        <button class="button danger" type="button" data-remove-filter-group>
+            Remove Group
+        </button>
+    </div>
+
+    <div class="filter-rule-list" data-filter-rule-list>
+        {% for rule in group.rules %}
+            {{ filter_rule_row(prefix, group.id, rule) }}
+        {% endfor %}
+    </div>
+
+    <button class="button" type="button" data-add-filter-rule>
+        ＋ Add Rule
+    </button>
+</div>
+{% endmacro %}
+
+{% block title %}
+{{ 'Edit' if inventory else 'Add' }} Inventory · Journeyman
+{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>
+            {{ 'Edit Inventory' if inventory else 'Add Inventory' }}
+        </h1>
+
+        <p>
+            Configure an inventory used by Journeyman projects.
+        </p>
+    </div>
+</div>
+
+<section class="panel form-panel inventory-form-panel">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>
+            Inventory type
+
+            {% if inventory %}
+            <input
+                type="hidden"
+                name="inventory_type"
+                value="{{ form_data.inventory_type }}"
+            >
+
+            <input
+                value="{% if form_data.inventory_type == 'satellite' %}Red Hat Satellite
+                       {% elif form_data.inventory_type == 'static' %}Static Ansible Inventory
+                       {% elif form_data.inventory_type == 'filtered' %}Filtered Inventory
+                       {% elif form_data.inventory_type == 'composite' %}Composite Inventory
+                       {% elif form_data.inventory_type == 'zabbix' %}Zabbix
+                       {% elif form_data.inventory_type == 'netbox' %}NetBox
+                       {% elif form_data.inventory_type == 'lightspeed' %}Red Hat Lightspeed
+                       {% elif form_data.inventory_type == 'ovirt' %}oVirt / Red Hat Virtualization
+                       {% else %}{{ form_data.inventory_type | replace('_', ' ') | title }}{% endif %}"
+                disabled
+            >
+
+            <small>
+                Inventory type cannot be changed after creation.
+            </small>
+            {% else %}
+            <select
+                id="inventory-type"
+                name="inventory_type"
+                required
+            >
+                <option
+                    value="satellite"
+                    {% if form_data.inventory_type == 'satellite' %}
+                    selected
+                    {% endif %}
+                >
+                    Red Hat Satellite
+                </option>
+
+                <option
+                    value="zabbix"
+                    {% if form_data.inventory_type == 'zabbix' %}
+                    selected
+                    {% endif %}
+                >
+                    Zabbix
+                </option>
+
+                <option value="netbox" {% if form_data.inventory_type == 'netbox' %}selected{% endif %}>
+                    NetBox
+                </option>
+
+                <option value="lightspeed" {% if form_data.inventory_type == 'lightspeed' %}selected{% endif %}>
+                    Red Hat Lightspeed / Insights
+                </option>
+
+                <option value="ovirt" {% if form_data.inventory_type == 'ovirt' %}selected{% endif %}>
+                    oVirt / Red Hat Virtualization
+                </option>
+
+                <option
+                    value="static"
+                    {% if form_data.inventory_type == 'static' %}
+                    selected
+                    {% endif %}
+                >
+                    Static Ansible Inventory
+                </option>
+
+                <option
+                    value="filtered"
+                    {% if form_data.inventory_type == 'filtered' %}
+                    selected
+                    {% endif %}
+                >
+                    Filtered Inventory
+                </option>
+
+                <option
+                    value="composite"
+                    {% if form_data.inventory_type == 'composite' %}
+                    selected
+                    {% endif %}
+                >
+                    Composite Inventory
+                </option>
+            </select>
+            {% endif %}
+        </label>
+
+        <label>
+            Name
+            <input
+                name="name"
+                required
+                value="{{ form_data.name }}"
+                placeholder="Inventory name"
+            >
+        </label>
+
+        <div class="inventory-hostname-output-options">
+            <h2>Hostname Output</h2>
+            <p class="help-text">
+                Optional output-only hostname transformation. This does not
+                change the inventory provider, cached source data, or another
+                inventory used as a source.
+            </p>
+            <label class="checkbox-label">
+                <input
+                    type="checkbox"
+                    name="append_domain_enabled"
+                    id="append-domain-enabled"
+                    {% if form_data.append_domain_enabled %}checked{% endif %}
+                >
+                Append domain to short names
+                <span
+                    class="help-tooltip"
+                    tabindex="0"
+                    aria-label="Append domain help"
+                >
+                    ?
+                    <span class="help-tooltip-content" role="tooltip">
+                        Rewrite every remaining unqualified hostname in the
+                        resolved Inventory using the supplied default
+                        domain. For example, <b>rhel</b> with
+                        <b>example.com</b> becomes <b>rhel.example.com</b>.
+                        Existing FQDNs are unchanged. This does not modify any
+                        inventory source data. Use this only when the default
+                        domain is authoritative for all short names in this
+                        Inventory; an incorrect domain can create misleading host
+                        identities or collisions.
+                    </span>
+                </span>
+            </label>
+
+            <div id="append-domain-fields"
+                 {% if not form_data.append_domain_enabled %}hidden{% endif %}>
+                <label>
+                    Default domain
+                    <input
+                        type="text"
+                        name="append_domain"
+                        id="append-domain"
+                        value="{{ form_data.append_domain }}"
+                        placeholder="example.com"
+                        autocomplete="off"
+                    >
+                </label>
+                <div class="flash warning">
+                    <strong>Warning:</strong> This changes only the resolved
+                    Inventory output, not its source data. Every unqualified
+                    hostname will be rewritten with this domain. Confirm that the
+                    domain is correct for all hosts before using the result for
+                    execution. If rewriting would create a duplicate hostname,
+                    resolution fails rather than silently merging the hosts.
+                </div>
+            </div>
+
+        </div>
+
+        <div
+            class="inventory-type-fields"
+            data-inventory-type="satellite"
+            {% if form_data.inventory_type != 'satellite' %}
+            hidden
+            {% endif %}
+        >
+            <label>
+                Credential
+                <select name="credential_id">
+                    <option value="">
+                        Select a credential
+                    </option>
+
+                    {% for credential in credentials %}
+                    {% if credential.credential_type in ['url', 'satellite'] %}
+                    <option
+                        value="{{ credential.id }}"
+                        {% if form_data.credential_id == credential.id %}
+                        selected
+                        {% endif %}
+                    >
+                        {{ credential.name }}
+                    </option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Satellite Organization
+                <input
+                    name="organization"
+                    value="{{ form_data.organization }}"
+                    placeholder="Example Organization"
+                >
+            </label>
+
+            {% if config.OUTBOUND_SECURE_TRANSPORT_ENFORCED %}
+            <p><small>Satellite TLS certificate verification is mandatory.</small></p>
+            {% else %}
+            <label class="checkbox-label">
+                <input type="checkbox" name="verify_tls" {% if form_data.verify_tls %}checked{% endif %}>
+                Verify Satellite TLS certificate
+            </label>
+            {% endif %}
+        </div>
+
+        <div
+            class="inventory-type-fields"
+            data-inventory-type="static"
+            {% if form_data.inventory_type != 'static' %}
+            hidden
+            {% endif %}
+        >
+            <label>
+                Inventory YAML
+                <textarea
+                    name="static_content"
+                    rows="22"
+                    spellcheck="false"
+                >{{ form_data.static_content }}</textarea>
+            </label>
+        </div>
+
+        <div
+            class="inventory-type-fields"
+            data-inventory-type="zabbix"
+            {% if form_data.inventory_type != 'zabbix' %}
+            hidden
+            {% endif %}
+        >
+            <h2>Zabbix Inventory</h2>
+
+            <p class="help-text">
+                Retrieve Zabbix hosts matching an exact host-tag
+                name and value. Authentication uses an API token.
+            </p>
+
+            <label>
+                Zabbix URL / API credential
+
+                <select name="zabbix_credential_id">
+                    <option value="">
+                        Select a credential
+                    </option>
+
+                    {% for credential in credentials %}
+                    {% if credential.credential_type in ['url', 'zabbix'] %}
+                    <option
+                        value="{{ credential.id }}"
+                        {% if form_data.credential_id == credential.id %}
+                        selected
+                        {% endif %}
+                    >
+                        {{ credential.name }}
+                    </option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Zabbix URL
+
+                <input
+                    type="url"
+                    name="zabbix_endpoint"
+                    value="{{ form_data.endpoint }}"
+                    placeholder="https://zabbix.example.org/zabbix"
+                >
+
+                <small>
+                    Legacy Zabbix-token credentials only. URL / API credentials store the Zabbix base URL and this field is ignored.
+                </small>
+            </label>
+
+            <label>
+                Host tag name
+
+                <input
+                    name="zabbix_tag_name"
+                    value="{{ form_data.zabbix_tag_name }}"
+                    placeholder="automation"
+                >
+            </label>
+
+            <label>
+                Host tag value
+
+                <input
+                    name="zabbix_tag_value"
+                    value="{{ form_data.zabbix_tag_value }}"
+                    placeholder="journeyman"
+                >
+            </label>
+
+            {% if config.OUTBOUND_SECURE_TRANSPORT_ENFORCED %}
+            <p><small>Zabbix TLS certificate verification is mandatory.</small></p>
+            {% else %}
+            <label class="checkbox-label">
+                <input type="checkbox" name="zabbix_verify_tls" {% if form_data.verify_tls %}checked{% endif %}>
+                Verify TLS certificate
+            </label>
+            {% endif %}
+
+            <label class="checkbox-label">
+                <input
+                    type="checkbox"
+                    name="zabbix_include_disabled"
+                    {% if form_data.zabbix_include_disabled %}
+                    checked
+                    {% endif %}
+                >
+
+                Include disabled Zabbix hosts
+            </label>
+        </div>
+
+        <div class="inventory-type-fields" data-inventory-type="ovirt" {% if form_data.inventory_type != 'ovirt' %}hidden{% endif %}>
+            <h2>oVirt / Red Hat Virtualization Inventory</h2>
+            <p class="help-text">Retrieve virtual machines using the upstream <code>ovirt.ovirt.ovirt</code> Ansible inventory plugin. The URL / API credential supplies the Engine API URL, username, and password.</p>
+            <label>URL / API credential
+                <select name="ovirt_credential_id">
+                    <option value="">Select a credential</option>
+                    {% for credential in credentials %}{% if credential.credential_type == 'url' %}
+                    <option value="{{ credential.id }}" {% if form_data.credential_id == credential.id %}selected{% endif %}>{{ credential.name }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </label>
+            <label>Hostname preference
+                <input name="ovirt_hostname_preference" value="{{ form_data.ovirt_hostname_preference }}" placeholder="fqdn, name">
+                <small>Comma-separated VM attributes used by the plugin when choosing the Ansible hostname.</small>
+            </label>
+            <label>Query filter (optional YAML mapping)
+                <textarea name="ovirt_query_filter" rows="5" spellcheck="false" placeholder="search: 'cluster=Production'">{{ form_data.ovirt_query_filter }}</textarea>
+                <small>Passed directly as <code>ovirt_query_filter</code> to the upstream inventory plugin.</small>
+            </label>
+            {% if config.OUTBOUND_SECURE_TRANSPORT_ENFORCED %}
+            <p><small>oVirt / RHV TLS certificate verification is mandatory.</small></p>
+            {% else %}
+            <label class="checkbox-label"><input type="checkbox" name="ovirt_verify_tls" {% if form_data.verify_tls %}checked{% endif %}> Verify TLS certificate</label>
+            {% endif %}
+        </div>
+
+        <div class="inventory-type-fields" data-inventory-type="netbox" {% if form_data.inventory_type != 'netbox' %}hidden{% endif %}>
+            <h2>NetBox Inventory</h2>
+            <p class="help-text">Retrieve devices from the NetBox REST API. The URL / API credential supplies the NetBox base URL and authentication token.</p>
+            <label>URL / API credential
+                <select name="netbox_credential_id">
+                    <option value="">Select a credential</option>
+                    {% for credential in credentials %}{% if credential.credential_type == 'url' %}
+                    <option value="{{ credential.id }}" {% if form_data.credential_id == credential.id %}selected{% endif %}>{{ credential.name }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </label>
+            <label>Status <input name="netbox_status" value="{{ form_data.netbox_status }}" placeholder="active"></label>
+            <label>Tag <input name="netbox_tag" value="{{ form_data.netbox_tag }}" placeholder="journeyman"></label>
+            <label>Site <input name="netbox_site" value="{{ form_data.netbox_site }}" placeholder="site-slug"></label>
+            <label>Device role <input name="netbox_role" value="{{ form_data.netbox_role }}" placeholder="role-slug"></label>
+            <p class="help-text">Rich host variables are produced by <code>netbox.netbox.nb_inventory</code>. Disable categories only when inventory size or API load warrants it.</p>
+            <label class="checkbox-label"><input type="checkbox" name="netbox_interfaces" {% if form_data.netbox_interfaces %}checked{% endif %}> Include interfaces</label>
+            <label class="checkbox-label"><input type="checkbox" name="netbox_services" {% if form_data.netbox_services %}checked{% endif %}> Include services</label>
+            <label class="checkbox-label"><input type="checkbox" name="netbox_config_context" {% if form_data.netbox_config_context %}checked{% endif %}> Include config context</label>
+            <label class="checkbox-label"><input type="checkbox" name="netbox_site_data" {% if form_data.netbox_site_data %}checked{% endif %}> Include full site data</label>
+            <label class="checkbox-label"><input type="checkbox" name="netbox_virtual_disks" {% if form_data.netbox_virtual_disks %}checked{% endif %}> Include virtual disks</label>
+            {% if config.OUTBOUND_SECURE_TRANSPORT_ENFORCED %}
+            <p><small>NetBox TLS certificate verification is mandatory.</small></p>
+            {% else %}
+            <label class="checkbox-label"><input type="checkbox" name="netbox_verify_tls" {% if form_data.verify_tls %}checked{% endif %}> Verify TLS certificate</label>
+            {% endif %}
+        </div>
+
+        <div class="inventory-type-fields" data-inventory-type="lightspeed" {% if form_data.inventory_type != 'lightspeed' %}hidden{% endif %}>
+            <h2>Red Hat Lightspeed Inventory</h2>
+            <p class="help-text">Retrieve systems from the Red Hat Lightspeed Host Inventory API. Use a URL / API credential with OAuth 2 client-credentials authentication.</p>
+            <label>URL / API credential
+                <select name="lightspeed_credential_id">
+                    <option value="">Select a credential</option>
+                    {% for credential in credentials %}{% if credential.credential_type == 'url' %}
+                    <option value="{{ credential.id }}" {% if form_data.credential_id == credential.id %}selected{% endif %}>{{ credential.name }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </label>
+            <label>Inventory tags filter <input name="lightspeed_tags" value="{{ form_data.lightspeed_tags }}" placeholder="namespace/key=value"></label>
+            <small>Leave blank for all systems visible to the service account.</small>
+            {% if config.OUTBOUND_SECURE_TRANSPORT_ENFORCED %}
+            <p><small>Red Hat Lightspeed TLS certificate verification is mandatory.</small></p>
+            {% else %}
+            <label class="checkbox-label"><input type="checkbox" name="lightspeed_verify_tls" {% if form_data.verify_tls %}checked{% endif %}> Verify TLS certificate</label>
+            {% endif %}
+        </div>
+
+        <div id="inventory-proxy-fields">
+            <h2>Outbound proxy</h2>
+            <p class="help-text">
+                Optional. Route this inventory provider's HTTP/HTTPS requests through a proxy.
+                Select a URL / API credential whose Base URL is the proxy URL and whose
+                authentication is either None or HTTP Basic. Proxy passwords remain encrypted
+                in the credential store and are never copied into inventory configuration.
+            </p>
+            <label>
+                Proxy credential
+                <select name="proxy_credential_id">
+                    <option value="">Direct connection (no proxy)</option>
+                    {% for credential in credentials %}{% if credential.credential_type == 'url' %}
+                    <option value="{{ credential.id }}" {% if form_data.proxy_credential_id == credential.id %}selected{% endif %}>{{ credential.name }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </label>
+            <div class="flash warning">
+                <strong>Warning:</strong> A proxy can observe destination metadata and, for plain HTTP destinations, request content.
+                Use a trusted proxy and keep TLS verification enabled. The proxy host must also be permitted by Journeyman's outbound allowlist.
+            </div>
+        </div>
+
+        <div
+            class="inventory-type-fields"
+            data-inventory-type="filtered"
+            {% if form_data.inventory_type != 'filtered' %}
+            hidden
+            {% endif %}
+        >
+            <label>
+                Source inventory
+                <select name="source_inventory_id" id="filtered-source-inventory">
+                    <option value="">
+                        Select an inventory
+                    </option>
+
+                    {% for source in source_inventories %}
+                    <option
+                        value="{{ source.id }}"
+                        {% if form_data.source_inventory_id
+                              == source.id %}
+                        selected
+                        {% endif %}
+                    >
+                        {{ source.name }}
+                        ({{ source.inventory_type
+                            |replace('_', ' ')
+                            |title }})
+                        {% if not source.enabled %}
+                        — Disabled
+                        {% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+
+                <small>
+                    The source may itself be a source or filtered
+                    inventory. Host variable paths are suggested from the
+                    currently resolved source inventory cache.
+                </small>
+                <small id="host-variable-path-status" aria-live="polite"></small>
+            </label>
+
+            <div class="form-section-heading">
+                <div>
+                    <h2>Include groups</h2>
+                    <p>
+                        A host is included when it matches any include group.
+                        Each group can require ALL or ANY of its rules. With no
+                        include groups, all hosts are included.
+                    </p>
+                </div>
+            </div>
+
+            <div class="filter-group-list" data-filter-group-list="include">
+                {% for group in form_data.include_groups %}
+                    {{ filter_rule_group('include', group) }}
+                {% endfor %}
+            </div>
+
+            <button class="button" type="button" data-add-filter-group="include">
+                ＋ Add Include Group
+            </button>
+
+            <div class="form-section-heading">
+                <div>
+                    <h2>Exclude groups</h2>
+                    <p>
+                        A host is removed when it matches any exclude group.
+                        Each group can require ALL or ANY of its rules.
+                    </p>
+                </div>
+            </div>
+
+            <div class="filter-group-list" data-filter-group-list="exclude">
+                {% for group in form_data.exclude_groups %}
+                    {{ filter_rule_group('exclude', group) }}
+                {% endfor %}
+            </div>
+
+            <button class="button" type="button" data-add-filter-group="exclude">
+                ＋ Add Exclude Group
+            </button>
+        </div>
+
+        <div
+            class="inventory-type-fields"
+            data-inventory-type="composite"
+            {% if form_data.inventory_type != 'composite' %}
+            hidden
+            {% endif %}
+        >
+            <h2>Composite Inventory</h2>
+
+            <p class="help-text">
+                Combine two or more inventories. Hosts and groups are
+                de-duplicated. Conflicting host variables cause resolution
+                to fail rather than silently overwriting data.
+            </p>
+
+            <label>
+                <span class="field-label-with-help">
+                    Normalize inventory hostnames
+                    <span
+                        class="help-tooltip"
+                        tabindex="0"
+                        aria-label="Hostname normalization help"
+                    >
+                        ?
+                        <span class="help-tooltip-content" role="tooltip">
+                            Merge inventory entries when one hostname is the
+                            short-name form of another entry's FQDN. For
+                            example, <b>rhel</b> and <b>rhel.example.com</b>
+                            can be treated as the same host and their
+                            properties merged. If more than one FQDN could
+                            match a short name, such as
+                            <b>rhel.example.com</b> and
+                            <b>rhel.example.com</b>, Journeyman does not
+                            normalize any of those entries. FQDN mode never
+                            invents a domain; an actual matching FQDN must be
+                            present in another source inventory.
+                        </span>
+                    </span>
+                </span>
+                <select name="composite_normalize_hostnames">
+                    <option value="none"
+                        {% if form_data.composite_normalize_hostnames == 'none' %}selected{% endif %}>
+                        Don't normalize
+                    </option>
+                    <option value="short"
+                        {% if form_data.composite_normalize_hostnames == 'short' %}selected{% endif %}>
+                        Normalize/merge to short name
+                    </option>
+                    <option value="fqdn"
+                        {% if form_data.composite_normalize_hostnames == 'fqdn' %}selected{% endif %}>
+                        Normalize/merge to FQDN
+                    </option>
+                </select>
+            </label>
+
+            {% set selected_composite_source_ids =
+                form_data.get(
+                    'composite_source_inventory_ids',
+                    []
+                )
+            %}
+
+            <div class="composite-member-section">
+                <div class="form-section-heading">
+                    <div>
+                        <h2>Member Inventories</h2>
+                        <p>
+                            Select two or more inventories to combine. Each member
+                            must have an independent source lineage; Journeyman
+                            recursively checks Filtered and nested Composite
+                            inventories all the way to their underlying sources.
+                        </p>
+                    </div>
+                </div>
+
+                {% if composite_source_inventories %}
+                <div class="filters composite-member-filters">
+                    <input
+                        type="search"
+                        id="composite-member-search"
+                        placeholder="Search inventories..."
+                        aria-label="Search member inventories"
+                        autocomplete="off"
+                    >
+                </div>
+
+                <div class="composite-member-table-wrap">
+                    <table class="composite-member-table">
+                        <thead>
+                            <tr>
+                                <th class="composite-member-select-column">
+                                    Select
+                                </th>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="composite-member-rows">
+                            {% for source in composite_source_inventories %}
+                            <tr
+                                class="composite-member-row"
+                                data-composite-member-row
+                                data-search-text="{{ (source.name ~ ' ' ~ source.inventory_type ~ ' ' ~ ('enabled' if source.enabled else 'disabled')) | lower }}"
+                                data-inventory-id="{{ source.id }}"
+                                data-leaf-source-ids="{{ composite_member_leaf_ids.get(source.id, [source.id]) | list | sort | join(',') }}"
+                                tabindex="0"
+                            >
+                                <td class="composite-member-select-column">
+                                    <input
+                                        type="checkbox"
+                                        name="composite_source_inventory_ids"
+                                        value="{{ source.id }}"
+                                        aria-label="Select {{ source.name }}"
+                                        data-composite-member-checkbox
+                                        {% if source.id
+                                              in selected_composite_source_ids %}
+                                        checked
+                                        {% endif %}
+                                    >
+                                </td>
+                                <td>
+                                    <strong>{{ source.name }}</strong>
+                                </td>
+                                <td>
+                                    {{ source.inventory_type
+                                       | replace('_', ' ')
+                                       | title }}
+                                </td>
+                                <td>
+                                    {% if source.enabled %}
+                                    Enabled
+                                    {% else %}
+                                    <span class="muted">Disabled</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <p class="help-text">
+                    Inventories whose recursive lineage overlaps a selected
+                    member are disabled. This prevents the same underlying
+                    source inventory from entering a Composite Inventory more
+                    than once through different branches.
+                </p>
+
+                <p
+                    class="help-text composite-member-no-results"
+                    id="composite-member-no-results"
+                    hidden
+                >
+                    No inventories match the search.
+                </p>
+                {% else %}
+                <p class="help-text">
+                    Create at least two other inventories before
+                    creating a Composite Inventory.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+
+        <label class="checkbox-label">
+            <input
+                type="checkbox"
+                name="enabled"
+                {% if form_data.enabled %}
+                checked
+                {% endif %}
+            >
+            Enabled
+        </label>
+
+        <div class="form-actions">
+            <button
+                class="button primary"
+                type="submit"
+            >
+                {{ 'Save Inventory' if inventory
+                   else 'Add Inventory' }}
+            </button>
+
+            <a
+                class="button"
+                href="{{ url_for('main.inventories') }}"
+            >
+                Cancel
+            </a>
+        </div>
+    </form>
+</section>
+
+<datalist id="host-variable-path-options"></datalist>
+
+<template id="filter-rule-template">
+    {{ filter_rule_row('__prefix__', '__group_id__', {}) }}
+</template>
+
+<template id="filter-group-template">
+    {{ filter_rule_group(
+        '__prefix__',
+        {'id': '__group_id__', 'match': 'all', 'rules': [{}]}
+    ) }}
+</template>
+
+<script nonce="{{ csp_nonce }}">
+document.addEventListener("DOMContentLoaded", function () {
+    "use strict";
+
+    const typeSelect =
+        document.getElementById("inventory-type");
+
+    const fieldGroups =
+        document.querySelectorAll(
+            ".inventory-type-fields"
+        );
+
+    const ruleTemplate =
+        document.getElementById(
+            "filter-rule-template"
+        );
+
+    const groupTemplate =
+        document.getElementById(
+            "filter-group-template"
+        );
+
+    let nextGroupNumber = Date.now();
+
+    function updateInventoryFields() {
+        const selectedType = typeSelect
+            ? typeSelect.value
+            : "{{ form_data.inventory_type }}";
+
+        fieldGroups.forEach(function (group) {
+            group.hidden = (
+                group.dataset.inventoryType
+                !== selectedType
+            );
+        });
+        const proxyFields = document.getElementById("inventory-proxy-fields");
+        if (proxyFields) {
+            proxyFields.hidden = !["satellite", "zabbix", "netbox", "lightspeed", "ovirt"].includes(selectedType);
+            proxyFields.querySelectorAll("select, input").forEach(function (field) {
+                field.disabled = proxyFields.hidden;
+            });
+        }
+    }
+
+function updateRuleValue(row) {
+    if (!row) {
+        return;
+    }
+
+    const operator = row.querySelector(
+        "select[name$='_operator']"
+    );
+
+    const value = row.querySelector(
+        "input[name$='_value']"
+    );
+
+    const valueField = row.querySelector(
+        ".filter-value-field"
+    );
+
+    if (!operator || !value || !valueField) {
+        return;
+    }
+
+    const noValueNeeded = (
+        operator.value === "exists"
+        || operator.value === "not_exists"
+    );
+
+    /*
+     * Do not disable this input. Disabled controls are omitted from
+     * the POST and would break alignment between rule fields.
+     */
+    valueField.hidden = noValueNeeded;
+
+    row.classList.toggle(
+        "no-value",
+        noValueNeeded
+    );
+
+    if (noValueNeeded) {
+        value.value = "";
+    }
+}
+
+
+function updateRuleParameter(row) {
+    if (!row) {
+        return;
+    }
+
+    const field = row.querySelector(
+        "select[name$='_field']"
+    );
+
+    const parameter = row.querySelector(
+        "input[name$='_parameter']"
+    );
+
+    const parameterField = row.querySelector(
+        ".filter-parameter-field"
+    );
+
+    if (!field || !parameter || !parameterField) {
+        return;
+    }
+
+    const parameterRequired = (
+        field.value === "foreman_param"
+        || field.value === "variable"
+    );
+
+    const parameterLabel = row.querySelector(
+        ".filter-parameter-label"
+    );
+
+    if (parameterLabel) {
+        parameterLabel.textContent = (
+            field.value === "variable"
+            ? "Variable path"
+            : "Parameter name"
+        );
+    }
+
+    if (field.value === "variable") {
+        parameter.setAttribute("list", "host-variable-path-options");
+        parameter.placeholder = "e.g. zabbix.icmp.reachable";
+    } else {
+        parameter.removeAttribute("list");
+        parameter.placeholder = "foreman_params.foo";
+    }
+
+    /*
+     * Keep the hidden input enabled so every rule submits one
+     * parameter value and the parallel form lists remain aligned.
+     */
+    parameterField.hidden = !parameterRequired;
+
+    row.classList.toggle(
+        "has-parameter",
+        parameterRequired
+    );
+
+    if (!parameterRequired) {
+        parameter.value = "";
+    }
+}
+
+    const filteredSourceInventory = document.getElementById("filtered-source-inventory");
+    const hostVariablePathOptions = document.getElementById("host-variable-path-options");
+    const hostVariablePathStatus = document.getElementById("host-variable-path-status");
+
+    async function refreshObservedHostVariablePaths() {
+        if (!filteredSourceInventory || !hostVariablePathOptions) {
+            return;
+        }
+        const inventoryId = filteredSourceInventory.value;
+        hostVariablePathOptions.replaceChildren();
+        if (hostVariablePathStatus) {
+            hostVariablePathStatus.textContent = "";
+        }
+        if (!inventoryId) {
+            return;
+        }
+        if (hostVariablePathStatus) {
+            hostVariablePathStatus.textContent = "Loading observed host variable paths…";
+        }
+        try {
+            const response = await fetch(
+                "{{ url_for('main.inventory_host_variable_paths', inventory_id=0) }}".replace("/0/", "/" + encodeURIComponent(inventoryId) + "/"),
+                {headers: {"Accept": "application/json"}}
+            );
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload.error || "Unable to inspect inventory cache.");
+            }
+            (payload.paths || []).forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = item.path;
+                option.label = item.hosts + " / " + payload.host_count + " hosts";
+                hostVariablePathOptions.appendChild(option);
+            });
+            if (hostVariablePathStatus) {
+                hostVariablePathStatus.textContent = (
+                    (payload.paths || []).length + " observed host variable paths from " +
+                    payload.host_count + " hosts" + (payload.truncated ? " (list truncated)." : ".")
+                );
+            }
+        } catch (error) {
+            if (hostVariablePathStatus) {
+                hostVariablePathStatus.textContent = error.message;
+            }
+        }
+    }
+
+    if (filteredSourceInventory) {
+        filteredSourceInventory.addEventListener("change", refreshObservedHostVariablePaths);
+        refreshObservedHostVariablePaths();
+    }
+
+    function initialiseRule(row) {
+        updateRuleValue(row);
+        updateRuleParameter(row);
+    }
+
+    function addRule(group) {
+        if (!ruleTemplate || !group) {
+            return;
+        }
+
+        const prefix = group.closest(
+            "[data-filter-group-list]"
+        ).dataset.filterGroupList;
+        const groupId = group.dataset.groupId;
+        const list = group.querySelector(
+            "[data-filter-rule-list]"
+        );
+        const fragment = ruleTemplate.content.cloneNode(true);
+
+        fragment.querySelectorAll("[name]").forEach(function (element) {
+            element.name = element.name.replace("__prefix__", prefix);
+            if (element.value === "__group_id__") {
+                element.value = groupId;
+            }
+        });
+
+        list.appendChild(fragment);
+        initialiseRule(list.lastElementChild);
+    }
+
+    function addGroup(prefix) {
+        if (!groupTemplate) {
+            return;
+        }
+
+        const list = document.querySelector(
+            "[data-filter-group-list='" + prefix + "']"
+        );
+        if (!list) {
+            return;
+        }
+
+        nextGroupNumber += 1;
+        const groupId = prefix + "-group-" + nextGroupNumber;
+        const fragment = groupTemplate.content.cloneNode(true);
+
+        fragment.querySelectorAll("[name]").forEach(function (element) {
+            element.name = element.name.replace("__prefix__", prefix);
+            if (element.value === "__group_id__") {
+                element.value = groupId;
+            }
+        });
+
+        const group = fragment.querySelector("[data-filter-rule-group]");
+        group.dataset.groupId = groupId;
+
+        group.querySelectorAll(
+            "input[name$='_rule_group']"
+        ).forEach(function (element) {
+            element.value = groupId;
+        });
+
+        list.appendChild(fragment);
+        group.querySelectorAll(".filter-rule-row").forEach(initialiseRule);
+    }
+
+    document.querySelectorAll("[data-add-filter-group]").forEach(function (button) {
+        button.addEventListener("click", function () {
+            addGroup(button.dataset.addFilterGroup);
+        });
+    });
+
+    document.addEventListener("click", function (event) {
+        const addRuleButton = event.target.closest("[data-add-filter-rule]");
+        if (addRuleButton) {
+            addRule(addRuleButton.closest("[data-filter-rule-group]"));
+        }
+
+        const removeGroupButton = event.target.closest("[data-remove-filter-group]");
+        if (removeGroupButton) {
+            const group = removeGroupButton.closest("[data-filter-rule-group]");
+            if (group) {
+                group.remove();
+            }
+        }
+    });
+
+    document.addEventListener(
+        "click",
+        function (event) {
+            const removeButton =
+                event.target.closest(
+                    "[data-remove-filter-rule]"
+                );
+
+            if (!removeButton) {
+                return;
+            }
+
+            const row = removeButton.closest(
+                ".filter-rule-row"
+            );
+
+            if (row) {
+                row.remove();
+            }
+        }
+    );
+
+    document.addEventListener(
+        "change",
+        function (event) {
+            const row = event.target.closest(
+                ".filter-rule-row"
+            );
+
+            if (!row) {
+                return;
+            }
+
+            if (
+                event.target.matches(
+                    "select[name$='_operator']"
+                )
+            ) {
+                updateRuleValue(row);
+            }
+
+            if (
+                event.target.matches(
+                    "select[name$='_field']"
+                )
+            ) {
+                updateRuleParameter(row);
+            }
+        }
+    );
+
+    document.querySelectorAll(
+        ".filter-rule-row"
+    ).forEach(initialiseRule);
+
+    const compositeMemberSearch = document.getElementById(
+        "composite-member-search"
+    );
+    const compositeMemberRows = Array.from(
+        document.querySelectorAll("[data-composite-member-row]")
+    );
+    const compositeMemberNoResults = document.getElementById(
+        "composite-member-no-results"
+    );
+
+    function filterCompositeMembers() {
+        if (!compositeMemberSearch) {
+            return;
+        }
+
+        const query = compositeMemberSearch.value
+            .trim()
+            .toLowerCase();
+        let visibleRows = 0;
+
+        compositeMemberRows.forEach(function (row) {
+            const matches = (
+                !query
+                || row.dataset.searchText.includes(query)
+            );
+
+            row.hidden = !matches;
+            if (matches) {
+                visibleRows += 1;
+            }
+        });
+
+        if (compositeMemberNoResults) {
+            compositeMemberNoResults.hidden = visibleRows !== 0;
+        }
+    }
+
+    function compositeLeafIds(row) {
+        return new Set(
+            (row.dataset.leafSourceIds || "")
+                .split(",")
+                .map(function (value) { return value.trim(); })
+                .filter(Boolean)
+        );
+    }
+
+    function updateCompositeLineageChoices() {
+        const selectedRows = compositeMemberRows.filter(function (row) {
+            const checkbox = row.querySelector("[data-composite-member-checkbox]");
+            return checkbox && checkbox.checked;
+        });
+
+        compositeMemberRows.forEach(function (row) {
+            const checkbox = row.querySelector("[data-composite-member-checkbox]");
+            if (!checkbox || checkbox.checked) {
+                if (checkbox) {
+                    checkbox.disabled = false;
+                    checkbox.removeAttribute("title");
+                }
+                row.removeAttribute("title");
+                return;
+            }
+
+            const candidateLeaves = compositeLeafIds(row);
+            const conflict = selectedRows.find(function (selectedRow) {
+                const selectedLeaves = compositeLeafIds(selectedRow);
+                return Array.from(candidateLeaves).some(function (leafId) {
+                    return selectedLeaves.has(leafId);
+                });
+            });
+
+            checkbox.disabled = Boolean(conflict);
+            if (conflict) {
+                const conflictNameCell = conflict.querySelector("td:nth-child(2)");
+                const conflictName = conflictNameCell
+                    ? conflictNameCell.textContent.trim()
+                    : "another selected inventory";
+                const message =
+                    "Unavailable because its source lineage overlaps "
+                    + conflictName + ".";
+                checkbox.title = message;
+                row.title = message;
+            } else {
+                checkbox.removeAttribute("title");
+                row.removeAttribute("title");
+            }
+        });
+    }
+
+    compositeMemberRows.forEach(function (row) {
+        function toggleRowSelection(event) {
+            if (event.target.closest("input, a, button, select, textarea")) {
+                return;
+            }
+
+            const checkbox = row.querySelector(
+                "input[type='checkbox'][name='composite_source_inventory_ids']"
+            );
+            if (!checkbox || checkbox.disabled) {
+                return;
+            }
+
+            checkbox.checked = !checkbox.checked;
+            checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        row.addEventListener("click", toggleRowSelection);
+        row.addEventListener("keydown", function (event) {
+            if (
+                event.target !== row
+                || (event.key !== "Enter" && event.key !== " ")
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            toggleRowSelection(event);
+        });
+    });
+
+    document.querySelectorAll("[data-composite-member-checkbox]").forEach(
+        function (checkbox) {
+            checkbox.addEventListener("change", updateCompositeLineageChoices);
+        }
+    );
+    updateCompositeLineageChoices();
+
+    if (compositeMemberSearch) {
+        compositeMemberSearch.addEventListener(
+            "input",
+            filterCompositeMembers
+        );
+        filterCompositeMembers();
+    }
+
+    const appendDomainEnabled = document.getElementById(
+        "append-domain-enabled"
+    );
+    const appendDomainFields = document.getElementById(
+        "append-domain-fields"
+    );
+    const appendDomain = document.getElementById(
+        "append-domain"
+    );
+
+    function updateAppendDomainFields() {
+        if (!appendDomainEnabled || !appendDomainFields) {
+            return;
+        }
+
+        const enabled = appendDomainEnabled.checked;
+        appendDomainFields.hidden = !enabled;
+        if (appendDomain) {
+            appendDomain.disabled = !enabled;
+            appendDomain.required = enabled;
+        }
+    }
+
+    if (appendDomainEnabled) {
+        appendDomainEnabled.addEventListener(
+            "change",
+            updateAppendDomainFields
+        );
+        updateAppendDomainFields();
+    }
+
+    if (typeSelect) {
+        typeSelect.addEventListener(
+            "change",
+            updateInventoryFields
+        );
+    }
+
+    updateInventoryFields();
+});
+</script>
+{% endblock %}

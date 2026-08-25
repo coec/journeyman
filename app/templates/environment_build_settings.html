@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Environment Build Settings · Journeyman{% endblock %}
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .build-settings-page { max-width: 1180px; }
+  .settings-tabs { display:flex; gap:8px; margin:18px 0; flex-wrap:wrap; }
+  .settings-tabs a { padding:9px 13px; border:1px solid var(--border); border-radius:6px; background:#fff; }
+  .settings-tabs a.active { color:#fff; background:var(--blue); border-color:var(--blue); }
+  .settings-card { background:#fff; border:1px solid var(--border); border-radius:8px; padding:20px; margin-bottom:16px; }
+  .field { margin-bottom:16px; }
+  .field label { display:block; font-weight:700; margin-bottom:6px; }
+  .field input, .field textarea { width:100%; }
+  .field small { display:block; color:var(--muted); margin-top:5px; }
+  .check-row { display:flex; gap:10px; align-items:flex-start; padding:12px; border:1px solid var(--border); border-radius:7px; background:#f8fafc; margin-bottom:18px; }
+  .actions { display:flex; gap:10px; align-items:center; }
+</style>
+<div class="build-settings-page">
+  <header><h1>System Settings</h1><p>Configure outbound proxy access used only while building execution environments.</p></header>
+  <nav class="settings-tabs" aria-label="Settings sections">
+    <a href="{{ url_for('main.system_settings') }}">Web and TLS</a>
+    <a href="{{ url_for('main.directory_settings') }}">Directory and Authentication</a>
+    <a class="active" href="{{ url_for('main.environment_build_settings') }}">Environment Builds</a>
+    <a href="{{ url_for('main.data_retention_settings') }}">Data Retention</a>
+    <a href="{{ url_for('main.release_testing_settings') }}">Release Testing</a>
+  </nav>
+  {% if errors %}<section class="settings-card"><h2>Settings were not saved</h2><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></section>{% endif %}
+  <section class="settings-card">
+    <h2>Environment build proxy</h2>
+    <p>The proxy is supplied only to pip and ansible-galaxy while creating managed environments. It is not passed to playbook jobs.</p>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="has_proxy_password" value="{% if form_data.has_proxy_password %}1{% else %}0{% endif %}">
+      <label class="check-row"><input type="checkbox" name="proxy_enabled" {% if form_data.proxy_enabled %}checked{% endif %}><span><strong>Enable proxy for environment builds</strong></span></label>
+      <div class="field"><label for="proxy_url">Proxy URL</label><input id="proxy_url" name="proxy_url" value="{{ form_data.proxy_url }}" placeholder="http://proxy.example.com.au:8080"><small>Do not include credentials in this URL.</small></div>
+      <div class="field"><label for="proxy_username">Proxy username</label><input id="proxy_username" name="proxy_username" value="{{ form_data.proxy_username }}" autocomplete="off"></div>
+      <div class="field"><label for="proxy_password">Proxy password</label><input id="proxy_password" type="password" name="proxy_password" autocomplete="new-password" placeholder="{% if form_data.has_proxy_password %}Stored — leave blank to keep{% else %}Optional{% endif %}"><small>The password is encrypted and is never displayed after saving.</small></div>
+      <div class="field"><label for="no_proxy">No-proxy hosts</label><textarea id="no_proxy" name="no_proxy" rows="3" placeholder="localhost,127.0.0.1,.example.com.com">{{ form_data.no_proxy }}</textarea></div>
+      <div class="actions"><button type="submit">Save Environment Build Settings</button></div>
+    </form>
+  </section>
+  <section class="settings-card">
+    <h2>Connection test</h2><p>Tests access to PyPI and Ansible Galaxy using the saved proxy settings.</p>
+    <form method="post" action="{{ url_for('main.environment_build_proxy_test') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Test Saved Proxy</button></form>
+  </section>
+</div>
+{% endblock %}

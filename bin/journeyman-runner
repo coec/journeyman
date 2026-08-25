@@ -1,0 +1,3445 @@
+#!/opt/journeyman/venv/bin/python3
+
+import argparse
+import concurrent.futures
+import json
+import logging
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from flask import current_app
+from sqlalchemy import select
+
+
+JOURNEYMAN_ROOT = Path("/opt/journeyman")
+
+if str(JOURNEYMAN_ROOT) not in sys.path:
+    sys.path.insert(0, str(JOURNEYMAN_ROOT))
+
+from journeyman_configuration import load_journeyman_configuration
+
+load_journeyman_configuration()
+
+from app import create_app, db  # noqa: E402
+from app.credential_extra_vars import render_credential_extra_vars  # noqa: E402
+from app.custom_credentials import render_custom_credential_extra_vars  # noqa: E402
+from app.credential_types import (  # noqa: E402
+    CREDENTIAL_TYPE_ENVIRONMENT_VARIABLES,
+    CREDENTIAL_TYPE_MACHINE,
+    CREDENTIAL_TYPE_WINDOWS,
+    CREDENTIAL_TYPE_CUSTOM,
+)
+from app.models import Job, JobStep, JobStepExecutionSlice, JobStepHostResult, Runner  # noqa: E402
+from app.services.job_inventory_snapshot import (  # noqa: E402
+    materialize_job_inventory_snapshot,
+)
+from app.services.audit import record_audit_event  # noqa: E402
+from app.services.runners import update_local_runner_heartbeat  # noqa: E402
+from app.services.job_stats import (  # noqa: E402
+    JobStatsError,
+    add_step_stats,
+    build_step_extra_vars,
+    normalise_ansible_custom_stats,
+)
+
+from app.services.job_inventory_refresh import (
+    JobInventoryRefreshError,
+    refresh_job_inventories_after_step,
+)
+
+LOGGER = logging.getLogger("journeyman-runner")
+
+REPOSITORY_ROOT = Path(
+    os.environ.get(
+        "JOURNEYMAN_REPOSITORY_ROOT",
+        "/var/lib/journeyman/repos",
+    )
+)
+
+JOB_ROOT = Path(
+    os.environ.get(
+        "JOURNEYMAN_JOB_ROOT",
+        "/var/lib/journeyman/jobs",
+    )
+)
+
+stop_requested = False
+local_runner_job_active = False
+local_runner_state_lock = threading.Lock()
+LOCAL_RUNNER_HEARTBEAT_SECONDS = 30
+
+
+@dataclass
+class ExecutionResult:
+    command: list
+    returncode: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    cancelled: bool = False
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+def read_job_status_fresh(job_id):
+    """
+    Read the current Job status using a short-lived connection.
+
+    The runner keeps a long-lived SQLAlchemy ORM session while a
+    playbook executes. Repeated reads through that session can remain
+    inside one SQLite read transaction and therefore continue seeing
+    an old database snapshot.
+
+    A separate connection is opened and closed for every status poll,
+    ensuring that cancellation committed by the web application
+    becomes visible to the runner.
+    """
+
+    with db.engine.connect() as connection:
+        return connection.execute(
+            select(Job.status)
+            .where(Job.id == job_id)
+        ).scalar_one_or_none()
+
+
+
+
+def record_job_completion_audit(job, *, recovery=False):
+    """Append the final outcome of a Job to the audit log."""
+
+    result_by_status = {
+        "successful": "success",
+        "failed": "failure",
+        "cancelled": "cancelled",
+    }
+    result = result_by_status.get(job.status)
+    if result is None:
+        return
+
+    failed_steps = [
+        {
+            "position": step.position,
+            "name": step.name or step.playbook,
+            "exit_code": step.exit_code,
+        }
+        for step in job.steps
+        if step.status == "failed"
+    ]
+    package_snapshot = job.package_snapshot
+
+    record_audit_event(
+        "job.completed",
+        result=result,
+        object_type="job",
+        object_id=job.id,
+        object_name="Job #{} · {}".format(job.id, job.project_name),
+        actor_username=job.requested_by,
+        authenticated_via="job",
+        details={
+            "job_id": job.id,
+            "project_id": job.project_id,
+            "project_name": job.project_name,
+            "package_id": (package_snapshot.package_id if package_snapshot else None),
+            "package_name": (package_snapshot.package_name if package_snapshot else None),
+            "status": job.status,
+            "exit_code": job.exit_code,
+            "message": job.message,
+            "failed_steps": failed_steps,
+            "runner_recovery": recovery,
+        },
+    )
+
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s "
+            "%(levelname)s "
+            "%(name)s: "
+            "%(message)s"
+        ),
+    )
+
+
+def handle_reload_signal(signum, frame):
+    LOGGER.info("Reload requested by signal %s; no runner-local session material requires reload.", signum)
+
+
+def handle_shutdown_signal(signum, frame):
+    global stop_requested
+
+    LOGGER.info(
+        "Shutdown requested by signal %s.",
+        signum,
+    )
+
+    stop_requested = True
+
+
+def validate_directory(path, name):
+    if not path.exists():
+        raise RuntimeError(
+            "{} does not exist: {}".format(name, path)
+        )
+
+    if not path.is_dir():
+        raise RuntimeError(
+            "{} is not a directory: {}".format(name, path)
+        )
+
+    if not os.access(
+        str(path),
+        os.R_OK | os.W_OK | os.X_OK,
+    ):
+        raise RuntimeError(
+            "{} is not accessible: {}".format(name, path)
+        )
+
+
+def run_command(command, cwd=None):
+    LOGGER.info(
+        "Running: %s",
+        shlex.join([str(value) for value in command]),
+    )
+
+    result = subprocess.run(
+        [str(value) for value in command],
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Command failed with exit code {}:\n"
+            "Command: {}\n"
+            "stdout:\n{}\n"
+            "stderr:\n{}".format(
+                result.returncode,
+                shlex.join(
+                    [str(value) for value in command]
+                ),
+                result.stdout,
+                result.stderr,
+            )
+        )
+
+    return result.stdout.strip()
+
+
+def claim_next_job():
+    """
+    Claim the oldest queued Job.
+
+    The conditional UPDATE prevents two runner processes from claiming
+    the same Job if multiple runners are accidentally started.
+    """
+
+    from app.services.project_concurrency import job_can_start
+
+    candidates = (
+        Job.query
+        .filter(Job.status == "queued", Job.dispatch_target == "local")
+        .order_by(Job.queued_at.asc(), Job.id.asc())
+        .all()
+    )
+    candidate = next((job for job in candidates if job_can_start(job)), None)
+    if candidate is None:
+        return None
+
+    job_id = candidate.id
+    started_at = utcnow()
+
+    updated_rows = (
+        Job.query
+        .filter(
+            Job.id == job_id,
+            Job.status == "queued",
+            Job.dispatch_target == "local",
+        )
+        .update(
+            {
+                Job.status: "running",
+                Job.started_at: started_at,
+                Job.finished_at: None,
+                Job.exit_code: None,
+                Job.message: "Claimed by Journeyman runner.",
+            },
+            synchronize_session=False,
+        )
+    )
+
+    if updated_rows != 1:
+        db.session.rollback()
+        return None
+
+    db.session.commit()
+
+    return db.session.get(Job, job_id)
+
+
+def claim_next_local_slice():
+    """Claim one eligible pending local slice from a sliced Job."""
+    from app.services.runner_slice_dispatch import (
+        reconcile_non_runnable_steps,
+        _dependency_state,
+    )
+    from app.services.runner_slice_lifecycle import start_local_slice
+    from app.services.project_oversight import update_job_oversight_state
+    from app.services.project_concurrency import job_can_start
+
+    jobs = (
+        Job.query
+        .filter(Job.dispatch_target == "sliced", Job.status.in_(["queued", "running"]))
+        .order_by(Job.queued_at.asc(), Job.id.asc())
+        .all()
+    )
+    local_runner = Runner.query.filter_by(is_local=True).one_or_none()
+    if local_runner is None:
+        local_runner = update_local_runner_heartbeat(
+            hostname=os.uname().nodename, running_jobs=0, status_message="Ready"
+        )
+
+    for job in jobs:
+        if not job_can_start(job):
+            continue
+        reconcile_non_runnable_steps(job)
+        if update_job_oversight_state(job):
+            db.session.commit()
+            continue
+        steps_by_position = {step.position: step for step in job.steps}
+        for step in sorted(job.steps, key=lambda item: item.position):
+            if step.status not in {"pending", "running"}:
+                continue
+            if step.status == "pending" and _dependency_state(step, steps_by_position) != "eligible":
+                continue
+            for execution_slice in step.execution_slices:
+                if execution_slice.dispatch_target != "local" or execution_slice.status != "pending":
+                    continue
+                ok, _reason = start_local_slice(execution_slice, local_runner)
+                if ok:
+                    return db.session.get(JobStepExecutionSlice, execution_slice.id), local_runner
+    return None, local_runner
+
+
+def process_local_slice(execution_slice, local_runner, timeout_seconds):
+    """Execute one local slice using the same immutable Job snapshots."""
+    from app.services.runner_slice_lifecycle import (
+        complete_local_slice,
+        update_local_slice_output,
+    )
+
+    job = execution_slice.step.job
+    step = execution_slice.step
+    job_directory = None
+    extra_vars_path = None
+    step_extra_vars_path = None
+    stats_path = None
+    host_results_path = None
+
+    try:
+        (
+            job_directory,
+            repository_paths,
+            inventory_paths,
+            extra_vars_path,
+        ) = create_job_workspace(job)
+        callback_directory = prepare_stats_callback(job_directory)
+        base_extra_vars = load_base_extra_vars(extra_vars_path)
+        steps_by_position = {item.position: item for item in job.steps}
+        repository_path = repository_paths[step.job_repository_snapshot_id]
+        inventory_path = inventory_path_for_step(step, inventory_paths)
+        validate_step_playbook(step, repository_path)
+        step_extra_vars_path = materialize_step_extra_vars(
+            job_directory,
+            step,
+            base_extra_vars,
+            propagated_stats_for_step(step, steps_by_position),
+        )
+        private_directory = job_directory / "private"
+        private_directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(private_directory, 0o700)
+        stats_path = private_directory / "slice-{}-stats.json".format(execution_slice.id)
+        host_results_path = private_directory / "slice-{}-host-results.json".format(execution_slice.id)
+        remove_private_file(stats_path)
+        remove_private_file(host_results_path)
+
+        last_live_output = {"value": None}
+
+        def publish_live_output(command, stdout, stderr):
+            snapshot = (command, stdout, stderr)
+            if snapshot == last_live_output["value"]:
+                return
+            update_local_slice_output(
+                execution_slice,
+                command=command,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            last_live_output["value"] = snapshot
+
+        result = execute_step(
+            job.id,
+            step,
+            repository_path,
+            inventory_path,
+            timeout_seconds,
+            step_extra_vars_path,
+            callback_directory,
+            stats_path,
+            host_results_path,
+            limit_override=",".join(execution_slice.get_hosts()),
+            output_callback=publish_live_output,
+        )
+
+        if result.cancelled:
+            status = "cancelled"
+            exit_code = None
+        elif result.returncode == 0:
+            status = "successful"
+            exit_code = 0
+        else:
+            status = "failed"
+            exit_code = 124 if result.timed_out else result.returncode
+
+        host_results = []
+        if job.execution_type in {"ansible", "remote_shell"}:
+            host_results = read_remote_shell_host_results(host_results_path)
+
+        payload = {
+            "status": status,
+            "exit_code": exit_code,
+            "message": "Local slice completed on {}.".format(local_runner.hostname or local_runner.name),
+            "steps": [{
+                "position": step.position,
+                "status": status,
+                "exit_code": exit_code,
+                "command": shlex.join(result.command) if result.command else "",
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "host_results": host_results,
+            }],
+        }
+        execution_slice.set_custom_stats(
+            read_step_stats(stats_path) if status == "successful" else {}
+        )
+        ok, reason = complete_local_slice(execution_slice, local_runner, payload)
+        if not ok:
+            raise RuntimeError("Unable to complete local execution slice: {}".format(reason))
+    except Exception as exc:
+        LOGGER.exception("Local execution slice #%s failed.", execution_slice.id)
+        db.session.rollback()
+        execution_slice = db.session.get(JobStepExecutionSlice, execution_slice.id)
+        if execution_slice is not None and execution_slice.status == "running":
+            payload = {
+                "status": "failed",
+                "exit_code": 1,
+                "message": "Local slice runner error: {}".format(exc),
+                "steps": [{
+                    "position": execution_slice.step.position,
+                    "status": "failed",
+                    "exit_code": 1,
+                    "command": "",
+                    "stdout": "",
+                    "stderr": str(exc),
+                    "host_results": [],
+                }],
+            }
+            complete_local_slice(execution_slice, local_runner, payload)
+    finally:
+        for private_path in (step_extra_vars_path, stats_path, host_results_path):
+            if private_path is not None:
+                remove_private_file(private_path)
+        if extra_vars_path is not None:
+            remove_private_file(extra_vars_path)
+
+
+def repository_workspace_path(
+    job_directory,
+    repository_snapshot,
+):
+    return (
+        job_directory
+        / "repositories"
+        / str(repository_snapshot.id)
+    )
+
+
+def create_repository_workspace(
+    job_directory,
+    repository_snapshot,
+):
+    source_repository = (
+        REPOSITORY_ROOT
+        / str(repository_snapshot.repository_id)
+    )
+
+    destination = repository_workspace_path(
+        job_directory,
+        repository_snapshot,
+    )
+
+    if not source_repository.is_dir():
+        raise RuntimeError(
+            "Synchronized repository directory does not exist: "
+            "{}".format(source_repository)
+        )
+
+    if not (source_repository / ".git").is_dir():
+        raise RuntimeError(
+            "Repository directory is not a Git checkout: "
+            "{}".format(source_repository)
+        )
+
+    required_commit = (
+        repository_snapshot.repository_commit.strip()
+    )
+
+    if not required_commit:
+        raise RuntimeError(
+            "Repository snapshot {} has no commit.".format(
+                repository_snapshot.id
+            )
+        )
+
+    # Confirm the synchronized repository has the recorded commit before
+    # attempting to construct the immutable workspace.
+    run_command(
+        [
+            "git",
+            "-C",
+            source_repository,
+            "cat-file",
+            "-e",
+            "{}^{{commit}}".format(required_commit),
+        ]
+    )
+
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    run_command(
+        [
+            "git",
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            source_repository,
+            destination,
+        ]
+    )
+
+    run_command(
+        [
+            "git",
+            "-C",
+            destination,
+            "checkout",
+            "--detach",
+            required_commit,
+        ]
+    )
+
+    actual_commit = run_command(
+        [
+            "git",
+            "-C",
+            destination,
+            "rev-parse",
+            "HEAD",
+        ]
+    )
+
+    if actual_commit != required_commit:
+        raise RuntimeError(
+            "Repository snapshot verification failed. "
+            "Expected {}, checked out {}.".format(
+                required_commit,
+                actual_commit,
+            )
+        )
+
+    LOGGER.info(
+        "Prepared repository snapshot %s: %s at %s",
+        repository_snapshot.id,
+        repository_snapshot.repository_name,
+        actual_commit,
+    )
+
+    return destination
+
+
+def remove_job_extra_vars_file(
+    extra_vars_path,
+):
+    if extra_vars_path is None:
+        return
+
+    extra_vars_path = Path(
+        extra_vars_path
+    )
+
+    try:
+        extra_vars_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        LOGGER.exception(
+            "Unable to remove decrypted Package "
+            "extra-vars file: %s",
+            extra_vars_path,
+        )
+        return
+
+    private_directory = (
+        extra_vars_path.parent
+    )
+
+    try:
+        private_directory.rmdir()
+    except (
+        FileNotFoundError,
+        OSError,
+    ):
+        pass
+
+
+JOURNEYMAN_STATS_CALLBACK = r'''
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
+import json
+import os
+import tempfile
+
+from ansible.plugins.callback import CallbackBase
+
+
+DOCUMENTATION = r"""
+callback: journeyman_stats
+short_description: Write Ansible custom statistics for Journeyman
+version_added: "1.0.0"
+type: aggregate
+requirements:
+  - Set JOURNEYMAN_STATS_FILE in the playbook process environment.
+"""
+
+
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = "aggregate"
+    CALLBACK_NAME = "journeyman_stats"
+    CALLBACK_NEEDS_ENABLED = True
+
+    def v2_playbook_on_stats(self, stats):
+        destination = os.environ.get("JOURNEYMAN_STATS_FILE", "").strip()
+        if not destination:
+            return
+
+        payload = {"custom": stats.custom or {}}
+        directory = os.path.dirname(destination)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=".journeyman-stats-",
+            suffix=".json",
+            dir=directory,
+            text=True,
+        )
+
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(payload, output, ensure_ascii=False, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_path, destination)
+        except Exception:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            raise
+'''
+
+
+JOURNEYMAN_REMOTE_SHELL_CALLBACK = r'''
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
+import json
+import os
+import tempfile
+
+from ansible.plugins.callback import CallbackBase
+
+
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = "aggregate"
+    CALLBACK_NAME = "journeyman_remote_shell"
+    CALLBACK_NEEDS_ENABLED = True
+
+    def __init__(self):
+        super(CallbackModule, self).__init__()
+        self.results = {}
+
+    def _capture(self, result, status):
+        host = result._host.get_name()
+        if os.environ.get("JOURNEYMAN_HOST_RESULTS_STATUS_ONLY", "") == "1":
+            self.results[host] = {
+                "host": host,
+                "status": status,
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+            }
+            return
+        data = result._result or {}
+        rc = data.get("rc")
+        stdout = data.get("stdout") or ""
+        stderr = data.get("stderr") or ""
+        if status != "successful" and not stderr:
+            stderr = data.get("msg") or data.get("exception") or ""
+        self.results[host] = {
+            "host": host,
+            "status": status,
+            "exit_code": rc,
+            "stdout": str(stdout),
+            "stderr": str(stderr),
+        }
+
+    def v2_runner_on_ok(self, result, **kwargs):
+        self._capture(result, "successful")
+
+    def v2_runner_on_failed(self, result, ignore_errors=False):
+        self._capture(result, "failed")
+
+    def v2_runner_on_unreachable(self, result):
+        self._capture(result, "unreachable")
+
+    def v2_playbook_on_stats(self, stats):
+        # Ansible's aggregate stats are authoritative for the final per-host
+        # result.  The last task callback is useful for captured stdout/stderr,
+        # but a later successful task or ignored failure must not hide the
+        # final failed/unreachable state.
+        for host in sorted((stats.processed or {}).keys()):
+            summary = stats.summarize(host) or {}
+            if int(summary.get("unreachable") or 0) > 0:
+                status = "unreachable"
+            elif int(summary.get("failures") or 0) > 0:
+                status = "failed"
+            else:
+                status = "successful"
+            row = self.results.setdefault(
+                host,
+                {
+                    "host": host,
+                    "status": status,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                },
+            )
+            row["status"] = status
+
+        destination = os.environ.get(
+            "JOURNEYMAN_REMOTE_SHELL_RESULTS_FILE", ""
+        ).strip()
+        if not destination:
+            return
+        directory = os.path.dirname(destination)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=".journeyman-host-results-",
+            suffix=".json",
+            dir=directory,
+            text=True,
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(
+                    [self.results[key] for key in sorted(self.results)],
+                    output,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_path, destination)
+        except Exception:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            raise
+'''
+
+
+def prepare_stats_callback(job_directory):
+    callback_directory = job_directory / "callback_plugins"
+    callback_directory.mkdir(mode=0o700, exist_ok=False)
+    os.chmod(callback_directory, 0o700)
+
+    callback_path = callback_directory / "journeyman_stats.py"
+    callback_path.write_text(JOURNEYMAN_STATS_CALLBACK, encoding="utf-8")
+    os.chmod(callback_path, 0o600)
+
+    remote_shell_callback_path = (
+        callback_directory / "journeyman_remote_shell.py"
+    )
+    remote_shell_callback_path.write_text(
+        JOURNEYMAN_REMOTE_SHELL_CALLBACK, encoding="utf-8"
+    )
+    os.chmod(remote_shell_callback_path, 0o600)
+    return callback_directory
+
+
+def load_base_extra_vars(extra_vars_path):
+    if extra_vars_path is None:
+        return {}
+
+    with Path(extra_vars_path).open("r", encoding="utf-8") as input_file:
+        value = json.load(input_file)
+
+    if not isinstance(value, dict):
+        raise RuntimeError("Package extra variables are not an object.")
+
+    return value
+
+
+def materialize_step_extra_vars(
+    job_directory,
+    step,
+    base_extra_vars,
+    propagated_stats,
+):
+    values = build_step_extra_vars(
+        base_extra_vars,
+        propagated_stats,
+        step_extra_vars=step.get_extra_vars(),
+    )
+    if not values:
+        return None
+
+    private_directory = job_directory / "private"
+    private_directory.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(private_directory, 0o700)
+
+    path = private_directory / "step-{}-extra-vars.json".format(step.position)
+    descriptor = os.open(
+        str(path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(
+            values,
+            output,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(path, 0o600)
+    return path
+
+
+def read_step_stats(stats_path):
+    stats_path = Path(stats_path)
+    if not stats_path.is_file():
+        return {}
+
+    try:
+        with stats_path.open("r", encoding="utf-8") as input_file:
+            payload = json.load(input_file)
+        return normalise_ansible_custom_stats(payload)
+    except (OSError, ValueError, JobStatsError) as exc:
+        raise RuntimeError(
+            "Unable to read custom statistics from {}: {}".format(
+                stats_path,
+                exc,
+            )
+        ) from exc
+
+
+def remove_private_file(path):
+    if path is None:
+        return
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def materialize_job_package_extra_vars(
+    job,
+    job_directory,
+):
+    """
+    Decrypt Package execution variables into a protected temporary
+    Job-workspace file.
+
+    The file is removed after Job processing. It must never be added
+    to the manifest or copied into Job stdout/stderr.
+    """
+
+    package_snapshot = (
+        job.package_snapshot
+    )
+
+    if package_snapshot is None:
+        return None
+
+    extra_vars = (
+        package_snapshot
+        .get_execution_vars()
+    )
+
+    if not isinstance(extra_vars, dict):
+        raise RuntimeError(
+            "Package execution variables are not a dictionary."
+        )
+
+    private_directory = (
+        job_directory / "private"
+    )
+
+    private_directory.mkdir(
+        mode=0o700,
+        exist_ok=False,
+    )
+
+    os.chmod(
+        private_directory,
+        0o700,
+    )
+
+    extra_vars_path = (
+        private_directory
+        / "extra-vars.json"
+    )
+
+    file_descriptor = None
+
+    try:
+        file_descriptor = os.open(
+            str(extra_vars_path),
+            (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+            ),
+            0o600,
+        )
+
+        with os.fdopen(
+            file_descriptor,
+            "w",
+            encoding="utf-8",
+        ) as extra_vars_file:
+            file_descriptor = None
+
+            json.dump(
+                extra_vars,
+                extra_vars_file,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+
+            extra_vars_file.write("\n")
+            extra_vars_file.flush()
+
+            os.fsync(
+                extra_vars_file.fileno()
+            )
+
+        os.chmod(
+            extra_vars_path,
+            0o600,
+        )
+
+    except Exception:
+        if file_descriptor is not None:
+            os.close(
+                file_descriptor
+            )
+
+        remove_job_extra_vars_file(
+            extra_vars_path
+        )
+
+        raise
+
+    LOGGER.info(
+        "Prepared encrypted Package variables "
+        "for Job #%s.",
+        job.id,
+    )
+
+    return extra_vars_path
+
+
+def remove_stale_job_extra_vars_files():
+    """
+    Remove decrypted Package files left by an earlier runner exit.
+
+    recover_orphaned_jobs() runs first, ensuring interrupted Jobs are
+    no longer considered active before these files are removed.
+    """
+
+    for extra_vars_path in JOB_ROOT.glob(
+        "*/private/extra-vars.json"
+    ):
+        job_id_text = (
+            extra_vars_path
+            .parent
+            .parent
+            .name
+        )
+
+        try:
+            job_id = int(
+                job_id_text
+            )
+        except ValueError:
+            LOGGER.warning(
+                "Removing Package extra-vars file from "
+                "unrecognised Job path: %s",
+                extra_vars_path,
+            )
+
+            remove_job_extra_vars_file(
+                extra_vars_path
+            )
+            continue
+
+        job = db.session.get(
+            Job,
+            job_id,
+        )
+
+        if (
+            job is not None
+            and job.status in {
+                "running",
+                "cancelling",
+            }
+        ):
+            continue
+
+        LOGGER.warning(
+            "Removing stale decrypted Package "
+            "extra-vars file for Job #%s.",
+            job_id,
+        )
+
+        remove_job_extra_vars_file(
+            extra_vars_path
+        )
+
+
+def create_job_workspace(job):
+    job_directory = JOB_ROOT / str(job.id)
+
+    if job_directory.exists():
+        LOGGER.warning(
+            "Removing existing workspace for Job #%s: %s",
+            job.id,
+            job_directory,
+        )
+
+        shutil.rmtree(job_directory)
+
+    job_directory.mkdir(
+        parents=True,
+        exist_ok=False,
+        mode=0o700,
+    )
+
+    os.chmod(
+        job_directory,
+        0o700,
+    )
+
+    repositories_directory = (
+        job_directory / "repositories"
+    )
+
+    inventories_directory = (
+        job_directory / "inventories"
+    )
+
+    repositories_directory.mkdir(
+        mode=0o700,
+    )
+
+    inventories_directory.mkdir(
+        mode=0o700,
+    )
+
+    os.chmod(
+        repositories_directory,
+        0o700,
+    )
+
+    os.chmod(
+        inventories_directory,
+        0o700,
+    )
+
+    repository_paths = {}
+
+    for snapshot in job.repository_snapshots:
+        repository_paths[snapshot.id] = (
+            create_repository_workspace(
+                job_directory,
+                snapshot,
+            )
+        )
+
+    inventory_paths = {}
+
+    for snapshot in job.inventory_snapshots:
+        destination = (
+            inventories_directory
+            / "{}.py".format(snapshot.id)
+        )
+
+        inventory_paths[snapshot.id] = (
+            materialize_job_inventory_snapshot(
+                snapshot,
+                destination,
+            )
+        )
+
+        LOGGER.info(
+            "Prepared inventory snapshot %s: "
+            "%s, version %s, %s host(s)",
+            snapshot.id,
+            snapshot.inventory_name,
+            snapshot.version,
+            snapshot.host_count,
+        )
+
+    extra_vars_path = (
+        materialize_job_package_extra_vars(
+            job,
+            job_directory,
+        )
+    )
+
+    return (
+        job_directory,
+        repository_paths,
+        inventory_paths,
+        extra_vars_path,
+    )
+
+
+def inventory_path_for_step(
+    step,
+    inventory_paths,
+):
+    snapshot_id = (
+        step.job_inventory_snapshot_id
+    )
+
+    if snapshot_id is None:
+        raise RuntimeError(
+            "JobStep {} has no inventory snapshot."
+            .format(step.id)
+        )
+
+    try:
+        inventory_path = inventory_paths[
+            snapshot_id
+        ]
+
+    except KeyError as exc:
+        raise RuntimeError(
+            "JobStep {} references unavailable inventory "
+            "snapshot {}."
+            .format(
+                step.id,
+                snapshot_id,
+            )
+        ) from exc
+
+    if not inventory_path.is_file():
+        raise RuntimeError(
+            "Materialized inventory does not exist: {}"
+            .format(inventory_path)
+        )
+
+    return inventory_path
+
+
+def materialize_remote_shell_playbook(step, repository_path):
+    repository_root = repository_path.resolve()
+    script_path = (repository_root / step.playbook).resolve()
+    try:
+        script_path.relative_to(repository_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Remote shell script escapes the repository snapshot: {}"
+            .format(step.playbook)
+        ) from exc
+    if not script_path.is_file():
+        raise RuntimeError(
+            "Remote shell script is not a regular file: {}".format(script_path)
+        )
+
+    job_directory = repository_root.parent.parent
+    private_directory = job_directory / "private"
+    private_directory.mkdir(mode=0o700, exist_ok=True)
+    playbook_path = private_directory / (
+        "remote-shell-step-{}.json".format(step.id)
+    )
+    package_environment = build_shell_package_input_environment(step.job)
+    remote_environment = {
+        name: "{{{{ lookup('ansible.builtin.env', '{}') }}}}".format(name)
+        for name in sorted(package_environment)
+    }
+    play = {
+        "name": "Journeyman remote shell",
+        "hosts": "all",
+        "gather_facts": False,
+        "become": bool(getattr(step, "remote_shell_become", False)),
+        "tasks": [{
+            "name": "Journeyman remote shell script",
+            "ansible.builtin.script": {"cmd": str(script_path)},
+            "environment": remote_environment,
+        }],
+    }
+
+    serial = int(getattr(step, "remote_shell_serial", 0) or 0)
+    if serial > 0:
+        play["serial"] = serial
+
+    playbook = [play]
+    playbook_path.write_text(
+        json.dumps(playbook, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(playbook_path, 0o600)
+    return playbook_path
+
+
+def read_remote_shell_host_results(path):
+    if path is None or not Path(path).is_file():
+        return []
+    with Path(path).open("r", encoding="utf-8") as input_file:
+        value = json.load(input_file)
+    if not isinstance(value, list):
+        raise RuntimeError("Remote shell host results are invalid.")
+    return value
+
+
+def materialize_machine_credential_extra_vars(step, job_directory):
+    """Materialize one Machine credential for an Ansible-based step."""
+
+    job = getattr(step, "job", None)
+    execution_type = getattr(job, "execution_type", "ansible") or "ansible"
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+
+    credentials = [
+        snapshot
+        for snapshot in (getattr(step, "credential_snapshots", None) or [])
+        if snapshot.credential_type == CREDENTIAL_TYPE_MACHINE
+    ]
+
+    if not credentials:
+        return None
+
+    if len(credentials) > 1:
+        raise RuntimeError(
+            "JobStep {} has more than one Machine credential.".format(step.id)
+        )
+
+    snapshot = credentials[0]
+    data = snapshot.get_credential_data()
+    variables = {}
+
+    has_environment_credential = any(
+        candidate.credential_type == CREDENTIAL_TYPE_ENVIRONMENT_VARIABLES
+        for candidate in (getattr(step, "credential_snapshots", None) or [])
+    )
+    prefix = "linux_" if has_environment_credential else ""
+
+    username = str(snapshot.username or "").strip()
+    if username:
+        variables[prefix + "ansible_user"] = username
+
+    password = data.get("password")
+    if password:
+        variables[prefix + "ansible_password"] = str(password)
+
+    private_directory = Path(job_directory) / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    private_key = data.get("ssh_private_key")
+    if private_key:
+        key_path = private_directory / (
+            "machine-credential-step-{}.key".format(step.id)
+        )
+        key_path.write_text(str(private_key), encoding="utf-8")
+        os.chmod(key_path, 0o600)
+        variables[prefix + "ansible_private_key_file"] = str(key_path)
+
+    key_passphrase = data.get("ssh_key_passphrase")
+    if key_passphrase:
+        variables[prefix + "ansible_private_key_passphrase"] = str(key_passphrase)
+
+    become_password = data.get("become_password")
+    if become_password:
+        variables[prefix + "ansible_become_password"] = str(become_password)
+
+    variables.update(
+        render_credential_extra_vars(
+            data.get("extra_vars") or {},
+            username=username,
+            password=password,
+        )
+    )
+
+    if not variables:
+        return None
+
+    variables_path = private_directory / (
+        "machine-credential-step-{}.json".format(step.id)
+    )
+    variables_path.write_text(
+        json.dumps(
+            variables,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(variables_path, 0o600)
+    return variables_path
+
+
+
+def materialize_windows_credential_extra_vars(step, job_directory):
+    """Materialize one Windows credential using namespaced Ansible variables."""
+
+    job = getattr(step, "job", None)
+    execution_type = getattr(job, "execution_type", "ansible") or "ansible"
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+
+    credentials = [
+        snapshot
+        for snapshot in (getattr(step, "credential_snapshots", None) or [])
+        if snapshot.credential_type == CREDENTIAL_TYPE_WINDOWS
+    ]
+    if not credentials:
+        return None
+    if len(credentials) > 1:
+        raise RuntimeError(
+            "JobStep {} has more than one Windows credential.".format(step.id)
+        )
+
+    snapshot = credentials[0]
+    data = snapshot.get_credential_data()
+    variables = {}
+    username = str(snapshot.username or "").strip()
+    if username:
+        variables["win_ansible_user"] = username
+    password = data.get("password")
+    if password:
+        variables["win_ansible_password"] = str(password)
+    variables.update(
+        render_credential_extra_vars(
+            data.get("extra_vars") or {},
+            username=username,
+            password=password,
+        )
+    )
+    if not variables:
+        return None
+
+    private_directory = Path(job_directory) / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    variables_path = private_directory / (
+        "windows-credential-step-{}.json".format(step.id)
+    )
+    variables_path.write_text(
+        json.dumps(variables, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(variables_path, 0o600)
+    return variables_path
+
+
+def materialize_custom_credential_extra_vars(step, job_directory):
+    """Materialize one Custom credential as Ansible extra vars."""
+    job = getattr(step, "job", None)
+    execution_type = getattr(job, "execution_type", "ansible") or "ansible"
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+
+    credentials = [
+        snapshot
+        for snapshot in (getattr(step, "credential_snapshots", None) or [])
+        if snapshot.credential_type == CREDENTIAL_TYPE_CUSTOM
+    ]
+    if not credentials:
+        return None
+    if len(credentials) > 1:
+        raise RuntimeError(
+            "JobStep {} has more than one Custom credential.".format(step.id)
+        )
+
+    snapshot = credentials[0]
+    try:
+        variables = render_custom_credential_extra_vars(
+            snapshot.get_credential_data()
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Custom credential {!r} is invalid or incomplete: {}".format(
+                snapshot.credential_name, exc
+            )
+        ) from exc
+    if not variables:
+        return None
+
+    private_directory = Path(job_directory) / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private_directory / "custom-credential-step-{}.json".format(step.id)
+    path.write_text(
+        json.dumps(variables, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+def script_command(artifact):
+    """Build the local command for a repository-backed Script artifact."""
+    artifact = Path(artifact)
+    try:
+        with artifact.open("rb") as handle:
+            first_line = handle.readline(256)
+    except OSError as exc:
+        raise RuntimeError(
+            "Unable to read Script artifact {}: {}".format(artifact, exc)
+        ) from exc
+
+    if first_line.startswith(b"#!"):
+        try:
+            directive = first_line[2:].decode("utf-8").strip()
+            interpreter = shlex.split(directive)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                "Script artifact has an invalid shebang: {}".format(artifact)
+            ) from exc
+        if not interpreter or not interpreter[0].startswith("/"):
+            raise RuntimeError(
+                "Script artifact shebang must name an absolute interpreter: {}"
+                .format(artifact)
+            )
+        return interpreter + [str(artifact)]
+
+    if artifact.suffix.lower() == ".sh":
+        return ["/bin/bash", str(artifact)]
+
+    raise RuntimeError(
+        "Script artifact must have a shebang or a .sh extension: {}"
+        .format(artifact)
+    )
+
+
+def build_command(
+    step,
+    repository_path,
+    inventory_path,
+    extra_vars_path=None,
+    machine_extra_vars_path=None,
+    windows_extra_vars_path=None,
+    custom_extra_vars_path=None,
+    limit_override=None,
+):
+    repository_root = repository_path.resolve()
+    artifact_path = (repository_root / step.playbook).resolve()
+    try:
+        artifact_path.relative_to(repository_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Step artifact escapes the repository snapshot: {}"
+            .format(step.playbook)
+        ) from exc
+    if not artifact_path.is_file():
+        raise RuntimeError(
+            "Step artifact is not a regular file: {}".format(artifact_path)
+        )
+
+    job = getattr(step, "job", None)
+    execution_type = getattr(job, "execution_type", "ansible") or "ansible"
+    if execution_type == "shell":
+        return script_command(artifact_path)
+
+    playbook_path = (
+        materialize_remote_shell_playbook(step, repository_path)
+        if execution_type == "remote_shell"
+        else artifact_path
+    )
+
+    ansible_playbook = "ansible-playbook"
+    environment_path = getattr(step, "environment_path", "")
+    if environment_path and environment_path != "__SYSTEM_ANSIBLE__":
+        candidate = Path(environment_path) / "bin" / "ansible-playbook"
+        if not candidate.is_file():
+            raise RuntimeError(
+                "Snapshotted execution environment is unavailable: {}".format(candidate)
+            )
+        ansible_playbook = str(candidate)
+
+    command = [
+        ansible_playbook,
+        "--inventory",
+        str(inventory_path),
+    ]
+
+    if execution_type != "remote_shell" and getattr(step, "check_mode", False):
+        command.append("--check")
+
+    if step.verbosity:
+        command.append(
+            "-{}".format("v" * step.verbosity)
+        )
+
+    effective_limit = step.limit if limit_override is None else str(limit_override or "")
+    if effective_limit:
+        command.extend(
+            [
+                "--limit",
+                effective_limit,
+            ]
+        )
+
+    if execution_type != "remote_shell" and step.tags:
+        command.extend(
+            [
+                "--tags",
+                step.tags,
+            ]
+        )
+
+    if execution_type != "remote_shell" and step.skip_tags:
+        command.extend(
+            [
+                "--skip-tags",
+                step.skip_tags,
+            ]
+        )
+
+    if extra_vars_path is not None:
+        extra_vars_path = Path(
+            extra_vars_path
+        )
+
+        if not extra_vars_path.is_file():
+            raise RuntimeError(
+                "Package extra-vars file does not exist: {}"
+                .format(extra_vars_path)
+            )
+
+        command.extend(
+            [
+                "--extra-vars",
+                "@{}".format(
+                    extra_vars_path
+                ),
+            ]
+        )
+
+    if machine_extra_vars_path is not None:
+        machine_extra_vars_path = Path(machine_extra_vars_path)
+
+        if not machine_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Machine credential extra-vars file does not exist: {}"
+                .format(machine_extra_vars_path)
+            )
+
+        command.extend(
+            [
+                "--extra-vars",
+                "@{}".format(machine_extra_vars_path),
+            ]
+        )
+
+    if windows_extra_vars_path is not None:
+        windows_extra_vars_path = Path(windows_extra_vars_path)
+        if not windows_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Windows credential extra-vars file does not exist: {}"
+                .format(windows_extra_vars_path)
+            )
+        command.extend(["--extra-vars", "@{}".format(windows_extra_vars_path)])
+
+    if custom_extra_vars_path is not None:
+        custom_extra_vars_path = Path(custom_extra_vars_path)
+        if not custom_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Custom credential extra-vars file does not exist: {}"
+                .format(custom_extra_vars_path)
+            )
+        command.extend(["--extra-vars", "@{}".format(custom_extra_vars_path)])
+
+    command.append(str(playbook_path))
+
+    return command
+
+def _shell_input_environment_value(value):
+    """Return one predictable string value for a shell Package input."""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+
+    if isinstance(value, (list, dict)):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    return str(value)
+
+
+def build_shell_package_input_environment(job):
+    """Build environment variables declared by a shell Package.
+
+    Only declared Package inputs bound as ordinary Project variables are
+    exported. Fixed variables and step-limit inputs are deliberately not
+    exposed. The immutable Package snapshot supplies both the declaration
+    and the encrypted execution value, including secret inputs.
+    """
+
+    if job is None or getattr(job, "execution_type", "ansible") not in {"shell", "remote_shell"}:
+        return {}
+
+    package_snapshot = getattr(job, "package_snapshot", None)
+    if package_snapshot is None:
+        return {}
+
+    definition = package_snapshot.get_package_definition()
+    execution_vars = package_snapshot.get_execution_vars()
+
+    if not isinstance(definition, dict) or not isinstance(execution_vars, dict):
+        raise RuntimeError("Invalid shell Package snapshot data.")
+
+    inputs = definition.get("inputs", [])
+    if not isinstance(inputs, list):
+        raise RuntimeError("Shell Package input definition is invalid.")
+
+    result = {}
+
+    for item in inputs:
+        if not isinstance(item, dict):
+            raise RuntimeError("Shell Package input definition is invalid.")
+
+        if item.get("binding_type") != "extra_var":
+            continue
+
+        variable_name = str(item.get("variable_name") or "").strip()
+        if not variable_name or variable_name not in execution_vars:
+            continue
+
+        environment_name = "JOURNEYMAN_INPUT_{}".format(
+            variable_name.upper()
+        )
+
+        if environment_name in result:
+            raise RuntimeError(
+                "Shell Package input names collide as environment variable {}."
+                .format(environment_name)
+            )
+
+        value = execution_vars[variable_name]
+        if value is None:
+            continue
+
+        result[environment_name] = _shell_input_environment_value(value)
+
+    return result
+
+
+def build_step_process_environment(step, base_environment=None, workspace=None):
+    """Build the private child environment for one JobStep.
+
+    Environment-variable credentials inject one username and one
+    secret using credential-defined variable names. Shell Package inputs
+    are exported using explicit JOURNEYMAN_INPUT_* names. Values exist only
+    in the child process.
+    """
+
+    process_environment = dict(
+        os.environ if base_environment is None else base_environment
+    )
+
+    job_id = getattr(step, "job_id", None)
+    step_id = getattr(step, "id", None)
+    step_name = getattr(step, "name", None)
+
+    if job_id is not None:
+        process_environment["JOURNEYMAN_JOB_ID"] = str(job_id)
+    if step_id is not None:
+        process_environment["JOURNEYMAN_STEP_ID"] = str(step_id)
+    if step_name is not None:
+        process_environment["JOURNEYMAN_STEP_NAME"] = str(step_name)
+
+    job = getattr(step, "job", None)
+    execution_type = getattr(job, "execution_type", "ansible") or "ansible"
+    if job is not None and execution_type in {"ansible", "remote_shell"}:
+        ansible_config_path = str(
+            getattr(step, "ansible_config_path", "")
+            or "/etc/ansible/ansible.cfg"
+        ).strip()
+        config_path = Path(ansible_config_path)
+        if not config_path.is_absolute():
+            raise RuntimeError(
+                "Snapshotted Ansible configuration path is not absolute: {}"
+                .format(ansible_config_path)
+            )
+        process_environment["ANSIBLE_CONFIG"] = str(config_path)
+
+        # Keep Ansible's controller-side runtime state inside the immutable
+        # Job workspace rather than the journeyman service account's home.
+        # This avoids ~/.ansible/tmp failures when the service is hardened or
+        # /var/lib/journeyman is otherwise read-only to the child process.
+        if workspace is not None:
+            ansible_home = Path(workspace) / "private" / "ansible"
+            local_temp = ansible_home / "tmp"
+            control_path = ansible_home / "cp"
+            for path in (ansible_home, local_temp, control_path):
+                path.mkdir(parents=True, exist_ok=True)
+                os.chmod(path, 0o700)
+
+            process_environment["ANSIBLE_HOME"] = str(ansible_home)
+            process_environment["ANSIBLE_LOCAL_TEMP"] = str(local_temp)
+            process_environment["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(control_path)
+
+    shell_input_environment = build_shell_package_input_environment(
+        getattr(step, "job", None)
+    )
+
+    for name, value in shell_input_environment.items():
+        if name in process_environment:
+            raise RuntimeError(
+                "Shell Package input environment variable {} conflicts "
+                "with an existing process variable."
+                .format(name)
+            )
+        process_environment[name] = value
+
+    credential_snapshots = list(
+        getattr(step, "credential_snapshots", None) or []
+    )
+
+    credentials_by_type = {}
+    for credential_snapshot in credential_snapshots:
+        credentials_by_type.setdefault(
+            credential_snapshot.credential_type,
+            [],
+        ).append(credential_snapshot)
+
+    duplicate_types = [
+        credential_type
+        for credential_type, credentials in credentials_by_type.items()
+        if len(credentials) > 1
+    ]
+
+    if duplicate_types:
+        raise RuntimeError(
+            "JobStep {} has more than one credential of type(s): {}."
+            .format(step.id, ", ".join(sorted(duplicate_types)))
+        )
+
+    machine_credentials = credentials_by_type.get(
+        CREDENTIAL_TYPE_MACHINE,
+        [],
+    )
+    if machine_credentials:
+        machine_data = machine_credentials[0].get_credential_data()
+        become_method = str(machine_data.get("become_method") or "").strip()
+        become_user = str(machine_data.get("become_user") or "").strip()
+        if become_method:
+            process_environment["ANSIBLE_BECOME_METHOD"] = become_method
+        if become_user:
+            process_environment["ANSIBLE_BECOME_USER"] = become_user
+
+    environment_credentials = credentials_by_type.get(
+        CREDENTIAL_TYPE_ENVIRONMENT_VARIABLES,
+        [],
+    )
+
+    if not environment_credentials:
+        return process_environment
+
+    credential_snapshot = environment_credentials[0]
+    credential_data = credential_snapshot.get_credential_data()
+
+    username_variable = str(
+        credential_data.get("username_environment_variable") or ""
+    ).strip()
+    secret_variable = str(
+        credential_data.get("secret_environment_variable") or ""
+    ).strip()
+
+    if not username_variable or not secret_variable:
+        raise RuntimeError(
+            "Environment-variable credential {!r} is missing its "
+            "variable-name configuration."
+            .format(credential_snapshot.credential_name)
+        )
+
+    if username_variable == secret_variable:
+        raise RuntimeError(
+            "Environment-variable credential {!r} uses the same "
+            "variable name for username and secret."
+            .format(credential_snapshot.credential_name)
+        )
+
+    username = str(credential_snapshot.username or "")
+    password = credential_data.get("password")
+
+    process_environment[username_variable] = username
+    process_environment[secret_variable] = str(password or "")
+
+    return process_environment
+
+
+def terminate_process_group(
+    process,
+    grace_seconds=10,
+):
+    """
+    Terminate the process and all children in its process group.
+
+    ansible-playbook may launch SSH, Python and other child processes,
+    so terminating only the parent process is insufficient.
+    """
+
+    if process.poll() is not None:
+        return
+
+    LOGGER.warning(
+        "Sending SIGTERM to process group %s.",
+        process.pid,
+    )
+
+    try:
+        os.killpg(
+            process.pid,
+            signal.SIGTERM,
+        )
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + grace_seconds
+
+    while process.poll() is None:
+        if time.monotonic() >= deadline:
+            break
+
+        time.sleep(0.2)
+
+    if process.poll() is not None:
+        return
+
+    LOGGER.warning(
+        "Process group %s did not stop after %s seconds; "
+        "sending SIGKILL.",
+        process.pid,
+        grace_seconds,
+    )
+
+    try:
+        os.killpg(
+            process.pid,
+            signal.SIGKILL,
+        )
+    except ProcessLookupError:
+        return
+
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        LOGGER.error(
+            "Process %s remained present after SIGKILL.",
+            process.pid,
+        )
+
+def execute_step(
+    job_id,
+    step,
+    repository_path,
+    inventory_path,
+    timeout_seconds,
+    extra_vars_path=None,
+    callback_directory=None,
+    stats_path=None,
+    host_results_path=None,
+    limit_override=None,
+    output_callback=None,
+):
+    """
+    Execute one JobStep inside its immutable repository workspace.
+
+    The child starts in a new process group so cancellation and timeout
+    handling can terminate ansible-playbook and all of its children.
+    """
+
+    machine_extra_vars_path = materialize_machine_credential_extra_vars(
+        step,
+        repository_path.resolve().parent.parent,
+    )
+    windows_extra_vars_path = materialize_windows_credential_extra_vars(
+        step,
+        repository_path.resolve().parent.parent,
+    )
+    custom_extra_vars_path = materialize_custom_credential_extra_vars(
+        step,
+        repository_path.resolve().parent.parent,
+    )
+
+    command = build_command(
+        step,
+        repository_path,
+        inventory_path,
+        extra_vars_path,
+        machine_extra_vars_path,
+        windows_extra_vars_path,
+        custom_extra_vars_path,
+        limit_override=limit_override,
+    )
+
+    LOGGER.info(
+        "Executing JobStep #%s: %s",
+        step.id,
+        shlex.join(command),
+    )
+
+    started_monotonic = time.monotonic()
+
+    with tempfile.NamedTemporaryFile(
+        mode="w+",
+        encoding="utf-8",
+        prefix=".journeyman-stdout-",
+    ) as stdout_file, tempfile.NamedTemporaryFile(
+        mode="w+",
+        encoding="utf-8",
+        prefix=".journeyman-stderr-",
+    ) as stderr_file:
+
+        process_environment = build_step_process_environment(
+            step,
+            workspace=repository_path.resolve().parent.parent,
+        )
+
+        if callback_directory is not None and stats_path is not None:
+            existing_callback_paths = process_environment.get(
+                "ANSIBLE_CALLBACK_PLUGINS",
+                "",
+            )
+            callback_paths = [str(callback_directory)]
+            if existing_callback_paths:
+                callback_paths.append(existing_callback_paths)
+            process_environment["ANSIBLE_CALLBACK_PLUGINS"] = os.pathsep.join(
+                callback_paths
+            )
+
+            enabled_callbacks = [
+                item.strip()
+                for item in process_environment.get(
+                    "ANSIBLE_CALLBACKS_ENABLED",
+                    "",
+                ).split(",")
+                if item.strip()
+            ]
+            if "journeyman_stats" not in enabled_callbacks:
+                enabled_callbacks.append("journeyman_stats")
+            process_environment["ANSIBLE_CALLBACKS_ENABLED"] = ",".join(
+                enabled_callbacks
+            )
+            process_environment["JOURNEYMAN_STATS_FILE"] = str(stats_path)
+
+        execution_type = getattr(step.job, "execution_type", "ansible") or "ansible"
+        if execution_type in {"ansible", "remote_shell"} and host_results_path is not None:
+            enabled_callbacks = [
+                item.strip()
+                for item in process_environment.get(
+                    "ANSIBLE_CALLBACKS_ENABLED", ""
+                ).split(",")
+                if item.strip()
+            ]
+            if "journeyman_remote_shell" not in enabled_callbacks:
+                enabled_callbacks.append("journeyman_remote_shell")
+            process_environment["ANSIBLE_CALLBACKS_ENABLED"] = ",".join(
+                enabled_callbacks
+            )
+            process_environment["JOURNEYMAN_REMOTE_SHELL_RESULTS_FILE"] = str(
+                host_results_path
+            )
+            if execution_type == "ansible":
+                process_environment["JOURNEYMAN_HOST_RESULTS_STATUS_ONLY"] = "1"
+
+        process = subprocess.Popen(
+            command,
+            cwd=str(repository_path),
+            env=process_environment,
+            text=True,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
+
+        LOGGER.info(
+            "Started JobStep #%s as PID %s.",
+            step.id,
+            process.pid,
+        )
+
+        timed_out = False
+        cancelled = False
+
+        while process.poll() is None:
+            elapsed_seconds = (
+                time.monotonic() - started_monotonic
+            )
+
+            # Use a separate short-lived connection so every poll sees
+            # the latest status committed by the web application.
+            current_status = read_job_status_fresh(
+                job_id
+            )
+
+            if current_status is None:
+                LOGGER.error(
+                    "Job #%s disappeared while JobStep #%s "
+                    "was running.",
+                    job_id,
+                    step.id,
+                )
+
+                cancelled = True
+
+                terminate_process_group(process)
+                break
+
+            if stop_requested:
+                LOGGER.warning(
+                    "Runner shutdown requested while Job #%s "
+                    "step %s was executing.",
+                    job_id,
+                    step.id,
+                )
+
+                cancelled = True
+
+                terminate_process_group(process)
+                break
+
+            if current_status == "cancelling":
+                LOGGER.warning(
+                    "Cancellation requested for Job #%s.",
+                    job_id,
+                )
+
+                cancelled = True
+
+                terminate_process_group(process)
+                break
+
+            if elapsed_seconds >= timeout_seconds:
+                LOGGER.error(
+                    "JobStep #%s exceeded its timeout of "
+                    "%s seconds.",
+                    step.id,
+                    timeout_seconds,
+                )
+
+                timed_out = True
+
+                terminate_process_group(process)
+                break
+
+            if output_callback is not None:
+                stdout_file.flush()
+                stderr_file.flush()
+                with open(stdout_file.name, "r", encoding="utf-8", errors="replace") as reader:
+                    live_stdout = reader.read()
+                with open(stderr_file.name, "r", encoding="utf-8", errors="replace") as reader:
+                    live_stderr = reader.read()
+                output_callback(
+                    shlex.join(command),
+                    live_stdout,
+                    live_stderr,
+                )
+
+            time.sleep(1)
+
+        returncode = process.wait()
+
+        # The child may exit between polling iterations. Recheck the
+        # database through a fresh connection before interpreting its
+        # exit as an ordinary playbook result.
+        final_job_status = read_job_status_fresh(
+            job_id
+        )
+
+        if (
+            stop_requested
+            or final_job_status is None
+            or final_job_status == "cancelling"
+        ):
+            cancelled = True
+
+        stdout_file.flush()
+        stderr_file.flush()
+
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+
+        stdout = stdout_file.read()
+        stderr = stderr_file.read()
+
+    if cancelled:
+        stderr += (
+            "\nJourneyman stopped this step because project "
+            "execution was cancelled.\n"
+        )
+
+    elif timed_out:
+        stderr += (
+            "\nJourneyman terminated this step after the "
+            "configured timeout of {} seconds.\n"
+        ).format(timeout_seconds)
+
+    return ExecutionResult(
+        command=command,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+        cancelled=cancelled,
+    )
+
+def validate_step_playbook(step, repository_path):
+    repository_path = repository_path.resolve()
+
+    playbook_path = (
+        repository_path / step.playbook
+    ).resolve()
+
+    try:
+        playbook_path.relative_to(repository_path)
+    except ValueError:
+        raise RuntimeError(
+            "Job step {} playbook escapes its repository: {}".format(
+                step.id,
+                step.playbook,
+            )
+        )
+
+    if not playbook_path.is_file():
+        raise RuntimeError(
+            "Job step {} playbook does not exist: {}".format(
+                step.id,
+                playbook_path,
+            )
+        )
+
+    return playbook_path
+
+
+def write_manifest(
+    job,
+    job_directory,
+    repository_paths,
+    inventory_paths,
+    extra_vars_path=None,
+):
+    repositories = []
+
+    for snapshot in job.repository_snapshots:
+        repositories.append(
+            {
+                "snapshot_id": snapshot.id,
+                "repository_id": snapshot.repository_id,
+                "name": snapshot.repository_name,
+                "url": snapshot.repository_url,
+                "commit": snapshot.repository_commit,
+                "workspace": str(
+                    repository_paths[snapshot.id]
+                ),
+            }
+        )
+
+    inventories = []
+
+    for snapshot in job.inventory_snapshots:
+        inventory_path = inventory_paths[
+            snapshot.id
+        ]
+
+        inventories.append(
+            {
+                "snapshot_id": snapshot.id,
+                "inventory_id": snapshot.inventory_id,
+                "name": snapshot.inventory_name,
+                "type": snapshot.inventory_type,
+                "version": snapshot.version,
+                "host_count": snapshot.host_count,
+                "sha256": snapshot.content_sha256,
+                "workspace": str(inventory_path),
+            }
+        )
+
+    steps = []
+
+    for step in job.steps:
+        repository_path = repository_paths[
+            step.job_repository_snapshot_id
+        ]
+
+        inventory_path = inventory_path_for_step(
+            step,
+            inventory_paths,
+        )
+
+        playbook_path = validate_step_playbook(
+            step,
+            repository_path,
+        )
+
+        command = build_command(
+            step,
+            repository_path,
+            inventory_path,
+            extra_vars_path,
+        )
+
+        steps.append(
+            {
+                "id": step.id,
+                "position": step.position,
+                "name": step.name,
+                "repository_snapshot_id": (
+                    step.job_repository_snapshot_id
+                ),
+                "inventory_snapshot_id": (
+                    step.job_inventory_snapshot_id
+                ),
+                "inventory_path": str(
+                    inventory_path
+                ),
+                "playbook": step.playbook,
+                "playbook_path": str(playbook_path),
+                "limit": step.limit,
+                "tags": step.tags,
+                "skip_tags": step.skip_tags,
+                "verbosity": step.verbosity,
+                "continue_on_failure": (
+                    step.continue_on_failure
+                ),
+                "failure_only": getattr(
+                    step,
+                    "failure_only",
+                    False,
+                ),
+                "refresh_inventory_after": (
+                    getattr(
+                        step,
+                        "refresh_inventory_after",
+                        False,
+                    )
+                ),
+                "depends_on": step.get_dependency_positions(),
+                "command": command,
+            }
+        )
+
+    package_metadata = None
+
+    if job.package_snapshot is not None:
+        package_metadata = {
+            "snapshot_id": (
+                job.package_snapshot.id
+            ),
+            "package_id": (
+                job.package_snapshot.package_id
+            ),
+            "name": (
+                job.package_snapshot.package_name
+            ),
+            "owner": (
+                job.package_snapshot.package_owner
+            ),
+            "definition_sha256": (
+                job.package_snapshot
+                .package_definition_sha256
+            ),
+            "display_values": (
+                job.package_snapshot
+                .get_display_values()
+            ),
+            "operational_targets": (
+                job.package_snapshot
+                .get_operational_targets()
+            ),
+            "step_limit": (
+                job.package_snapshot.step_limit
+            ),
+            "uses_encrypted_extra_vars": True,
+        }
+
+    manifest = {
+        "version": 3,
+        "job": {
+            "id": job.id,
+            "project_id": job.project_id,
+            "project_name": job.project_name,
+            "requested_by": job.requested_by,
+            "queued_at": (
+                job.queued_at.isoformat()
+                if job.queued_at
+                else None
+            ),
+        },
+        "package": package_metadata,
+        "repositories": repositories,
+        "inventories": inventories,
+        "steps": steps,
+    }
+
+    manifest_path = job_directory / "manifest.json"
+
+    with manifest_path.open(
+        "w",
+        encoding="utf-8",
+    ) as manifest_file:
+        json.dump(
+            manifest,
+            manifest_file,
+            indent=2,
+            sort_keys=True,
+        )
+
+        manifest_file.write("\n")
+
+    LOGGER.info(
+        "Wrote Job #%s manifest: %s",
+        job.id,
+        manifest_path,
+    )
+
+    return manifest_path
+
+
+def mark_remaining_steps_cancelled(job):
+    now = utcnow()
+
+    for step in job.steps:
+        if step.status == "pending":
+            step.status = "cancelled"
+            step.finished_at = now
+            step.exit_code = None
+
+    db.session.commit()
+
+
+def mark_job_failed(job, message):
+    now = utcnow()
+
+    job.status = "failed"
+    job.finished_at = now
+    job.exit_code = 1
+    job.message = message
+
+    for step in job.steps:
+        if step.status == "running":
+            step.status = "failed"
+            step.finished_at = now
+            step.exit_code = 1
+            step.stderr = message
+        elif step.status == "pending":
+            step.status = "cancelled"
+            step.finished_at = now
+            step.exit_code = None
+
+    db.session.commit()
+
+
+
+def dependency_positions(step):
+    return step.get_dependency_positions()
+
+
+def dependency_ancestors(step, steps_by_position):
+    result = set()
+    stack = list(dependency_positions(step))
+    while stack:
+        position = stack.pop()
+        if position in result:
+            continue
+        result.add(position)
+        dependency = steps_by_position.get(position)
+        if dependency is not None:
+            stack.extend(dependency_positions(dependency))
+    return result
+
+
+def propagated_stats_for_step(step, steps_by_position):
+    propagated = {}
+    for position in sorted(dependency_ancestors(step, steps_by_position)):
+        ancestor = steps_by_position.get(position)
+        if ancestor is None or ancestor.status != "successful":
+            continue
+        propagated = add_step_stats(
+            propagated,
+            ancestor,
+            ancestor.get_custom_stats(),
+        )
+    return propagated
+
+
+def has_failure_branch(step, steps):
+    """Return True if a failure-only step explicitly depends on this step."""
+
+    return any(
+        getattr(candidate, "failure_only", False)
+        and step.position in dependency_positions(candidate)
+        for candidate in steps
+    )
+
+
+def select_eligible_steps(job, limit):
+    """Return pending steps whose success/failure dependency conditions match."""
+
+    steps_by_position = {step.position: step for step in job.steps}
+    now = utcnow()
+    changed = False
+    terminal_statuses = {
+        "successful",
+        "failed",
+        "cancelled",
+        "blocked",
+        "skipped",
+    }
+
+    for step in job.steps:
+        if step.status != "pending":
+            continue
+
+        dependencies = [
+            steps_by_position.get(position)
+            for position in dependency_positions(step)
+        ]
+
+        if any(dependency is None for dependency in dependencies):
+            step.status = "blocked"
+            step.finished_at = now
+            step.exit_code = None
+            step.stderr = "One or more dependency steps could not be found."
+            changed = True
+            continue
+
+        if not dependencies:
+            if getattr(step, "failure_only", False):
+                step.status = "blocked"
+                step.finished_at = now
+                step.exit_code = None
+                step.stderr = "Failure-only step has no dependency."
+                changed = True
+            continue
+
+        if any(
+            dependency.status not in terminal_statuses
+            for dependency in dependencies
+        ):
+            continue
+
+        if getattr(step, "failure_only", False):
+            if not any(
+                dependency.status == "failed"
+                for dependency in dependencies
+            ):
+                step.status = "skipped"
+                step.finished_at = now
+                step.exit_code = None
+                step.stderr = (
+                    "Failure-only branch was not selected because none "
+                    "of its dependencies failed."
+                )
+                changed = True
+        elif not all(
+            dependency.status == "successful"
+            for dependency in dependencies
+        ):
+            failed_dependencies = [
+                dependency
+                for dependency in dependencies
+                if dependency.status == "failed"
+            ]
+
+            if (
+                failed_dependencies
+                and all(
+                    has_failure_branch(
+                        dependency,
+                        job.steps,
+                    )
+                    for dependency in failed_dependencies
+                )
+            ):
+                step.status = "skipped"
+                step.stderr = (
+                    "Success-path branch was not selected because a "
+                    "dependency failed and its failure branch was used."
+                )
+            else:
+                step.status = "blocked"
+                step.stderr = (
+                    "A dependency did not complete successfully."
+                )
+
+            step.finished_at = now
+            step.exit_code = None
+            changed = True
+
+    if changed:
+        db.session.commit()
+
+    eligible = []
+
+    for step in job.steps:
+        if step.status != "pending":
+            continue
+
+        dependencies = [
+            steps_by_position.get(position)
+            for position in dependency_positions(step)
+        ]
+
+        if not dependencies:
+            if not getattr(step, "failure_only", False):
+                eligible.append(step)
+
+        elif getattr(step, "failure_only", False):
+            if (
+                all(
+                    dependency is not None
+                    and dependency.status in terminal_statuses
+                    for dependency in dependencies
+                )
+                and any(
+                    dependency.status == "failed"
+                    for dependency in dependencies
+                )
+            ):
+                eligible.append(step)
+
+        elif all(
+            dependency is not None
+            and dependency.status == "successful"
+            for dependency in dependencies
+        ):
+            eligible.append(step)
+
+        if len(eligible) >= limit:
+            break
+
+    return eligible, steps_by_position
+
+
+def execute_step_in_context(
+    app,
+    job_id,
+    step_id,
+    repository_path,
+    inventory_path,
+    timeout_seconds,
+    extra_vars_path,
+    callback_directory,
+    stats_path,
+    host_results_path,
+):
+    """Execute a step in a worker thread with its own Flask/ORM context."""
+
+    with app.app_context():
+        step = db.session.get(JobStep, step_id)
+        if step is None:
+            raise RuntimeError("JobStep {} no longer exists.".format(step_id))
+        return execute_step(
+            job_id,
+            step,
+            repository_path,
+            inventory_path,
+            timeout_seconds,
+            extra_vars_path,
+            callback_directory,
+            stats_path,
+            host_results_path,
+        )
+
+
+def refresh_step_descendant_inventories(
+    job,
+    step,
+    job_directory,
+    inventory_paths,
+):
+    snapshots = refresh_job_inventories_after_step(
+        job,
+        step,
+    )
+
+    inventories_directory = (
+        job_directory / "inventories"
+    )
+
+    for snapshot in snapshots:
+        destination = (
+            inventories_directory
+            / "{}.py".format(snapshot.id)
+        )
+
+        inventory_paths[snapshot.id] = (
+            materialize_job_inventory_snapshot(
+                snapshot,
+                destination,
+            )
+        )
+
+        LOGGER.info(
+            "Job #%s refreshed inventory %s as snapshot %s "
+            "(version %s, %s host(s)).",
+            job.id,
+            snapshot.inventory_name,
+            snapshot.id,
+            snapshot.version,
+            snapshot.host_count,
+        )
+
+    return snapshots
+
+
+def process_job(job, timeout_seconds):
+    LOGGER.info(
+        "Processing Job #%s: %s",
+        job.id,
+        job.project_name,
+    )
+
+    extra_vars_path = None
+    app = current_app._get_current_object()
+
+    try:
+        (
+            job_directory,
+            repository_paths,
+            inventory_paths,
+            extra_vars_path,
+        ) = create_job_workspace(job)
+
+        write_manifest(
+            job,
+            job_directory,
+            repository_paths,
+            inventory_paths,
+            extra_vars_path,
+        )
+
+        callback_directory = prepare_stats_callback(job_directory)
+        base_extra_vars = load_base_extra_vars(extra_vars_path)
+        completed_steps = 0
+        parallel_limit = max(1, min(32, job.max_parallel_steps or 4))
+
+        while True:
+            db.session.expire_all()
+            job = db.session.get(Job, job.id)
+
+            if stop_requested or job.status == "cancelling":
+                LOGGER.info("Job #%s cancellation detected.", job.id)
+                mark_remaining_steps_cancelled(job)
+                job.status = "cancelled"
+                job.finished_at = utcnow()
+                job.exit_code = None
+                job.message = "Cancelled before the next step started."
+                db.session.commit()
+                return
+
+            eligible_steps, steps_by_position = select_eligible_steps(
+                job,
+                parallel_limit,
+            )
+            if not eligible_steps:
+                break
+
+            work_items = []
+            for step in eligible_steps:
+                repository_path = repository_paths[
+                    step.job_repository_snapshot_id
+                ]
+                inventory_path = inventory_path_for_step(
+                    step,
+                    inventory_paths,
+                )
+                playbook_path = validate_step_playbook(
+                    step,
+                    repository_path,
+                )
+                step_extra_vars_path = materialize_step_extra_vars(
+                    job_directory,
+                    step,
+                    base_extra_vars,
+                    propagated_stats_for_step(step, steps_by_position),
+                )
+                stats_path = (
+                    job_directory
+                    / "private"
+                    / "step-{}-stats.json".format(step.position)
+                )
+                host_results_path = (
+                    job_directory
+                    / "private"
+                    / "step-{}-host-results.json".format(step.position)
+                )
+                remove_private_file(stats_path)
+                remove_private_file(host_results_path)
+                command = build_command(
+                    step,
+                    repository_path,
+                    inventory_path,
+                    step_extra_vars_path,
+                )
+
+                LOGGER.info(
+                    "Job #%s step %s: %s",
+                    job.id,
+                    step.position,
+                    step.name or step.playbook,
+                )
+                LOGGER.info("Playbook: %s", playbook_path)
+                LOGGER.info("Command preview: %s", shlex.join(command))
+
+                step.status = "running"
+                step.started_at = utcnow()
+                step.finished_at = None
+                step.exit_code = None
+                step.command = shlex.join(command)
+                step.stdout = ""
+                step.stderr = ""
+
+                work_items.append(
+                    {
+                        "step_id": step.id,
+                        "position": step.position,
+                        "repository_path": repository_path,
+                        "inventory_path": inventory_path,
+                        "extra_vars_path": step_extra_vars_path,
+                        "stats_path": stats_path,
+                        "host_results_path": host_results_path,
+                    }
+                )
+
+            # Commit every selected step as running before any child starts so
+            # the Job page can display the whole parallel batch accurately.
+            db.session.commit()
+
+            results = {}
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(work_items),
+                thread_name_prefix="journeyman-step",
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        execute_step_in_context,
+                        app,
+                        job.id,
+                        item["step_id"],
+                        item["repository_path"],
+                        item["inventory_path"],
+                        timeout_seconds,
+                        item["extra_vars_path"],
+                        callback_directory,
+                        item["stats_path"],
+                        item["host_results_path"],
+                    ): item
+                    for item in work_items
+                }
+
+                for future in concurrent.futures.as_completed(futures):
+                    item = futures[future]
+                    try:
+                        results[item["step_id"]] = future.result()
+                    except Exception as exc:
+                        LOGGER.exception(
+                            "Job #%s step %s worker failed.",
+                            job.id,
+                            item["position"],
+                        )
+                        results[item["step_id"]] = ExecutionResult(
+                            command=[],
+                            returncode=1,
+                            stdout="",
+                            stderr=str(exc),
+                        )
+
+            cancelled = False
+            cancelled_positions = []
+
+            for item in work_items:
+                remove_private_file(item["extra_vars_path"])
+                step = db.session.get(JobStep, item["step_id"])
+                result = results[item["step_id"]]
+
+                step.finished_at = utcnow()
+                step.command = (
+                    shlex.join(result.command)
+                    if result.command
+                    else step.command
+                )
+                step.stdout = result.stdout
+                step.stderr = result.stderr
+
+                step.host_results[:] = []
+                if job.execution_type == "remote_shell":
+                    for host_result in read_remote_shell_host_results(
+                        item["host_results_path"]
+                    ):
+                        step.host_results.append(
+                            JobStepHostResult(
+                                host=str(host_result.get("host") or "")[:255],
+                                status=str(
+                                    host_result.get("status") or "failed"
+                                ),
+                                exit_code=host_result.get("exit_code"),
+                                stdout=str(host_result.get("stdout") or ""),
+                                stderr=str(host_result.get("stderr") or ""),
+                            )
+                        )
+                remove_private_file(item["host_results_path"])
+
+                if result.cancelled:
+                    step.status = "cancelled"
+                    step.exit_code = None
+                    step.set_custom_stats({})
+                    cancelled = True
+                    cancelled_positions.append(step.position)
+                    remove_private_file(item["stats_path"])
+                    continue
+
+                if result.returncode == 0:
+                    step.status = "successful"
+                    step.exit_code = 0
+                    completed_steps += 1
+                    step.set_custom_stats(
+                        read_step_stats(item["stats_path"])
+                    )
+                    LOGGER.info(
+                        "Job #%s step %s completed successfully.",
+                        job.id,
+                        step.position,
+                    )
+                else:
+                    step.status = "failed"
+                    step.exit_code = 124 if result.timed_out else result.returncode
+                    step.set_custom_stats({})
+                    LOGGER.error(
+                        "Job #%s step %s failed with exit code %s.",
+                        job.id,
+                        step.position,
+                        step.exit_code,
+                    )
+
+                remove_private_file(item["stats_path"])
+
+            db.session.commit()
+
+            if not cancelled:
+                stop_failures = [
+                    db.session.get(JobStep, item["step_id"])
+                    for item in work_items
+                ]
+                stop_failures = [
+                    step
+                    for step in stop_failures
+                    if (
+                        step.status == "failed"
+                        and not step.continue_on_failure
+                        and not has_failure_branch(step, job.steps)
+                    )
+                ]
+
+                if stop_failures:
+                    now = utcnow()
+                    for remaining_step in job.steps:
+                        if remaining_step.status == "pending":
+                            remaining_step.status = "cancelled"
+                            remaining_step.finished_at = now
+                            remaining_step.exit_code = None
+
+                    job.status = "failed"
+                    job.finished_at = now
+                    job.exit_code = 1
+                    job.message = (
+                        "Project execution stopped after step(s) {} failed."
+                    ).format(
+                        ", ".join(
+                            str(step.position)
+                            for step in stop_failures
+                        )
+                    )
+                    db.session.commit()
+                    return
+
+                refresh_failures = []
+
+                for item in work_items:
+                    step = db.session.get(
+                        JobStep,
+                        item["step_id"],
+                    )
+
+                    if (
+                        step.status != "successful"
+                        or not step.refresh_inventory_after
+                    ):
+                        continue
+
+                    try:
+                        refreshed = (
+                            refresh_step_descendant_inventories(
+                                job,
+                                step,
+                                job_directory,
+                                inventory_paths,
+                            )
+                        )
+
+                        if refreshed:
+                            step.stdout += (
+                                "\nJourneyman refreshed {} "
+                                "dependent inventory snapshot(s).\n"
+                            ).format(
+                                len(refreshed)
+                            )
+                            db.session.commit()
+
+                    except JobInventoryRefreshError as exc:
+                        step.status = "failed"
+                        step.exit_code = 1
+                        step.stderr += (
+                            "\nJourneyman inventory refresh failed: {}\n"
+                            .format(exc)
+                        )
+                        step.set_custom_stats({})
+                        refresh_failures.append(
+                            step.position
+                        )
+                        db.session.commit()
+
+                if refresh_failures:
+                    LOGGER.error(
+                        "Job #%s inventory refresh failed after step(s) %s.",
+                        job.id,
+                        ", ".join(
+                            str(position)
+                            for position in refresh_failures
+                        ),
+                    )
+
+            if cancelled:
+                now = utcnow()
+                for remaining_step in job.steps:
+                    if remaining_step.status == "pending":
+                        remaining_step.status = "cancelled"
+                        remaining_step.finished_at = now
+                        remaining_step.exit_code = None
+                job.status = "cancelled"
+                job.finished_at = now
+                job.exit_code = None
+                job.message = (
+                    "Project execution was stopped while step(s) {} were running."
+                ).format(", ".join(str(p) for p in cancelled_positions))
+                db.session.commit()
+                return
+
+            # A failed branch blocks only its descendants. Other independent
+            # branches remain eligible and continue through the next loop.
+
+        unresolved_steps = [
+            step for step in job.steps if step.status == "pending"
+        ]
+        if unresolved_steps:
+            now = utcnow()
+            for unresolved_step in unresolved_steps:
+                unresolved_step.status = "blocked"
+                unresolved_step.finished_at = now
+                unresolved_step.exit_code = None
+            db.session.commit()
+
+        failed_steps = [
+            step
+            for step in job.steps
+            if step.status == "failed"
+        ]
+        blocked_steps = [
+            step
+            for step in job.steps
+            if step.status == "blocked"
+        ]
+        unhandled_failed_steps = [
+            step
+            for step in failed_steps
+            if not has_failure_branch(
+                step,
+                job.steps,
+            )
+        ]
+        job.finished_at = utcnow()
+
+        if unhandled_failed_steps or blocked_steps:
+            job.status = "failed"
+            job.exit_code = (
+                unhandled_failed_steps[-1].exit_code or 1
+                if unhandled_failed_steps
+                else 1
+            )
+            job.message = (
+                "Project execution completed with {} unhandled failed "
+                "and {} blocked step(s)."
+            ).format(
+                len(unhandled_failed_steps),
+                len(blocked_steps),
+            )
+            LOGGER.warning(
+                "Job #%s completed with %s unhandled failed and %s "
+                "blocked step(s).",
+                job.id,
+                len(unhandled_failed_steps),
+                len(blocked_steps),
+            )
+        else:
+            job.status = "successful"
+            job.exit_code = 0
+            job.message = (
+                "Project execution completed successfully. "
+                "{} step(s) executed."
+            ).format(completed_steps)
+            LOGGER.info("Job #%s completed successfully.", job.id)
+
+        db.session.commit()
+
+    except Exception as error:
+        LOGGER.exception("Job #%s execution failed.", job.id)
+        mark_job_failed(job, str(error))
+
+    finally:
+        try:
+            db.session.expire_all()
+            job = db.session.get(Job, job.id)
+            record_job_completion_audit(job)
+        except Exception:
+            LOGGER.exception(
+                "Unable to audit completion of Job #%s.",
+                job.id,
+            )
+
+        remove_job_extra_vars_file(extra_vars_path)
+
+
+def recover_orphaned_jobs():
+    """
+    Safely finalise jobs left behind by an earlier runner exit.
+
+    Interrupted jobs are never automatically requeued. A playbook may
+    have already changed one or more hosts, so silently running the
+    same step again could duplicate or corrupt those changes.
+    """
+
+    orphaned_jobs = (
+        Job.query
+        .filter(
+            Job.status.in_(
+                [
+                    "running",
+                    "cancelling",
+                ]
+            ),
+            Job.dispatch_target == "local",
+        )
+        .all()
+    )
+
+    if not orphaned_jobs:
+        return
+
+    now = utcnow()
+
+    for job in orphaned_jobs:
+        original_status = job.status
+
+        LOGGER.warning(
+            "Finalising orphaned Job #%s from status %s.",
+            job.id,
+            original_status,
+        )
+
+        if original_status == "cancelling":
+            job.status = "cancelled"
+            job.exit_code = None
+            job.message = (
+                "Cancellation was completed when the "
+                "Journeyman runner restarted."
+            )
+        else:
+            job.status = "failed"
+            job.exit_code = 1
+            job.message = (
+                "The Journeyman runner stopped while this Job "
+                "was executing. The Job was not requeued "
+                "automatically."
+            )
+
+        job.finished_at = now
+
+        for step in job.steps:
+            if step.status == "running":
+                step.finished_at = now
+
+                if original_status == "cancelling":
+                    step.status = "cancelled"
+                    step.exit_code = None
+                    step.stderr = (
+                        (step.stderr or "")
+                        + "\nThe step was cancelled when the "
+                        "Journeyman runner restarted.\n"
+                    )
+                else:
+                    step.status = "failed"
+                    step.exit_code = 1
+                    step.stderr = (
+                        (step.stderr or "")
+                        + "\nThe Journeyman runner stopped while "
+                        "this step was executing. It was not "
+                        "restarted automatically.\n"
+                    )
+
+            elif step.status == "pending":
+                step.status = "cancelled"
+                step.finished_at = now
+                step.exit_code = None
+
+    db.session.commit()
+
+    for job in orphaned_jobs:
+        record_job_completion_audit(job, recovery=True)
+
+    # Sliced Jobs may legitimately be running solely on remote runners when
+    # this local service starts.  Never fail the whole Job in that case.  Only
+    # recover slices that were actually running on the built-in local runner.
+    local_runner = Runner.query.filter_by(is_local=True).one_or_none()
+    local_runner_id = local_runner.id if local_runner is not None else None
+    orphaned_local_slices = (
+        JobStepExecutionSlice.query
+        .join(JobStep, JobStepExecutionSlice.job_step_id == JobStep.id)
+        .join(Job, JobStep.job_id == Job.id)
+        .filter(
+            Job.dispatch_target == "sliced",
+            Job.status.in_(["running", "cancelling"]),
+            JobStepExecutionSlice.dispatch_target == "local",
+            JobStepExecutionSlice.status == "running",
+        )
+        .all()
+    )
+    if orphaned_local_slices:
+        from app.services.runner_slice_lifecycle import complete_local_slice
+        for execution_slice in orphaned_local_slices:
+            if local_runner_id is not None:
+                execution_slice.assigned_runner_id = local_runner_id
+            cancelling = execution_slice.step.job.status == "cancelling"
+            complete_local_slice(
+                execution_slice,
+                local_runner,
+                {
+                    "status": "cancelled" if cancelling else "failed",
+                    "exit_code": None if cancelling else 1,
+                    "message": (
+                        "Local slice was cancelled when the Journeyman runner restarted."
+                        if cancelling
+                        else "The Journeyman local runner stopped while this slice was executing; it was not automatically retried."
+                    ),
+                    "steps": [{
+                        "position": execution_slice.step.position,
+                        "status": "cancelled" if cancelling else "failed",
+                        "exit_code": None if cancelling else 1,
+                        "command": execution_slice.command or "",
+                        "stdout": execution_slice.stdout or "",
+                        "stderr": execution_slice.stderr or "",
+                        "host_results": [],
+                    }],
+                },
+            )
+
+
+def publish_local_runner_execution_state(active):
+    """Persist built-in runner capacity immediately on execution transitions."""
+
+    global local_runner_job_active
+
+    active = bool(active)
+    with local_runner_state_lock:
+        local_runner_job_active = active
+        try:
+            update_local_runner_heartbeat(
+                version="local",
+                running_jobs=1 if active else 0,
+                status_message=(
+                    "Executing a local Job"
+                    if active
+                    else "Ready"
+                ),
+            )
+        except Exception:
+            db.session.rollback()
+            LOGGER.exception(
+                "Unable to publish local runner execution state."
+            )
+
+
+def local_runner_heartbeat_loop(app):
+    """Publish local service health without registering as a remote runner."""
+
+    while not stop_requested:
+        try:
+            with app.app_context():
+                with local_runner_state_lock:
+                    active = local_runner_job_active
+                    update_local_runner_heartbeat(
+                        version="local",
+                        running_jobs=1 if active else 0,
+                        status_message=(
+                            "Executing a local Job"
+                            if active
+                            else "Ready"
+                        ),
+                    )
+                db.session.remove()
+        except Exception:
+            LOGGER.exception("Unable to update local runner heartbeat.")
+
+        for _ in range(LOCAL_RUNNER_HEARTBEAT_SECONDS):
+            if stop_requested:
+                break
+            time.sleep(1)
+
+    try:
+        with app.app_context():
+            with local_runner_state_lock:
+                update_local_runner_heartbeat(
+                    version="local",
+                    running_jobs=0,
+                    stopped=True,
+                )
+            db.session.remove()
+    except Exception:
+        LOGGER.exception("Unable to mark local runner stopped.")
+
+
+def run_loop(app, poll_seconds, once):
+    global local_runner_job_active
+
+    # Create the local Runner row before starting the heartbeat thread. On a
+    # completely fresh database the main loop and heartbeat thread could
+    # otherwise race to insert the same unique local runner UUID.
+    with app.app_context():
+        update_local_runner_heartbeat(
+            version="local",
+            running_jobs=0,
+            status_message="Ready",
+        )
+        db.session.remove()
+
+    heartbeat_thread = threading.Thread(
+        target=local_runner_heartbeat_loop,
+        args=(app,),
+        name="local-runner-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    with app.app_context():
+        validate_directory(
+            REPOSITORY_ROOT,
+            "REPOSITORY_ROOT",
+        )
+
+        validate_directory(
+            JOB_ROOT,
+            "JOB_ROOT",
+        )
+
+        recover_orphaned_jobs()
+        remove_stale_job_extra_vars_files()
+
+        while not stop_requested:
+            try:
+                from app.services.reactions import process_due_reactions
+                released_reactions = process_due_reactions()
+                if released_reactions:
+                    LOGGER.info(
+                        "Processed %s expired Reaction recovery window(s).",
+                        released_reactions,
+                    )
+
+                execution_slice, local_runner = claim_next_local_slice()
+                if execution_slice is not None:
+                    publish_local_runner_execution_state(True)
+                    try:
+                        process_local_slice(
+                            execution_slice,
+                            local_runner,
+                            timeout_seconds=app.config["JOB_TIMEOUT_SECONDS"],
+                        )
+                    finally:
+                        publish_local_runner_execution_state(False)
+                    if once:
+                        return
+                    continue
+
+                job = claim_next_job()
+
+                if job is None:
+                    if once:
+                        LOGGER.info("No queued jobs or local execution slices found.")
+                        return
+
+                    time.sleep(poll_seconds)
+                    continue
+
+                publish_local_runner_execution_state(True)
+                try:
+                    process_job(
+                        job,
+                        timeout_seconds=app.config[
+                            "JOB_TIMEOUT_SECONDS"
+                        ],
+                    )
+                finally:
+                    publish_local_runner_execution_state(False)
+
+                if once:
+                    return
+
+            except Exception:
+                db.session.rollback()
+                publish_local_runner_execution_state(False)
+
+                LOGGER.exception(
+                    "Unhandled runner error."
+                )
+
+                if once:
+                    raise
+
+                time.sleep(poll_seconds)
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Journeyman job runner",
+    )
+
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help=(
+            "Process at most one queued job and then exit."
+        ),
+    )
+
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=2.0,
+        help=(
+            "Seconds to wait when no queued jobs are available."
+        ),
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    configure_logging()
+
+    args = parse_arguments()
+
+    signal.signal(
+        signal.SIGTERM,
+        handle_shutdown_signal,
+    )
+
+    signal.signal(
+        signal.SIGINT,
+        handle_shutdown_signal,
+    )
+    signal.signal(
+        signal.SIGHUP,
+        handle_reload_signal,
+    )
+
+    app = create_app(
+        "app.config.ProductionConfig"
+    )
+
+    LOGGER.info(
+        "Journeyman runner starting."
+    )
+
+    run_loop(
+        app=app,
+        poll_seconds=args.poll_seconds,
+        once=args.once,
+    )
+
+    LOGGER.info(
+        "Journeyman runner stopped."
+    )
+
+
+if __name__ == "__main__":
+    main()

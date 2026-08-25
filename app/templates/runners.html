@@ -1,0 +1,374 @@
+{% extends "base.html" %}
+{% block title %}Runners · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Runners</h1>
+    <p>Monitor the built-in local runner and registered remote execution runners.</p>
+  </div>
+  <div class="page-heading-actions">
+    <a class="button secondary" href="{{ url_for('main.runner_crews') }}">Runner Crews</a>
+    <a class="button primary" href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id) }}">Manage Remote Runner</a>
+  </div>
+</div>
+
+{% if registration_token %}
+<div class="panel">
+  <div class="panel-header"><h2>One-time registration token</h2></div>
+  <p>Copy this token now for <strong>{{ registration_runner.name }}</strong>. Journeyman stores only its SHA-256 digest and cannot show it again.</p>
+  <pre class="secret-output">{{ registration_token }}</pre>
+</div>
+{% endif %}
+
+<div class="panel" id="runner-live-content">
+  <div class="panel-header"><h2>Execution runners</h2></div>
+  {% if runners %}
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Site</th><th>Crew(s)</th><th>Host</th><th>Execution</th><th>Runner capabilities</th><th>Runtime dependencies</th><th>Environments</th><th>Status</th><th>Last heartbeat</th><th>Capacity</th><th>Load 1m / 5m</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for item in runners %}
+      {% set runner = item.runner %}
+      <tr data-runner-id="{{ runner.id }}">
+        <td><strong>{{ runner.name }}</strong><br><small>{{ runner.runner_uuid or 'Awaiting registration' }}</small></td>
+        <td>{{ 'Local / built in' if runner.is_local else 'Remote' }}</td>
+        <td>{{ runner.site or '—' }}</td>
+        <td>{% if runner.crews %}{{ runner.crews|map(attribute='name')|join(', ') }}{% else %}—{% endif %}</td>
+        <td>
+          {{ runner.hostname or '—' }}
+          {% if not runner.is_local %}
+            <br><small>Runner version: {{ runner.version or 'Unknown' }}</small>
+            {% if item.update_available %}
+              <br><small class="warning-text">Current: {{ current_remote_runner_version }} · runner update available</small>
+            {% endif %}
+            {% if item.capability_update_required %}
+              <br><small class="warning-text">Runner capability update required</small>
+            {% endif %}
+            {% if item.runtime_dependency_update_required %}
+              <br><small class="warning-text">Runner runtime dependency reconciliation required</small>
+            {% endif %}
+          {% elif runner.version %}
+            <br><small>Runner version: {{ runner.version }}</small>
+          {% endif %}
+        </td>
+        <td>{{ runner.capabilities()|sort|join(", ") or '—' }}</td>
+        <td>
+          {% if item.managed_capabilities %}
+            {% for capability in item.managed_capabilities %}
+              <strong>{{ capability.label }}</strong>
+              {% if capability.state == 'healthy' %}
+                <span class="status-label status-healthy">Ready</span>
+              {% elif capability.state == 'update_required' %}
+                <span class="status-label status-warning">Update required</span>
+              {% else %}
+                <span class="status-label status-warning">Warning</span>
+              {% endif %}
+              {% if capability.message %}<br><small>{{ capability.message }}</small>{% endif %}
+              {% if not loop.last %}<br>{% endif %}
+            {% endfor %}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>
+          {% set deps = item.runtime_dependencies %}
+          {% if deps.state in ['current', 'canonical'] %}
+            <span class="status-label status-healthy">{{ deps.label }}</span>
+          {% elif deps.state == 'drifted' %}
+            <span class="status-label status-warning">{{ deps.label }}</span>
+          {% else %}
+            <span class="status-label status-warning">{{ deps.label }}</span>
+          {% endif %}
+          {% if deps.audit_status == 'clean' %}
+            <br><small><span class="status-label status-healthy">pip-audit clean</span></small>
+          {% elif deps.audit_status == 'findings' %}
+            <br><small><span class="status-label status-failed">pip-audit: {{ deps.audit_findings_count }} finding{{ '' if deps.audit_findings_count == 1 else 's' }}</span></small>
+          {% elif deps.audit_status in ['error', 'unknown'] %}
+            <br><small class="warning-text">{{ deps.audit_label }}</small>
+          {% else %}
+            <br><small class="muted">{{ deps.audit_label }}</small>
+          {% endif %}
+          {% if deps.drift %}
+            {% for drift in deps.drift[:3] %}
+              <br><small>{{ drift.name }}: {{ drift.reported or 'missing' }} → {{ drift.expected }}</small>
+            {% endfor %}
+            {% if deps.drift|length > 3 %}
+              <br><small>+ {{ deps.drift|length - 3 }} more</small>
+            {% endif %}
+          {% endif %}
+          {% if deps.audit_message %}
+            <br><small title="{{ deps.audit_message }}">{{ deps.audit_message | truncate(220, true, '…') }}</small>
+          {% endif %}
+        </td>
+        <td>
+          {% if item.execution_environments %}
+            {% for environment_row in item.execution_environments %}
+              <strong>{{ environment_row.environment.name }}</strong>
+              {% if environment_row.state == 'ready' %}
+                <span class="status-label status-healthy">Ready</span>
+              {% elif environment_row.state == 'failed' %}
+                <span class="status-label status-failed">Failed</span>
+              {% elif environment_row.state == 'queued' %}
+                <span class="status-label status-warning">Queued</span>
+              {% elif environment_row.state == 'building' %}
+                <span class="status-label status-warning">Building</span>
+              {% elif environment_row.state == 'out_of_date' %}
+                <span class="status-label status-warning">Out of date</span>
+              {% else %}
+                <span class="status-label status-warning">Not installed</span>
+              {% endif %}
+              {% if environment_row.message %}
+                <br><small title="{{ environment_row.message }}">{{ environment_row.message | truncate(280, true, '…') }}</small>
+              {% endif %}
+              {% if not loop.last %}<br>{% endif %}
+            {% endfor %}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td class="runner-live-health"><span class="status-label status-{{ item.health }}">{{ item.health|title }}</span></td>
+        <td class="runner-live-heartbeat">{% if runner.last_heartbeat_at %}<span class="utc-datetime" data-utc="{{ runner.last_heartbeat_at.isoformat() }}">{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</td>
+        <td class="runner-live-capacity">{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</td>
+        <td class="runner-live-load">{% if runner.load_average_1m is not none %}{{ '%.2f'|format(runner.load_average_1m) }}{% else %}—{% endif %} / {% if runner.load_average_5m is not none %}{{ '%.2f'|format(runner.load_average_5m) }}{% else %}—{% endif %}{% if runner.cpu_count %}<br><small>{{ runner.cpu_count }} CPU{{ 's' if runner.cpu_count != 1 else '' }}</small>{% endif %}</td>
+        <td>
+          {% if runner.is_local %}
+            <span class="muted">Managed by service</span>
+          {% else %}
+            <details class="action-menu">
+              <summary class="button action-menu-trigger">
+                Actions <span aria-hidden="true">▾</span>
+              </summary>
+              <div class="action-menu-items">
+                <a
+                  class="action-menu-item"
+                  href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=runner.id) }}"
+                >Manage</a>
+                {% if item.update_available or item.capability_update_required or item.runtime_dependency_update_required %}
+                  <a
+                    class="action-menu-item"
+                    href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=runner.id, action='update') }}"
+                  >{% if item.update_available %}Update runner to {{ current_remote_runner_version }}{% elif item.runtime_dependency_update_required %}Reconcile runner runtime dependencies{% else %}Reconcile runner capabilities{% endif %}</a>
+                {% endif %}
+                <form method="post" action="{{ url_for('main.runner_toggle', runner_id=runner.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="action-menu-item" type="submit">{{ 'Disable' if runner.enabled else 'Enable' }}</button>
+                </form>
+              </div>
+            </details>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>No runners have reported status yet.</p>{% endif %}
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  const eventsUrl = {{ url_for('main.runner_events') | tojson }};
+  const pageUrl = {{ url_for('main.runners') | tojson }};
+  const fallbackIntervalMilliseconds = 10000;
+  const maximumEventSourceErrors = 3;
+
+  let eventSource = null;
+  let fallbackTimer = null;
+  let eventSourceErrors = 0;
+  let refreshInProgress = false;
+  let refreshPending = false;
+
+  function runnerActionMenuOpen() {
+    return document.querySelector(
+      "#runner-live-content details.action-menu[open]"
+    ) !== null;
+  }
+
+  function formatLoad(value) {
+    return value === null || value === undefined
+      ? "—"
+      : Number(value).toFixed(2);
+  }
+
+  function updateRunnerLiveState(payload) {
+    if (!payload || !Array.isArray(payload.runners)) {
+      return;
+    }
+
+    payload.runners.forEach(function (state) {
+      const row = document.querySelector(
+        '#runner-live-content tr[data-runner-id="' + state.id + '"]'
+      );
+      if (!row) {
+        refreshRunnerContent().catch(function () {});
+        return;
+      }
+
+      const healthCell = row.querySelector(".runner-live-health");
+      const healthLabel = healthCell
+        ? healthCell.querySelector(".status-label")
+        : null;
+      if (healthLabel) {
+        Array.from(healthLabel.classList).forEach(function (className) {
+          if (className.indexOf("status-") === 0) {
+            healthLabel.classList.remove(className);
+          }
+        });
+        healthLabel.classList.add("status-" + state.health);
+        healthLabel.textContent = state.health.charAt(0).toUpperCase()
+          + state.health.slice(1);
+      }
+
+      const heartbeatCell = row.querySelector(".runner-live-heartbeat");
+      if (heartbeatCell) {
+        heartbeatCell.replaceChildren();
+        if (state.last_heartbeat_at) {
+          const heartbeat = document.createElement("span");
+          heartbeat.className = "utc-datetime";
+          heartbeat.dataset.utc = state.last_heartbeat_at;
+          heartbeat.textContent = state.last_heartbeat_at;
+          heartbeatCell.appendChild(heartbeat);
+        } else {
+          heartbeatCell.textContent = "Never";
+        }
+      }
+
+      const capacityCell = row.querySelector(".runner-live-capacity");
+      if (capacityCell) {
+        capacityCell.textContent = state.running_steps
+          + " / " + state.max_concurrent_steps;
+      }
+
+      const loadCell = row.querySelector(".runner-live-load");
+      if (loadCell) {
+        loadCell.replaceChildren();
+        loadCell.appendChild(document.createTextNode(
+          formatLoad(state.load_average_1m)
+          + " / "
+          + formatLoad(state.load_average_5m)
+        ));
+        if (state.cpu_count) {
+          loadCell.appendChild(document.createElement("br"));
+          const cpu = document.createElement("small");
+          cpu.textContent = state.cpu_count + " CPU"
+            + (state.cpu_count === 1 ? "" : "s");
+          loadCell.appendChild(cpu);
+        }
+      }
+    });
+
+    if (window.Journeyman) {
+      window.Journeyman.formatUtcDates();
+    }
+  }
+
+  async function refreshRunnerContent() {
+    if (refreshInProgress || document.hidden) {
+      return;
+    }
+
+    if (runnerActionMenuOpen()) {
+      refreshPending = true;
+      return;
+    }
+
+    refreshInProgress = true;
+    refreshPending = false;
+
+    try {
+      const current = document.getElementById("runner-live-content");
+      const response = await window.fetch(pageUrl, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {"X-Journeyman-Live-Refresh": "1"}
+      });
+
+      if (!response.ok) {
+        throw new Error("Runner refresh returned HTTP " + response.status);
+      }
+
+      const documentText = await response.text();
+      const parsed = new window.DOMParser().parseFromString(documentText, "text/html");
+      const replacement = parsed.getElementById("runner-live-content");
+
+      if (!current || !replacement) {
+        throw new Error("Live runner content was not present in the response.");
+      }
+
+      // Structural changes still require rebuilt markup, but never destroy an
+      // Actions menu the user currently has open.
+      if (runnerActionMenuOpen()) {
+        refreshPending = true;
+        return;
+      }
+
+      current.replaceWith(replacement);
+
+      if (window.Journeyman) {
+        window.Journeyman.formatUtcDates();
+      }
+    } finally {
+      refreshInProgress = false;
+    }
+  }
+
+  function startFallbackPolling() {
+    if (fallbackTimer !== null) {
+      return;
+    }
+
+    fallbackTimer = window.setInterval(function () {
+      refreshRunnerContent().catch(function () {});
+    }, fallbackIntervalMilliseconds);
+  }
+
+  document.addEventListener("toggle", function (event) {
+    const details = event.target;
+    if (
+      !refreshPending ||
+      !details.matches ||
+      !details.matches("#runner-live-content details.action-menu") ||
+      details.open ||
+      runnerActionMenuOpen()
+    ) {
+      return;
+    }
+
+    refreshRunnerContent().catch(function () {});
+  }, true);
+
+  function startEventStream() {
+    if (!("EventSource" in window)) {
+      startFallbackPolling();
+      return;
+    }
+
+    eventSource = new window.EventSource(eventsUrl);
+
+    eventSource.addEventListener("runner-update", function (event) {
+      eventSourceErrors = 0;
+      try {
+        updateRunnerLiveState(JSON.parse(event.data || "{}"));
+      } catch (error) {
+        refreshRunnerContent().catch(function () {});
+      }
+    });
+
+    eventSource.addEventListener("runner-refresh", function () {
+      eventSourceErrors = 0;
+      refreshRunnerContent().catch(function () {});
+    });
+
+    eventSource.onerror = function () {
+      eventSourceErrors += 1;
+      if (eventSourceErrors >= maximumEventSourceErrors) {
+        eventSource.close();
+        startFallbackPolling();
+      }
+    };
+  }
+
+  startEventStream();
+}());
+</script>
+{% endblock %}

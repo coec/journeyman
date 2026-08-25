@@ -1,0 +1,21 @@
+---
+- name: Validate Linux connectivity and Machine credential identity
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Prove login identity
+      ansible.builtin.raw: id -un
+      register: journeyman_login_identity
+      changed_when: false
+
+    - name: Assert configured Machine credential login identity
+      ansible.builtin.assert:
+        that:
+          - journeyman_login_identity.stdout | trim == journeyman_release_test_expected_login_user
+        fail_msg: >-
+          Expected login user {{ journeyman_release_test_expected_login_user }},
+          got {{ journeyman_login_identity.stdout | trim }}.
+        success_msg: >-
+          Machine credential login identity is
+          {{ journeyman_login_identity.stdout | trim }}.

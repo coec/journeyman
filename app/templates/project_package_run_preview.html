@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+
+{% block title %}
+Review {{ package.name }} · Journeyman
+{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>Review Package Dispatch</h1>
+    <p>{{ package.name }}</p>
+  </div>
+
+  <a
+    class="button"
+    href="{{ url_for(
+      'main.project_package_launch',
+      package_id=package.id
+    ) }}"
+  >
+    Change Values
+  </a>
+</div>
+
+{% if warning %}
+  <div class="flash warning">
+    {{ warning }}
+  </div>
+{% endif %}
+
+{% if package.warning_message %}
+  <section class="panel package-launch-warning">
+    <strong>Warning</strong>
+    <p>{{ package.warning_message }}</p>
+  </section>
+{% endif %}
+
+{% if package_execution.operational_targets %}
+  <section class="panel package-operational-targets">
+    <h2>Operational Targets</h2>
+
+    <p>
+      These are the devices or systems supplied to the
+      automation, separate from the Ansible execution inventory.
+    </p>
+
+    <div class="target-host-list">
+      {% for target in package_execution.operational_targets %}
+        <code>{{ target }}</code>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
+
+{% if package_execution.display_values %}
+  <section class="panel package-review-values">
+    <h2>Package Values</h2>
+
+    <dl class="detail-grid">
+      {% for value in package_execution.display_values %}
+        <div
+          {% if value.display_role == "confirmation_critical" %}
+            class="package-critical-value"
+          {% endif %}
+        >
+          <dt>{{ value.label }}</dt>
+          <dd>{{ value.display_value }}</dd>
+        </div>
+      {% endfor %}
+    </dl>
+  </section>
+{% endif %}
+
+{% if package_execution.inventory_bindings %}
+  <section class="panel package-review-values">
+    <h2>Inventory Constants</h2>
+
+    <dl class="detail-grid">
+      {% for name, value in package_execution.inventory_bindings.items() %}
+        <div>
+          <dt>{{ name }}</dt>
+          <dd>{{ value }}</dd>
+        </div>
+      {% endfor %}
+    </dl>
+
+    <p class="muted">
+      These values are fixed for this Job and are reused if an inventory is
+      refreshed between workflow steps.
+    </p>
+  </section>
+{% endif %}
+
+{% if preview.has_large_target %}
+  <section class="panel target-preview-warning">
+    <strong>Large execution target set</strong>
+    <p>
+      At least one workflow step includes
+      {{ preview.large_target_threshold }} or more inventory hosts.
+    </p>
+  </section>
+{% endif %}
+
+{% if preview.has_zero_target %}
+  <section class="panel target-preview-warning">
+    <strong>One or more steps match no inventory hosts</strong>
+  </section>
+{% endif %}
+
+{% if preview.has_dynamic_targets %}
+  <section class="panel target-preview-warning target-preview-dynamic-warning">
+    <strong>Inventory targets may change during execution</strong>
+    <p>
+      One or more later steps use a filtered inventory that will be
+      refreshed during this workflow. Host lists marked as dynamic are
+      the current preview only; Journeyman will resolve them again before
+      those steps run.
+    </p>
+  </section>
+{% endif %}
+
+<section class="panel">
+  <div class="target-preview-summary">
+    <div>
+      <span>Workflow steps</span>
+      <strong>{{ preview.steps | length }}</strong>
+    </div>
+
+    <div>
+      <span>Unique execution inventory hosts</span>
+      <strong>{{ preview.total_unique_hosts }}</strong>
+    </div>
+  </div>
+</section>
+
+{% for step in preview.steps %}
+  <section class="panel target-preview-step">
+    <div class="target-preview-step-heading">
+      <div>
+        <h2>
+          Step {{ step.position }}:
+          {{ step.name }}
+        </h2>
+
+        <code>{{ step.playbook }}</code>
+      </div>
+
+      <span class="status">
+        {{ step.target_count }}
+        host{% if step.target_count != 1 %}s{% endif %}
+      </span>
+    </div>
+
+    <dl class="detail-grid">
+      <div>
+        <dt>Repository</dt>
+        <dd>{{ step.repository_name }}</dd>
+      </div>
+
+      <div>
+        <dt>Inventory</dt>
+        <dd>
+          {{ step.inventory_name }}
+          {% if step.inventory_type == "filtered" %}
+            <span class="project-step-inventory-source">
+              Filtered
+            </span>
+          {% endif %}
+        </dd>
+      </div>
+
+      <div>
+        <dt>Effective Limit</dt>
+        <dd>
+          {% if step.limit %}
+            <code>{{ step.limit }}</code>
+          {% else %}
+            None
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    {% if step.refresh_affects_filtered_targets %}
+      <div class="target-preview-step-warning">
+        <strong>Refreshes inventory for later filtered steps</strong>
+        <p>
+          After this step completes, Journeyman will refresh inventories
+          used by dependent later steps. Their displayed host lists may
+          change before execution.
+        </p>
+      </div>
+    {% endif %}
+
+    {% if step.target_hosts_may_change %}
+      <div class="target-preview-step-warning">
+        <strong>Target list may change after inventory refresh</strong>
+        <p>
+          This step uses a filtered inventory that is refreshed by an
+          earlier dependency. The hosts below are the current preview;
+          Journeyman will resolve the inventory again before this step runs.
+        </p>
+      </div>
+    {% endif %}
+
+    <details class="target-hosts">
+      <summary>
+        Review {{ step.target_count }}
+        execution inventory host{% if step.target_count != 1 %}s{% endif %}
+      </summary>
+
+      {% if step.target_hosts %}
+        <div class="target-host-list">
+          {% for hostname in step.target_hosts %}
+            <code>{{ hostname }}</code>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p>No inventory hosts matched.</p>
+      {% endif %}
+    </details>
+  </section>
+{% endfor %}
+
+<section class="panel">
+  <form
+    method="post"
+    action="{{ url_for(
+      'main.project_package_run',
+      package_id=package.id
+    ) }}"
+    data-dispatch-progress
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input
+      type="hidden"
+      name="launch_token"
+      value="{{ launch_token }}"
+    >
+
+    {% if package.confirmation_message %}
+      <div class="package-confirmation-message">
+        {{ package.confirmation_message }}
+      </div>
+    {% endif %}
+
+    <label class="checkbox-label target-confirmation">
+      <input
+        type="checkbox"
+        id="confirm-targets"
+        name="confirm_targets"
+        value="yes"
+        required
+      >
+
+      I have reviewed the Package values, operational targets
+      and execution inventory hosts.
+    </label>
+
+    <div class="form-actions">
+      <button
+        class="button primary"
+        id="queue-package-button"
+        type="submit"
+      >
+        Dispatch Package
+      </button>
+
+      <a
+        class="button"
+        href="{{ url_for(
+          'main.project_package_launch',
+          package_id=package.id
+        ) }}"
+      >
+        Cancel
+      </a>
+    </div>
+  </form>
+</section>
+
+
+
+{% endblock %}

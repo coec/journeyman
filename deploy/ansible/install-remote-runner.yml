@@ -1,0 +1,284 @@
+---
+- name: Install and register Journeyman remote runner
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    journeyman_runner_user: journeyman
+    journeyman_runner_group: journeyman
+    journeyman_runner_home: /var/lib/journeyman
+    journeyman_runner_work_root: /var/lib/journeyman/remote-jobs
+    journeyman_signal_spool_root: /var/spool/journeyman/signals
+    journeyman_runner_install_root: /opt/journeyman
+    journeyman_runner_venv: /opt/journeyman/venv314
+    journeyman_runner_python: /usr/bin/python3.14
+    journeyman_runner_source: /opt/journeyman/bin/journeyman-remote-runner
+    journeyman_signal_spool_source: /opt/journeyman/bin/journeyman-signal-spool
+    journeyman_runner_config: /etc/journeyman/remote-runner.env
+    journeyman_runner_ca_file: ""
+    journeyman_runner_pip_extra_args: ""
+    journeyman_runner_python_packages:
+      - cryptography
+      - ansible-core
+
+  pre_tasks:
+    - name: Validate required runner bootstrap inputs
+      ansible.builtin.assert:
+        that:
+          - journeyman_server_url is defined
+          - journeyman_server_url | string | trim | length > 0
+          - journeyman_registration_token is defined
+          - journeyman_registration_token | string | trim | length > 0
+        fail_msg: >-
+          journeyman_server_url and journeyman_registration_token are required.
+      no_log: true
+
+    - name: Check remote runner source on execution node
+      ansible.builtin.stat:
+        path: "{{ journeyman_runner_source }}"
+      delegate_to: localhost
+      become: false
+      register: journeyman_runner_source_stat
+
+    - name: Require bundled remote runner executable on execution node
+      ansible.builtin.assert:
+        that:
+          - journeyman_runner_source_stat.stat.exists
+          - journeyman_runner_source_stat.stat.isreg
+        fail_msg: >-
+          The Journeyman remote runner executable was not found at
+          {{ journeyman_runner_source }} on the Ansible execution node.
+
+    - name: Check Signal spool helper on execution node
+      ansible.builtin.stat:
+        path: "{{ journeyman_signal_spool_source }}"
+      delegate_to: localhost
+      become: false
+      register: journeyman_signal_spool_source_stat
+
+    - name: Require bundled Signal spool helper on execution node
+      ansible.builtin.assert:
+        that:
+          - journeyman_signal_spool_source_stat.stat.exists
+          - journeyman_signal_spool_source_stat.stat.isreg
+        fail_msg: >-
+          The Journeyman Signal spool helper was not found at
+          {{ journeyman_signal_spool_source }} on the Ansible execution node.
+
+    - name: Check trusted HTTPS connectivity to Journeyman
+      ansible.builtin.uri:
+        url: "{{ journeyman_server_url | regex_replace('/+$', '') }}/api/runners/register"
+        method: GET
+        validate_certs: true
+        ca_path: "{{ journeyman_runner_ca_file | default(omit, true) }}"
+        follow_redirects: none
+        return_content: false
+      register: journeyman_runner_tls_preflight
+      changed_when: false
+      failed_when: false
+
+    - name: Require trusted HTTPS connectivity to Journeyman
+      ansible.builtin.assert:
+        that:
+          - journeyman_runner_tls_preflight.status | default(-1) | int >= 100
+          - journeyman_runner_tls_preflight.status | default(-1) | int <= 599
+        fail_msg: >-
+          The remote runner could not establish a trusted HTTPS connection to
+          {{ journeyman_server_url }}. Verify DNS/routing and ensure the runner
+          trusts the CA that issued Journeyman's TLS certificate and that the
+          certificate is valid for the configured Journeyman hostname.
+          Underlying error: {{ journeyman_runner_tls_preflight.msg | default('unknown error') }}
+
+  tasks:
+    - name: Create Journeyman runner group
+      ansible.builtin.group:
+        name: "{{ journeyman_runner_group }}"
+        system: true
+        state: present
+
+    - name: Create Journeyman runner account
+      ansible.builtin.user:
+        name: "{{ journeyman_runner_user }}"
+        group: "{{ journeyman_runner_group }}"
+        home: "{{ journeyman_runner_home }}"
+        create_home: true
+        shell: /sbin/nologin
+        system: true
+        state: present
+
+    - name: Create Journeyman runner directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: /opt/journeyman/bin
+          owner: root
+          group: root
+          mode: "0755"
+        - path: /etc/journeyman
+          owner: root
+          group: "{{ journeyman_runner_group }}"
+          mode: "0750"
+        - path: "{{ journeyman_runner_home }}"
+          owner: "{{ journeyman_runner_user }}"
+          group: "{{ journeyman_runner_group }}"
+          mode: "0750"
+        - path: "{{ journeyman_runner_work_root }}"
+          owner: "{{ journeyman_runner_user }}"
+          group: "{{ journeyman_runner_group }}"
+          mode: "0700"
+        - path: "{{ journeyman_signal_spool_root }}"
+          owner: "{{ journeyman_runner_user }}"
+          group: "{{ journeyman_runner_group }}"
+          mode: "2770"
+
+    - name: Check runner Python interpreter
+      ansible.builtin.stat:
+        path: "{{ journeyman_runner_python }}"
+      register: journeyman_runner_python_stat
+
+    - name: Require runner Python interpreter
+      ansible.builtin.assert:
+        that:
+          - journeyman_runner_python_stat.stat.exists
+        fail_msg: >-
+          Python interpreter {{ journeyman_runner_python }} does not exist.
+          Set journeyman_runner_python to an installed Python 3 interpreter.
+
+    - name: Create runner Python virtual environment
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_runner_python }}"
+          - -m
+          - venv
+          - "{{ journeyman_runner_venv }}"
+      args:
+        creates: "{{ journeyman_runner_venv }}/bin/python3"
+
+    - name: Install remote runner Python dependencies
+      ansible.builtin.pip:
+        name: "{{ journeyman_runner_python_packages }}"
+        executable: "{{ journeyman_runner_venv }}/bin/pip"
+        extra_args: "{{ journeyman_runner_pip_extra_args | default(omit, true) }}"
+
+    - name: Install Journeyman remote runner executable
+      ansible.builtin.copy:
+        src: "{{ journeyman_runner_source }}"
+        dest: /opt/journeyman/bin/journeyman-remote-runner
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart Journeyman remote runner
+
+    - name: Install Journeyman Signal spool helper
+      ansible.builtin.copy:
+        src: "{{ journeyman_signal_spool_source }}"
+        dest: /opt/journeyman/bin/journeyman-signal-spool
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install Journeyman remote runner systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/journeyman-remote-runner.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Journeyman Remote Job Runner
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User={{ journeyman_runner_user }}
+          Group={{ journeyman_runner_group }}
+          EnvironmentFile={{ journeyman_runner_config }}
+          Environment=PATH={{ journeyman_runner_venv }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+          ExecStart={{ journeyman_runner_venv }}/bin/python3 /opt/journeyman/bin/journeyman-remote-runner
+          Restart=on-failure
+          RestartSec=5
+          PrivateTmp=true
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ReadWritePaths={{ journeyman_runner_work_root }} {{ journeyman_signal_spool_root }}
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart Journeyman remote runner
+
+    - name: Check for existing runner registration
+      ansible.builtin.stat:
+        path: "{{ journeyman_runner_config }}"
+      register: journeyman_runner_registration
+
+    - name: Register runner with Journeyman
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_runner_venv }}/bin/python3"
+          - /opt/journeyman/bin/journeyman-remote-runner
+          - register
+          - --server
+          - "{{ journeyman_server_url }}"
+          - --token-env
+          - JOURNEYMAN_REGISTRATION_TOKEN
+          - --config
+          - "{{ journeyman_runner_config }}"
+          - --work-root
+          - "{{ journeyman_runner_work_root }}"
+          - --ca-file
+          - "{{ journeyman_runner_ca_file }}"
+      environment:
+        JOURNEYMAN_REGISTRATION_TOKEN: "{{ journeyman_registration_token }}"
+      when: not journeyman_runner_registration.stat.exists
+      no_log: true
+      notify: Restart Journeyman remote runner
+
+    - name: Protect runner registration credentials
+      ansible.builtin.file:
+        path: "{{ journeyman_runner_config }}"
+        state: file
+        owner: root
+        group: "{{ journeyman_runner_group }}"
+        mode: "0640"
+
+    - name: Enable and start Journeyman remote runner
+      ansible.builtin.systemd_service:
+        name: journeyman-remote-runner
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Flush runner service handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify Journeyman remote runner is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - journeyman-remote-runner
+      changed_when: false
+      register: journeyman_runner_service_status
+      retries: 5
+      delay: 2
+      until: journeyman_runner_service_status.rc == 0
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart Journeyman remote runner
+      ansible.builtin.systemd_service:
+        name: journeyman-remote-runner
+        state: restarted
+        enabled: true
+        daemon_reload: true

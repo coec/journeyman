@@ -1,0 +1,15 @@
+{% if pagination and pagination.pages > 1 %}
+<nav class="pagination" aria-label="{{ pagination_label|default('Pages') }}">
+  {% if pagination.has_prev %}
+    <a class="button secondary" href="{{ url_for(request.endpoint, page=pagination.prev_num, **(pagination_args|default({}))) }}">Previous</a>
+  {% else %}
+    <span class="button secondary disabled" aria-disabled="true">Previous</span>
+  {% endif %}
+  <span>Page {{ pagination.page }} of {{ pagination.pages }}</span>
+  {% if pagination.has_next %}
+    <a class="button secondary" href="{{ url_for(request.endpoint, page=pagination.next_num, **(pagination_args|default({}))) }}">Next</a>
+  {% else %}
+    <span class="button secondary disabled" aria-disabled="true">Next</span>
+  {% endif %}
+</nav>
+{% endif %}

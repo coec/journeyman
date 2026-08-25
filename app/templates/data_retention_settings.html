@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Data Retention · Journeyman{% endblock %}
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .retention-settings-page { max-width: 1180px; }
+  .settings-tabs { display:flex; gap:8px; margin:18px 0; flex-wrap:wrap; }
+  .settings-tabs a { padding:9px 13px; border:1px solid var(--border); border-radius:6px; background:#fff; }
+  .settings-tabs a.active { color:#fff; background:var(--blue); border-color:var(--blue); }
+  .settings-card { background:#fff; border:1px solid var(--border); border-radius:8px; padding:20px; margin-bottom:16px; }
+  .retention-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+  .field label { display:block; font-weight:700; margin-bottom:6px; }
+  .field input { width:100%; }
+  .field small { display:block; color:var(--muted); margin-top:5px; }
+  .actions { display:flex; gap:10px; align-items:center; margin-top:20px; }
+  @media (max-width: 760px) { .retention-grid { grid-template-columns:1fr; } }
+</style>
+<div class="retention-settings-page">
+  <header>
+    <h1>System Settings</h1>
+    <p>Control how long completed execution and Reaction history is retained.</p>
+  </header>
+  <nav class="settings-tabs" aria-label="Settings sections">
+    <a href="{{ url_for('main.system_settings') }}">Web and TLS</a>
+    <a href="{{ url_for('main.directory_settings') }}">Directory and Authentication</a>
+    <a href="{{ url_for('main.environment_build_settings') }}">Environment Builds</a>
+    <a class="active" href="{{ url_for('main.data_retention_settings') }}">Data Retention</a>
+    <a href="{{ url_for('main.release_testing_settings') }}">Release Testing</a>
+  </nav>
+
+  {% if errors %}
+  <section class="settings-card">
+    <h2>Settings were not saved</h2>
+    <ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <section class="settings-card">
+    <h2>Operational history retention</h2>
+    <p>The scheduler applies these policies automatically. Only terminal Jobs and terminal Reactions are eligible for deletion; active work is never purged.</p>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="retention-grid">
+        <div class="field">
+          <label for="job_retention_days">Job retention days</label>
+          <input id="job_retention_days" name="job_retention_days" type="number" min="0" max="36500" required value="{{ form_data.job_retention_days }}">
+          <small>Completed Jobs older than this are removed together with their stored inventory snapshots, repository artifacts and local Job workspace. Use 0 to retain Jobs indefinitely.</small>
+        </div>
+        <div class="field">
+          <label for="reaction_retention_days">Reaction retention days</label>
+          <input id="reaction_retention_days" name="reaction_retention_days" type="number" min="0" max="36500" required value="{{ form_data.reaction_retention_days }}">
+          <small>Terminal Reaction history older than this is removed. Pending, queued, running or cancelling Reactions are never purged. Use 0 to retain Reactions indefinitely.</small>
+        </div>
+      </div>
+      <div class="actions"><button type="submit">Save Data Retention Settings</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

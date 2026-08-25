@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Environments · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><h1>Environments</h1><p>Python virtual environments used to execute Ansible project steps.</p></div>
+  <a class="button primary" href="{{ url_for('main.environment_new') }}">＋ Add Environment</a>
+</div>
+
+<section class="panel">
+  <table>
+    <thead><tr><th>Name</th><th>Path</th><th>Ansible config</th><th>Versions</th><th>Status</th><th>Usage</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for environment in environments %}
+      <tr>
+        <td>
+          <strong>{{ environment.name }}</strong><br>
+          {% if environment.name == 'Journeyman application environment' %}<small>Journeyman application runtime</small>{% elif environment.path == '__SYSTEM_ANSIBLE__' %}<small>Built-in execution environment</small>{% elif environment.is_managed %}<small>Journeyman managed</small>{% else %}<small>Externally managed</small>{% endif %}
+          {% if environment.is_default %}<span class="badge success">Default</span>{% endif %}
+        </td>
+        <td><code>{{ environment.path }}</code>{% if environment.python_interpreter %}<br><small>Created with {{ environment.python_interpreter }}</small>{% endif %}</td>
+        <td><code>{{ environment.ansible_config_path or "/etc/ansible/ansible.cfg" }}</code></td>
+        <td><small>{{ environment.python_version or 'Unknown Python' }}<br>{{ environment.ansible_version or 'Unknown Ansible' }}</small></td>
+        <td>
+          {% if environment.is_managed and environment.build_status != 'not_built' %}<span class="badge {{ 'success' if environment.build_status == 'passed' else 'error' if environment.build_status == 'failed' else 'warning' if environment.build_status in ['queued','building'] else '' }}">Build {{ environment.build_status|replace('_',' ')|title }}</span><br>{% endif %}
+          <span class="badge {{ 'success' if environment.validation_status == 'passed' else 'error' if environment.validation_status == 'failed' else '' }}">{{ environment.validation_status|replace('_',' ')|title }}</span><br>
+          <small>{{ environment.validation_message }}</small>
+          {% if environment.build_status in ['failed','queued','building'] and environment.build_message %}<details><summary>Build output</summary><pre>{{ environment.build_message }}</pre></details>{% endif %}
+        </td>
+        <td>{{ environment.project_steps|length }} project step(s)</td>
+        <td>
+          <details class="action-menu">
+            <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
+            <div class="action-menu-items">
+              {% if not environment.is_builtin %}<a class="action-menu-item" href="{{ url_for('main.environment_edit', environment_id=environment.id) }}">Edit</a>{% endif %}
+              {% if not environment.is_builtin and environment.name != 'Journeyman application environment' and environment.enabled and environment.validation_status == 'passed' and (not environment.is_managed or environment.build_status == 'passed') %}<a class="action-menu-item" href="{{ url_for('main.environment_sync', environment_id=environment.id) }}">Sync to runners</a>{% endif %}
+              <form method="post" action="{{ url_for('main.environment_validate', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">Validate</button></form>
+              {% if environment.name != 'Journeyman application environment' and not environment.is_default and environment.enabled and environment.validation_status == 'passed' %}<form method="post" action="{{ url_for('main.environment_make_default', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">Make default</button></form>{% endif %}
+              {% if not environment.is_builtin %}<form method="post" action="{{ url_for('main.environment_toggle', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">{{ 'Disable' if environment.enabled else 'Enable' }}</button></form>{% endif %}
+              {% if not environment.is_builtin and not environment.is_default %}<form method="post" action="{{ url_for('main.environment_delete', environment_id=environment.id) }}" data-confirm="{{ 'Delete this managed environment and all files below its managed path?' if environment.is_managed else 'Delete this environment registration? Its files will not be removed.' }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item danger" type="submit">Delete</button></form>{% endif %}
+            </div>
+          </details>
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="7">No environments are registered.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  {% include "_pagination.html" %}
+</section>
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Oversight · Job #{{ job.id }} · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Project Oversight</h1>
+    <p>Job #{{ job.id }} · {{ job.project_name }}</p>
+  </div>
+  <a class="button" href="{{ url_for('main.job_detail', job_id=job.id) }}">Back to Job</a>
+</div>
+
+<section class="panel">
+  <h2>Execution paused between workflow steps</h2>
+  <p>
+    Journeyman has completed the previous execution batch and will not start the
+    following step{{ '' if oversight_rows|length == 1 else 's' }} until oversight is completed.
+  </p>
+  <dl class="detail-grid">
+    <div><dt>Reviewer</dt><dd>{{ job.oversight_reviewer }}</dd></div>
+    <div><dt>Status</dt><dd><span class="status status-waiting_oversight">Waiting Oversight</span></dd></div>
+  </dl>
+</section>
+
+{% for row in oversight_rows %}
+<section class="panel">
+  <h2>Step {{ row.step.position }}: {{ row.step.name }}</h2>
+  <dl class="detail-grid">
+    <div><dt>Automation</dt><dd><code>{{ row.step.playbook }}</code></dd></div>
+    <div><dt>Environment</dt><dd>{{ row.step.environment_name }}</dd></div>
+    <div><dt>Depends on</dt><dd>{{ row.dependency_positions|join(', ') if row.dependency_positions else 'None' }}</dd></div>
+    <div>
+      <dt>Inventory</dt>
+      <dd>
+        {% if row.step.inventory_snapshot %}
+          {{ row.step.inventory_snapshot.inventory_name }} · {{ row.step.inventory_snapshot.host_count }} host{{ '' if row.step.inventory_snapshot.host_count == 1 else 's' }}
+        {% else %}—{% endif %}
+      </dd>
+    </div>
+    <div><dt>Repository</dt><dd>{{ row.repository.repository_name }}</dd></div>
+    <div><dt>Execution commit</dt><dd><code>{{ row.repository.repository_commit }}</code></dd></div>
+    <div><dt>Commit message</dt><dd>{{ row.repository.repository_commit_message or '—' }}</dd></div>
+    <div><dt>Commit author</dt><dd>{{ row.repository.repository_commit_author or '—' }}</dd></div>
+    <div>
+      <dt>Commit time</dt>
+      <dd>{% if row.repository.repository_commit_at %}<span class="utc-datetime" data-utc="{{ row.repository.repository_commit_at.isoformat() }}">{{ row.repository.repository_commit_at }}</span>{% else %}—{% endif %}</dd>
+    </div>
+  </dl>
+
+  <details>
+    <summary>Show inventory for next step</summary>
+    {% if row.inventory_error %}
+      <p class="form-error">{{ row.inventory_error }}</p>
+    {% elif row.inventory_hosts %}
+      <pre>{{ row.inventory_hosts|join('\n') }}</pre>
+    {% else %}
+      <p>No target hosts.</p>
+    {% endif %}
+  </details>
+
+  <details>
+    <summary>Show execution destinations</summary>
+    {% if row.destinations %}
+      <ul>
+        {% for destination in row.destinations %}
+          <li>{{ destination.label }} — {{ destination.host_count }} host{{ '' if destination.host_count == 1 else 's' }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}<p>No execution slices were planned.</p>{% endif %}
+  </details>
+
+  <details>
+    <summary>Show credentials</summary>
+    {% if row.credentials %}
+      <ul>{% for credential in row.credentials %}<li>{{ credential.credential_name }} ({{ credential.credential_type|replace('_', ' ')|title }})</li>{% endfor %}</ul>
+    {% else %}<p>No credentials.</p>{% endif %}
+  </details>
+</section>
+{% endfor %}
+
+<section class="panel">
+  {% if can_review %}
+  <div class="job-actions">
+    <form method="post" action="{{ url_for('main.job_cancel', job_id=job.id) }}" data-confirm="Stop this Project while it is waiting for oversight?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="button danger" type="submit">Stop Project</button>
+    </form>
+    <form method="post" action="{{ url_for('main.job_oversight_continue', job_id=job.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="button" type="submit">Continue</button>
+    </form>
+  </div>
+  {% else %}
+    <p>Only {{ job.oversight_reviewer }} or an administrator can continue this Project.</p>
+  {% endif %}
+</section>
+{% endblock %}

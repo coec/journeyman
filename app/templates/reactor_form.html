@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if reactor else 'Add' }} Reactor · Journeyman
+{% if reactor %}
+<section class="panel">
+  <h2>Test Reactor</h2>
+  <p>Evaluate this saved Reactor against a recent Signal from the selected Source. Testing never invokes the Package.</p>
+  {% if recent_signals %}
+  <form method="post" action="{{ url_for('main.reactor_test_ui', reactor_id=reactor.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Signal
+      <select name="signal_id">{% for signal in recent_signals %}<option value="{{ signal.id }}">#{{ signal.id }} · {{ signal.host or 'no host' }} · {{ signal.description[:100] }}</option>{% endfor %}</select>
+    </label>
+    <button class="button" type="submit">Test Reactor</button>
+  </form>
+  {% else %}<p>No Signals have been received from this Source yet.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>{{ 'Edit Reactor' if reactor else 'Add Reactor' }}</h1><p>Define when a Signal should produce a Reaction.</p></div>{% if reactor %}<a class="button" href="{{ url_for('main.reactor_notifications', reactor_id=reactor.id) }}">Notifications</a>{% endif %}</div>
+<section class="panel form-panel"><form method="post" id="reactor-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="project-editor-tabs reactor-editor-tabs" role="tablist" aria-label="Reactor editor">
+  <button class="project-editor-tab active" type="button" data-reactor-tab="reactor" role="tab" aria-selected="true" aria-controls="reactor-tab-reactor">Reactor</button>
+  <button class="project-editor-tab" type="button" data-reactor-tab="matching" role="tab" aria-selected="false" aria-controls="reactor-tab-matching">Signal Matching</button>
+  <button class="project-editor-tab" type="button" data-reactor-tab="inputs" role="tab" aria-selected="false" aria-controls="reactor-tab-inputs">Reaction Inputs</button>
+  <button class="project-editor-tab" type="button" data-reactor-tab="recovery" role="tab" aria-selected="false" aria-controls="reactor-tab-recovery">Recovery Signal</button>
+  <button class="project-editor-tab" type="button" data-reactor-tab="safety" role="tab" aria-selected="false" aria-controls="reactor-tab-safety">Safety</button>
+</div>
+
+<div id="reactor-tab-reactor" class="project-tab-panel active" role="tabpanel">
+<label>Name<input name="name" maxlength="120" required value="{{ form_data.name }}"></label>
+<label>Description<textarea name="description" rows="3" maxlength="500">{{ form_data.description }}</textarea></label>
+<label class="checkbox-row"><input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}><span><strong>Enabled</strong></span></label>
+<label>Mode<select name="mode"><option value="observe" {% if form_data.mode=='observe' %}selected{% endif %}>Observe</option><option value="automatic" {% if form_data.mode=='automatic' %}selected{% endif %}>Automatic</option></select><small>New Reactors should be commissioned in Observe mode. Observe resolves and records the Reaction but never invokes the Package.</small></label>
+<label>Source<select name="source_id" id="reaction-source" required><option value="">Select a Source</option>{% for source in sources %}<option value="{{ source.id }}" {% if form_data.source_id == source.id|string %}selected{% endif %}>{{ source.name }} — {{ source.source_type|title }}</option>{% endfor %}</select></label>
+<label>Reaction Package<select name="package_id" id="reaction-package" required><option value="">Select a Package</option>{% for package in packages %}<option value="{{ package.id }}" {% if form_data.package_id == package.id|string %}selected{% endif %}>{{ package.name }}</option>{% endfor %}</select><small>Only Packages with <strong>Allow as Reaction</strong> enabled are selectable.</small></label>
+</div>
+
+<div id="reactor-tab-matching" class="project-tab-panel" role="tabpanel" hidden>
+<div class="form-section-heading"><div><h2>Signal Matching</h2><p>Declarative checks only; no Python or Jinja expressions.</p></div><button class="button" type="button" id="add-match-rule">＋ Add Rule</button></div>
+<label>Match<select name="match_mode"><option value="all" {% if form_data.match_mode=='all' %}selected{% endif %}>ALL rules</option><option value="any" {% if form_data.match_mode=='any' %}selected{% endif %}>ANY rule</option></select></label>
+<div id="match-rules">{% for rule in form_data.rules %}<div class="reaction-row"><div class="signal-path-combobox"><input name="match_field" data-signal-path-input autocomplete="off" placeholder="host or fields.snmp.trap_oid" value="{{ rule.field }}"><button type="button" class="signal-path-toggle" aria-label="Show signal fields" title="Show signal fields">▾</button><div class="signal-path-menu" hidden></div></div><select name="match_operator"><option value="equals" {% if rule.operator=='equals' %}selected{% endif %}>equals</option><option value="not_equals" {% if rule.operator=='not_equals' %}selected{% endif %}>not equals</option><option value="contains" {% if rule.operator=='contains' %}selected{% endif %}>contains</option><option value="starts_with" {% if rule.operator=='starts_with' %}selected{% endif %}>starts with</option><option value="ends_with" {% if rule.operator=='ends_with' %}selected{% endif %}>ends with</option><option value="greater_than_or_equal" {% if rule.operator=='greater_than_or_equal' %}selected{% endif %}>≥</option><option value="greater_than" {% if rule.operator=='greater_than' %}selected{% endif %}>&gt;</option><option value="less_than_or_equal" {% if rule.operator=='less_than_or_equal' %}selected{% endif %}>≤</option><option value="less_than" {% if rule.operator=='less_than' %}selected{% endif %}>&lt;</option><option value="exists" {% if rule.operator=='exists' %}selected{% endif %}>exists</option><option value="not_exists" {% if rule.operator=='not_exists' %}selected{% endif %}>does not exist</option></select><input name="match_value" placeholder="value" value="{{ rule.value if rule.value is defined else '' }}"><button class="button danger" type="button" data-remove-row>Remove</button></div>{% endfor %}</div>
+<small>Signal paths include <code>host</code>, <code>severity</code>, <code>description</code>, <code>signal_type</code>, and structured values under <code>fields.*</code>.</small>
+</div>
+
+<div id="reactor-tab-inputs" class="project-tab-panel" role="tabpanel" hidden>
+<div class="form-section-heading"><div><h2>Reaction Inputs</h2><p>Map Package inputs from Signal fields or fixed constants.</p></div></div>
+<div id="reaction-mappings"></div>
+</div>
+
+<div id="reactor-tab-recovery" class="project-tab-panel" role="tabpanel" hidden>
+<div class="form-section-heading"><div><h2>Recovery Signal</h2><p>Delay Automatic execution and suppress it if the condition clears.</p></div><button class="button" type="button" id="add-recovery-rule">＋ Add Recovery Rule</button></div>
+<label>Recovery window seconds<input type="number" name="recovery_window_seconds" min="0" max="604800" value="{{ form_data.recovery_window_seconds }}"><small>0 runs immediately. A positive value leaves the Reaction Pending until the window expires.</small></label>
+<label>Recovery match<select name="recovery_match_mode"><option value="all" {% if form_data.recovery_match_mode=='all' %}selected{% endif %}>ALL rules</option><option value="any" {% if form_data.recovery_match_mode=='any' %}selected{% endif %}>ANY rule</option></select></label>
+<div id="recovery-match-rules">{% for rule in form_data.recovery_rules %}<div class="reaction-row"><div class="signal-path-combobox"><input name="recovery_match_field" data-signal-path-input autocomplete="off" placeholder="host or description" value="{{ rule.field }}"><button type="button" class="signal-path-toggle" aria-label="Show signal fields" title="Show signal fields">▾</button><div class="signal-path-menu" hidden></div></div><select name="recovery_match_operator"><option value="equals" {% if rule.operator=='equals' %}selected{% endif %}>equals</option><option value="not_equals" {% if rule.operator=='not_equals' %}selected{% endif %}>not equals</option><option value="contains" {% if rule.operator=='contains' %}selected{% endif %}>contains</option><option value="starts_with" {% if rule.operator=='starts_with' %}selected{% endif %}>starts with</option><option value="ends_with" {% if rule.operator=='ends_with' %}selected{% endif %}>ends with</option><option value="greater_than_or_equal" {% if rule.operator=='greater_than_or_equal' %}selected{% endif %}>≥</option><option value="greater_than" {% if rule.operator=='greater_than' %}selected{% endif %}>&gt;</option><option value="less_than_or_equal" {% if rule.operator=='less_than_or_equal' %}selected{% endif %}>≤</option><option value="less_than" {% if rule.operator=='less_than' %}selected{% endif %}>&lt;</option><option value="exists" {% if rule.operator=='exists' %}selected{% endif %}>exists</option><option value="not_exists" {% if rule.operator=='not_exists' %}selected{% endif %}>does not exist</option></select><input name="recovery_match_value" placeholder="link up" value="{{ rule.value if rule.value is defined else '' }}"><button class="button danger" type="button" data-remove-row>Remove</button></div>{% endfor %}</div>
+<label>Correlate recovery using Package inputs<input name="recovery_correlation_inputs" value="{{ form_data.recovery_correlation_inputs|join(', ') }}" placeholder="hostname, interface"><small>Comma-separated mapped Package input variable names. Signal-mapping regex extraction is reused for correlation.</small></label>
+</div>
+
+<div id="reactor-tab-safety" class="project-tab-panel" role="tabpanel" hidden>
+<div class="form-section-heading"><div><h2>Safety</h2></div></div>
+<label>Cooldown seconds<input type="number" name="cooldown_seconds" min="0" value="{{ form_data.cooldown_seconds }}"><small>Automatic mode only. Prevents this Reactor reacting again to the same host during the cooldown.</small></label>
+<label>Maximum concurrent Reactions<input type="number" name="max_concurrency" min="1" max="100" value="{{ form_data.max_concurrency }}"><small>Automatic mode only. Counts queued/running/cancelling Jobs from this Reactor.</small></label>
+</div>
+<div class="form-actions"><button class="button primary" type="submit">Save Reactor</button><a class="button" href="{{ url_for('main.reactors') }}">Cancel</a></div>
+</form></section>
+<template id="match-rule-template"><div class="reaction-row"><div class="signal-path-combobox"><input name="match_field" data-signal-path-input autocomplete="off" placeholder="host or fields.snmp.trap_oid"><button type="button" class="signal-path-toggle" aria-label="Show signal fields" title="Show signal fields">▾</button><div class="signal-path-menu" hidden></div></div><select name="match_operator"><option value="equals">equals</option><option value="not_equals">not equals</option><option value="contains">contains</option><option value="starts_with">starts with</option><option value="ends_with">ends with</option><option value="greater_than_or_equal">≥</option><option value="greater_than">&gt;</option><option value="less_than_or_equal">≤</option><option value="less_than">&lt;</option><option value="exists">exists</option><option value="not_exists">does not exist</option></select><input name="match_value" placeholder="value"><button class="button danger" type="button" data-remove-row>Remove</button></div></template>
+<template id="recovery-match-rule-template"><div class="reaction-row"><div class="signal-path-combobox"><input name="recovery_match_field" data-signal-path-input autocomplete="off" placeholder="host or fields.snmp.trap_oid"><button type="button" class="signal-path-toggle" aria-label="Show signal fields" title="Show signal fields">▾</button><div class="signal-path-menu" hidden></div></div><select name="recovery_match_operator"><option value="equals">equals</option><option value="not_equals">not equals</option><option value="contains">contains</option><option value="starts_with">starts with</option><option value="ends_with">ends with</option><option value="greater_than_or_equal">≥</option><option value="greater_than">&gt;</option><option value="less_than_or_equal">≤</option><option value="less_than">&lt;</option><option value="exists">exists</option><option value="not_exists">does not exist</option></select><input name="recovery_match_value" placeholder="link up"><button class="button danger" type="button" data-remove-row>Remove</button></div></template>
+<script nonce="{{ csp_nonce }}">
+const packageInputs={{ package_inputs|tojson }};
+const existing={{ form_data.mappings|tojson }};
+const sourceFieldPaths={{ source_field_paths|tojson }};
+
+const reactorTabButtons=Array.from(document.querySelectorAll('[data-reactor-tab]'));
+const reactorTabPanels=Array.from(document.querySelectorAll('[id^="reactor-tab-"]'));
+
+function activateReactorTab(name){
+  reactorTabButtons.forEach(button=>{
+    const active=button.dataset.reactorTab===name;
+    button.classList.toggle('active',active);
+    button.setAttribute('aria-selected',active?'true':'false');
+  });
+  reactorTabPanels.forEach(panel=>{
+    const active=panel.id===`reactor-tab-${name}`;
+    panel.hidden=!active;
+    panel.classList.toggle('active',active);
+  });
+}
+
+reactorTabButtons.forEach(button=>{
+  button.addEventListener('click',()=>activateReactorTab(button.dataset.reactorTab));
+});
+
+document.getElementById('reactor-form').addEventListener('invalid',event=>{
+  const panel=event.target.closest('[id^="reactor-tab-"]');
+  if(panel && panel.hidden){
+    activateReactorTab(panel.id.replace('reactor-tab-',''));
+  }
+},true);
+
+function currentSignalFieldPaths(){
+  const sourceId=document.getElementById('reaction-source').value;
+  return sourceFieldPaths[sourceId]||[];
+}
+
+function closeSignalPathMenus(except=null){
+  document.querySelectorAll('.signal-path-menu').forEach(menu=>{
+    if(menu!==except) menu.hidden=true;
+  });
+}
+
+function initSignalPathComboboxes(root=document){
+  root.querySelectorAll('.signal-path-combobox:not([data-combobox-ready])').forEach(box=>{
+    box.dataset.comboboxReady='1';
+    const input=box.querySelector('[data-signal-path-input]');
+    const toggle=box.querySelector('.signal-path-toggle');
+    const menu=box.querySelector('.signal-path-menu');
+    let activeIndex=-1;
+
+    function candidates(showAll=false){
+      const query=input.value.trim().toLowerCase();
+      const values=currentSignalFieldPaths();
+      return showAll || !query ? values : values.filter(value=>value.toLowerCase().includes(query));
+    }
+
+    function render(showAll=false){
+      const values=candidates(showAll);
+      menu.replaceChildren();
+      activeIndex=-1;
+      if(!values.length){
+        const empty=document.createElement('div');
+        empty.className='signal-path-empty';
+        empty.textContent='No matching fields';
+        menu.appendChild(empty);
+      } else {
+        values.forEach(value=>{
+          const option=document.createElement('button');
+          option.type='button';
+          option.className='signal-path-option';
+          option.textContent=value;
+          option.addEventListener('mousedown',event=>event.preventDefault());
+          option.addEventListener('click',()=>{
+            input.value=value;
+            menu.hidden=true;
+            input.focus();
+            input.dispatchEvent(new Event('change',{bubbles:true}));
+          });
+          menu.appendChild(option);
+        });
+      }
+      closeSignalPathMenus(menu);
+      menu.hidden=false;
+    }
+
+    function options(){ return Array.from(menu.querySelectorAll('.signal-path-option')); }
+    function setActive(index){
+      const items=options();
+      if(!items.length) return;
+      activeIndex=(index+items.length)%items.length;
+      items.forEach((item,i)=>item.classList.toggle('active',i===activeIndex));
+      items[activeIndex].scrollIntoView({block:'nearest'});
+    }
+
+    toggle.addEventListener('click',()=>{
+      if(!menu.hidden){ menu.hidden=true; input.focus(); return; }
+      render(true);
+      input.focus();
+    });
+    input.addEventListener('input',()=>render(false));
+    input.addEventListener('focus',()=>{ if(input.value) render(false); });
+    input.addEventListener('keydown',event=>{
+      if(event.key==='ArrowDown'){
+        event.preventDefault();
+        if(menu.hidden) render(false);
+        setActive(activeIndex+1);
+      } else if(event.key==='ArrowUp'){
+        event.preventDefault();
+        if(menu.hidden) render(false);
+        setActive(activeIndex-1);
+      } else if(event.key==='Enter' && !menu.hidden && activeIndex>=0){
+        event.preventDefault();
+        options()[activeIndex].click();
+      } else if(event.key==='Escape'){
+        menu.hidden=true;
+      }
+    });
+  });
+}
+
+function refreshSignalPathComboboxes(){
+  document.querySelectorAll('.signal-path-menu:not([hidden])').forEach(menu=>{
+    const box=menu.closest('.signal-path-combobox');
+    const input=box && box.querySelector('[data-signal-path-input]');
+    if(input) input.dispatchEvent(new Event('input'));
+  });
+}
+
+function mappingRows(){
+  const id=document.getElementById('reaction-package').value;
+  const target=document.getElementById('reaction-mappings');
+  target.innerHTML='';
+  (packageInputs[id]||[]).forEach(input=>{
+    const m=existing[input.variable_name]||{};
+    const row=document.createElement('div');
+    row.className='reaction-row';
+    const disabled=input.is_secret?'disabled':'';
+    row.innerHTML=`<input type="hidden" name="mapping_variable" value="${input.variable_name}"><span><strong>${input.label}</strong><br><small>${input.variable_name}${input.required?' · required':''}${input.is_secret?' · secret inputs cannot be mapped':''}</small></span><select name="mapping_kind" ${disabled}><option value="none">Use Package default / none</option><option value="signal">Signal field</option><option value="constant">Constant</option></select><div class="reaction-mapping-value"><div class="signal-path-combobox"><input name="mapping_value" data-signal-path-input autocomplete="off" placeholder="host or fields.snmp.trap_oid" ${disabled}><button type="button" class="signal-path-toggle" aria-label="Show signal fields" title="Show signal fields" ${disabled}>▾</button><div class="signal-path-menu" hidden></div></div><input name="mapping_pattern" class="reaction-mapping-pattern" autocomplete="off" placeholder="Optional regex, e.g. Interface\s+([^(]+)" title="Optional regular expression. Exactly one capturing group is required; that group becomes the Package input value." ${disabled}></div>`;
+    const sel=row.querySelector('select');
+    const val=row.querySelector('[name=mapping_value]');
+    const pattern=row.querySelector('[name=mapping_pattern]');
+    if(m.kind){sel.value=m.kind;val.value=m.kind==='signal'?(m.path||''):(m.value??'');}
+    pattern.value=m.pattern||'';
+    const updatePattern=()=>{
+      const enabled=!input.is_secret && sel.value==='signal';
+      pattern.hidden=!enabled;
+      pattern.readOnly=!enabled;
+    };
+    sel.addEventListener('change',updatePattern);
+    updatePattern();
+    target.appendChild(row);
+    initSignalPathComboboxes(row);
+  });
+}
+
+document.getElementById('reaction-source').addEventListener('change',refreshSignalPathComboboxes);
+document.getElementById('reaction-package').addEventListener('change',mappingRows);
+document.getElementById('add-match-rule').addEventListener('click',()=>{const fragment=document.getElementById('match-rule-template').content.cloneNode(true);document.getElementById('match-rules').appendChild(fragment);initSignalPathComboboxes(document.getElementById('match-rules'));});
+document.getElementById('add-recovery-rule').addEventListener('click',()=>{const fragment=document.getElementById('recovery-match-rule-template').content.cloneNode(true);document.getElementById('recovery-match-rules').appendChild(fragment);initSignalPathComboboxes(document.getElementById('recovery-match-rules'));});
+document.addEventListener('click',e=>{if(e.target.matches('[data-remove-row]'))e.target.closest('.reaction-row').remove();if(!e.target.closest('.signal-path-combobox'))closeSignalPathMenus();});
+initSignalPathComboboxes();
+mappingRows();
+</script>
+{% endblock %}

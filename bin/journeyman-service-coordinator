@@ -1,0 +1,118 @@
+#!/opt/journeyman/venv/bin/python3
+"""Coordinate main-server Journeyman service lifecycle and shared secrets."""
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get('JOURNEYMAN_ROOT', '/opt/journeyman'))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from journeyman_configuration import load_journeyman_configuration
+load_journeyman_configuration()
+
+from journeyman_session_key import (
+    prepare_session_signing_key,
+    rotate_session_signing_key,
+    session_signing_key_status,
+)
+
+CHILD_UNITS = (
+    'journeyman-web.service',
+    'journeyman-scheduler.service',
+    'journeyman-runner.service',
+    'journeyman-environment-builder.service',
+)
+
+
+def _run_systemctl(*arguments, check=True):
+    return subprocess.run(
+        ['/usr/bin/systemctl', *arguments],
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+
+def enforce_child_units_disabled():
+    enabled_states = {'enabled', 'enabled-runtime', 'linked', 'linked-runtime', 'alias'}
+    for unit in CHILD_UNITS:
+        current = _run_systemctl('is-enabled', unit, check=False)
+        state = (current.stdout or '').strip()
+        if state in enabled_states:
+            result = _run_systemctl('disable', unit, check=False)
+            if result.returncode != 0:
+                raise RuntimeError('Unable to disable {}: {}'.format(unit, result.stdout.strip()))
+        verify = _run_systemctl('is-enabled', unit, check=False)
+        verified_state = (verify.stdout or '').strip()
+        if verified_state in enabled_states:
+            raise RuntimeError('{} remains independently enabled.'.format(unit))
+
+
+def signal_children_after_rotation():
+    failures = []
+    for unit in CHILD_UNITS:
+        active = _run_systemctl('is-active', '--quiet', unit, check=False)
+        if active.returncode != 0:
+            continue
+        result = _run_systemctl('kill', '--kill-whom=main', '--signal=HUP', unit, check=False)
+        if result.returncode != 0:
+            failures.append('{}: {}'.format(unit, result.stdout.strip()))
+    if failures:
+        raise RuntimeError('Session key rotated, but reload signalling failed: ' + '; '.join(failures))
+
+
+def print_key_status(status):
+    print('Session signing key:')
+    print('  Exists: {}'.format('yes' if status['exists'] else 'no'))
+    if status['exists']:
+        print('  Age: {} days'.format(status['age_days']))
+        print('  Rotated at: {}'.format(status['rotated_at'].isoformat()))
+        print('  Fingerprint: {}'.format(status['fingerprint']))
+        print('  Status: {}'.format('OVERDUE' if status['overdue'] else 'healthy'))
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='journeyman-service-coordinator')
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('prepare', help='Prepare shared state before child services start.')
+    sub.add_parser('rotate-session-key', help='Rotate the session key and SIGHUP active child services.')
+    sub.add_parser('status', help='Report session-key and child-unit state.')
+    args = parser.parse_args()
+
+    if args.command == 'prepare':
+        enforce_child_units_disabled()
+        status = prepare_session_signing_key()
+        if status['created']:
+            print('Journeyman session-signing key created.')
+        elif status['rotated']:
+            print('Journeyman session-signing key rotated after eligible server boot.')
+        else:
+            print('Journeyman session-signing key retained.')
+        print_key_status(status)
+        return
+
+    if args.command == 'rotate-session-key':
+        status = rotate_session_signing_key(reason='manual_runtime_rotation')
+        signal_children_after_rotation()
+        print('Journeyman session-signing key rotated; SIGHUP sent to active child services.')
+        print_key_status(status)
+        return
+
+    status = session_signing_key_status()
+    print_key_status(status)
+    print('Child services:')
+    for unit in CHILD_UNITS:
+        enabled = _run_systemctl('is-enabled', unit, check=False)
+        active = _run_systemctl('is-active', unit, check=False)
+        enabled_text = (enabled.stdout or '').strip() or ('disabled' if enabled.returncode else 'enabled')
+        active_text = (active.stdout or '').strip() or ('inactive' if active.returncode else 'active')
+        print('  {}: {} / {}'.format(unit, active_text, enabled_text))
+
+
+if __name__ == '__main__':
+    main()

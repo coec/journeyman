@@ -1,0 +1,35 @@
+# Journeyman release dependency lock.
+#
+# Contains the exact direct and transitive Python package versions validated for
+# this release. Do not hand-edit this file as part of routine dependency work;
+# regenerate/review it as part of a Journeyman release and run the full test and
+# security suites before accepting changes.
+#
+# Base application dependency closure (PostgreSQL driver is in
+# requirements-postgresql.lock).
+alembic==1.16.5
+blinker==1.9.0
+cffi==2.0.0
+click==8.3.3
+cryptography==50.0.0
+Flask==3.1.3
+Flask-Migrate==4.1.0
+Flask-SQLAlchemy==3.1.1
+Flask-WTF==1.3.0
+greenlet==3.2.5
+gunicorn==23.0.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+ldap3==2.9.1
+Mako==1.3.12
+MarkupSafe==3.0.3
+packaging==26.2
+pyasn1==0.6.4
+pycparser==2.23
+PyYAML==6.0.3
+requests==2.33.0
+urllib3==2.7.0
+SQLAlchemy==2.0.51
+typing_extensions==4.16.0
+Werkzeug==3.1.8
+WTForms==3.2.2

@@ -1,0 +1,11 @@
+---
+- name: Validate runtime extra variables
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Assert validation token reached the playbook unchanged
+      ansible.builtin.assert:
+        that:
+          - journeyman_release_test_token == 'journeyman-release-validation'
+        success_msg: Runtime extra variable arrived unchanged.

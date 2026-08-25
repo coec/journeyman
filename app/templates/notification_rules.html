@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>{{ title }}</h1><p>Rules subscribe this automation object to canonical notification events. Duplicate rules that resolve to the same event and target produce one delivery.</p></div><a class="button" href="{{ back_url }}">← Back</a></div>
+<section class="panel form-panel">
+<h2>Add Notification Rule</h2>
+{% if not targets %}<div class="flash error">No enabled Notification Targets exist. <a href="{{ url_for('main.notification_target_new') }}">Create one first.</a></div>{% else %}
+<form method="post" id="notification-rule-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>Scope<select name="scope" id="notification-scope" required>{% for row in scope_rows %}<option value="{{ row.key }}" data-events='{{ row.events|tojson }}'>{{ row.label }}</option>{% endfor %}</select></label>
+<label>Event<select name="event_type" id="notification-event" required></select></label>
+<label>Target<select name="target_id" required>{% for target in targets %}<option value="{{ target.id }}">{{ target.name }} — {{ target.channel|title }}</option>{% endfor %}</select></label>
+<div class="form-actions"><button class="button primary" type="submit">Add Rule</button></div>
+</form>{% endif %}
+</section>
+<section class="panel"><h2>Configured Rules</h2>
+{% if rules %}<table class="data-table"><thead><tr><th>Scope</th><th>Event</th><th>Target</th><th></th></tr></thead><tbody>
+{% for rule in rules %}
+<tr><td>{{ rule_scope_labels.get(rule.id, rule.scope_type|replace('_', ' ')|title) }}</td><td>{{ event_labels.get(rule.event_type, rule.event_type) }}</td><td>{{ rule.target.name }}</td><td><form method="post" action="{{ url_for('main.notification_rule_delete', rule_id=rule.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_to" value="{{ request.path }}"><button class="button danger" type="submit">Remove</button></form></td></tr>
+{% endfor %}</tbody></table>{% else %}<p class="muted">No notification rules configured.</p>{% endif %}
+</section>
+<script nonce="{{ csp_nonce }}">
+(function(){
+ const labels={{ event_labels|tojson }}; const scope=document.getElementById('notification-scope'); const events=document.getElementById('notification-event');
+ if(!scope||!events)return;
+ function update(){
+   const opt=scope.options[scope.selectedIndex];
+   const values=JSON.parse(opt.dataset.events||'[]');
+   events.innerHTML='';
+   values.forEach(item=>{
+     const value=Array.isArray(item) ? item[0] : item;
+     const label=Array.isArray(item) ? item[1] : (labels[value]||value);
+     const o=document.createElement('option');
+     o.value=value;
+     o.textContent=label;
+     events.appendChild(o);
+   });
+ }
+ scope.addEventListener('change',update);update();
+})();
+</script>
+{% endblock %}

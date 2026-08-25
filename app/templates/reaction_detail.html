@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Reaction #{{ reaction.id }} · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Reaction #{{ reaction.id }}</h1>
+    <p>{{ reaction.reactor_display_name }} · {{ reaction.status|title }}</p>
+  </div>
+  <a class="button" href="{{ url_for('main.reactions') }}">Back to Reactions</a>
+</div>
+
+<section class="panel">
+  <dl>
+    <dt>Time</dt>
+    <dd><span class="utc-datetime" data-utc="{{ reaction.created_at.isoformat() }}">{{ reaction.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span></dd>
+
+    <dt>Reactor</dt>
+    <dd>{% if reaction.reactor %}<a href="{{ url_for('main.reactor_edit', reactor_id=reaction.reactor_id) }}">{{ reaction.reactor_display_name }}</a>{% else %}{{ reaction.reactor_display_name }}{% endif %}</dd>
+
+    <dt>Mode</dt>
+    <dd>{{ reaction.mode|title }}</dd>
+
+    <dt>Status</dt>
+    <dd>{{ reaction.status|title }}</dd>
+
+    <dt>Source</dt>
+    <dd>{{ reaction.source_display_name }}</dd>
+
+    <dt>Signal</dt>
+    <dd><a href="{{ url_for('main.signal_detail', signal_id=reaction.signal_id) }}">#{{ reaction.signal_id }}</a></dd>
+
+    <dt>Host</dt>
+    <dd>{{ reaction.signal.host or '—' }}</dd>
+
+    <dt>Package</dt>
+    <dd>{{ reaction.package_display_name }}</dd>
+
+    <dt>Job</dt>
+    <dd>{% if reaction.job_id %}<a href="{{ url_for('main.job_detail', job_id=reaction.job_id) }}">#{{ reaction.job_id }}</a>{% else %}—{% endif %}</dd>
+
+    {% if reaction.execute_after %}
+    <dt>Recovery window expires</dt>
+    <dd><span class="utc-datetime" data-utc="{{ reaction.execute_after.isoformat() }}">{{ reaction.execute_after }}</span></dd>
+    {% endif %}
+
+    {% if reaction.recovery_signal_id %}
+    <dt>Recovery Signal</dt>
+    <dd><a href="{{ url_for('main.signal_detail', signal_id=reaction.recovery_signal_id) }}">#{{ reaction.recovery_signal_id }}</a></dd>
+    {% endif %}
+
+    <dt>Message</dt>
+    <dd>{{ reaction.message or '—' }}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Resolved Reaction inputs</h2>
+  <p>Package input values resolved from the Signal and Reactor mappings for this Reaction.</p>
+  <pre>{{ reaction.get_resolved_inputs()|tojson(indent=2) }}</pre>
+</section>
+
+
+{% if reaction.job %}
+<section class="panel">
+  <div class="form-section-heading">
+    <div>
+      <h2>Reaction execution</h2>
+      <p>The normal Journeyman Job created by this Automatic Reaction.</p>
+    </div>
+    <a class="button secondary" href="{{ url_for('main.job_detail', job_id=reaction.job.id) }}">Open Job #{{ reaction.job.id }}</a>
+  </div>
+
+  <dl class="detail-grid">
+    <div>
+      <dt>Job status</dt>
+      <dd><span class="status status-{{ reaction.job.status }}">{{ reaction.job.status|replace('_', ' ')|title }}</span></dd>
+    </div>
+    <div>
+      <dt>Runner</dt>
+      <dd>{{ reaction.job.assigned_runner.name if reaction.job.assigned_runner else 'Built-in local runner' }}</dd>
+    </div>
+    <div>
+      <dt>Started</dt>
+      <dd>{% if reaction.job.started_at %}<span class="utc-datetime" data-utc="{{ reaction.job.started_at.isoformat() }}">{{ reaction.job.started_at }}</span>{% else %}—{% endif %}</dd>
+    </div>
+    <div>
+      <dt>Finished</dt>
+      <dd>{% if reaction.job.finished_at %}<span class="utc-datetime" data-utc="{{ reaction.job.finished_at.isoformat() }}">{{ reaction.job.finished_at }}</span>{% else %}—{% endif %}</dd>
+    </div>
+    <div>
+      <dt>Exit code</dt>
+      <dd>{{ reaction.job.exit_code if reaction.job.exit_code is not none else '—' }}</dd>
+    </div>
+    <div>
+      <dt>Job message</dt>
+      <dd>{{ reaction.job.message or '—' }}</dd>
+    </div>
+  </dl>
+</section>
+
+{% for step in reaction.job.steps %}
+<section class="panel job-step">
+  <div class="job-step-header">
+    <div>
+      <h3>Step {{ step.position }}: {{ step.name or ('Step ' ~ step.position) }}</h3>
+      <code>{{ step.playbook }}</code>
+    </div>
+    <span class="status status-{{ step.status }}">{{ step.status|replace('_', ' ')|title }}</span>
+  </div>
+
+  <dl class="detail-grid">
+    <div><dt>Exit code</dt><dd>{{ step.exit_code if step.exit_code is not none else '—' }}</dd></div>
+    <div><dt>Command</dt><dd>{% if step.command %}<code>{{ step.command }}</code>{% else %}—{% endif %}</dd></div>
+  </dl>
+
+  {% if step.execution_slices %}
+    {% for execution_slice in step.execution_slices %}
+      <h4>Runner: {{ execution_slice.runner_hostname or execution_slice.runner_name or ('Built-in local runner' if execution_slice.dispatch_target == 'local' else 'Remote runner') }}</h4>
+      {% if execution_slice.command %}
+        <p><strong>Command</strong></p>
+        <pre class="job-output">{{ execution_slice.command }}</pre>
+      {% endif %}
+      <p><strong>Playbook output</strong></p>
+      {% if execution_slice.stdout or execution_slice.stderr %}
+        <pre class="job-output">{% if execution_slice.stdout %}{{ execution_slice.stdout }}{% endif %}{% if execution_slice.stderr %}{% if execution_slice.stdout %}
+
+{% endif %}[stderr]
+{{ execution_slice.stderr }}{% endif %}</pre>
+      {% else %}
+        <p>No output recorded for this execution slice.</p>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <p><strong>Playbook output</strong></p>
+    {% if step.stdout or step.stderr %}
+      <pre class="job-output">{% if step.stdout %}{{ step.stdout }}{% endif %}{% if step.stderr %}{% if step.stdout %}
+
+{% endif %}[stderr]
+{{ step.stderr }}{% endif %}</pre>
+    {% else %}
+      <p>No output recorded for this step.</p>
+    {% endif %}
+  {% endif %}
+
+  {% if step.host_results %}
+    <h4>Per-host results</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Host</th><th>Status</th><th>RC</th><th>Stdout</th><th>Stderr</th></tr></thead>
+        <tbody>
+        {% for host_result in step.host_results %}
+          <tr>
+            <td><code>{{ host_result.host }}</code></td>
+            <td><span class="status status-{{ host_result.status }}">{{ host_result.status|replace('_', ' ')|title }}</span></td>
+            <td>{{ host_result.exit_code if host_result.exit_code is not none else '—' }}</td>
+            <td>{% if host_result.stdout %}<details><summary>View</summary><pre class="job-output">{{ host_result.stdout }}</pre></details>{% else %}—{% endif %}</td>
+            <td>{% if host_result.stderr %}<details><summary>View</summary><pre class="job-output error-output">{{ host_result.stderr }}</pre></details>{% else %}—{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

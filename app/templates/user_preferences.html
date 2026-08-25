@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Preferences · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Preferences</h1><p>Settings that apply only to your Journeyman account.</p></div></div>
+<section class="panel preferences-panel">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="preference-options">
+      <label class="preference-option">
+        <input type="checkbox" name="hide_disabled_projects" value="1" {% if preferences.hide_disabled_projects %}checked{% endif %}>
+        <span><strong>Hide disabled projects</strong><small>Do not show disabled Projects in the Projects list.</small></span>
+      </label>
+      <label class="preference-option">
+        <input type="checkbox" name="hide_disabled_packages" value="1" {% if preferences.hide_disabled_packages %}checked{% endif %}>
+        <span><strong>Hide disabled packages</strong><small>Do not show disabled Packages in the Packages list. Disabled Packages are already hidden from normal end users.</small></span>
+      </label>
+      <label class="preference-option">
+        <span><strong>Rows per page</strong><small>Default number of rows shown on paginated list pages.</small></span>
+        <select name="rows_per_page">
+          {% for value in (25, 50, 100, 200) %}<option value="{{ value }}" {% if preferences.rows_per_page == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="form-actions"><button class="button primary" type="submit">Save Preferences</button></div>
+  </form>
+</section>
+{% endblock %}

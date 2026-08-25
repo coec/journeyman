@@ -1,0 +1,22 @@
+[Unit]
+Description=Journeyman Web Application
+After=network-online.target journeyman.service
+Wants=network-online.target
+PartOf=journeyman.service
+Requires=journeyman.service
+
+[Service]
+Type=simple
+User=journeyman
+Group=journeyman
+WorkingDirectory=/opt/journeyman
+Environment=JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+Environment="ANSIBLE_HOST_KEY_CHECKING=False"
+Environment="ANSIBLE_LIBSSH_HOST_KEY_CHECKING=False"
+Environment="ANSIBLE_LIBSSH_HOST_KEY_AUTO_ADD=False"
+ExecStart=/opt/journeyman/venv/bin/gunicorn --worker-class gthread --workers 3 --threads 4 --timeout 120 --bind 127.0.0.1:5000 run:app
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true

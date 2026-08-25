@@ -1,0 +1,40 @@
+---
+- name: Validate deliberate partial failure and surviving hosts
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Prove all selected hosts are reachable before deliberate failure
+      ansible.builtin.raw: id -un
+      register: journeyman_partial_failure_login
+      changed_when: false
+
+    - name: Assert Machine credential login identity before deliberate failure
+      ansible.builtin.assert:
+        that:
+          - journeyman_partial_failure_login.stdout | trim == journeyman_release_test_expected_login_user
+        fail_msg: >-
+          Expected login user {{ journeyman_release_test_expected_login_user }},
+          got {{ journeyman_partial_failure_login.stdout | trim }}.
+
+    - name: Deliberately fail the configured host
+      ansible.builtin.fail:
+        msg: >-
+          JOURNEYMAN_EXPECTED_PARTIAL_FAILURE: deliberate release-validation
+          failure on {{ inventory_hostname }}.
+      when: inventory_hostname == journeyman_release_test_failure_host
+
+    - name: Prove non-failing hosts continue after the deliberate failure
+      ansible.builtin.raw: id -un
+      register: journeyman_partial_failure_survivor
+      changed_when: false
+      when: inventory_hostname != journeyman_release_test_failure_host
+
+    - name: Assert non-failing hosts retained the Machine credential identity
+      ansible.builtin.assert:
+        that:
+          - journeyman_partial_failure_survivor.stdout | trim == journeyman_release_test_expected_login_user
+        fail_msg: >-
+          Surviving host {{ inventory_hostname }} did not retain the expected
+          login identity after another host failed.
+      when: inventory_hostname != journeyman_release_test_failure_host

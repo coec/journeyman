@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Reactors · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Reactors</h1><p>Match Signals and invoke explicitly permitted Reaction Packages.</p></div><a class="button primary" href="{{ url_for('main.reactor_new') }}">＋ Add Reactor</a></div>
+<section class="panel"><table class="data-table"><thead><tr><th>Name</th><th>Source</th><th>Reaction</th><th>Mode</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+{% for reactor in reactors %}
+<tr>
+  <td><strong>{{ reactor.name }}</strong><br><small>{{ reactor.description }}</small></td>
+  <td>{{ reactor.source.name }}</td>
+  <td>{{ reactor.package.name }}</td>
+  <td>{{ reactor.mode|title }}</td>
+  <td>{{ 'Enabled' if reactor.enabled else 'Disabled' }}</td>
+  <td>
+    <details class="action-menu">
+      <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
+      <div class="action-menu-items">
+        <a class="action-menu-item" href="{{ url_for('main.reactor_edit', reactor_id=reactor.id) }}">Edit</a>
+        <form
+          method="post"
+          action="{{ url_for('main.reactor_delete', reactor_id=reactor.id) }}"
+          data-confirm="Delete Reactor &quot;{{ reactor.name | e }}&quot;? This cannot be undone."
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="action-menu-item danger" type="submit">Delete</button>
+        </form>
+      </div>
+    </details>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="6">No Reactors configured.</td></tr>
+{% endfor %}
+</tbody></table>{% include "_pagination.html" %}</section>
+{% endblock %}

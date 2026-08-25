@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>Review Project Dispatch</h1>
+    <p>
+      {{ project.name }}
+    </p>
+  </div>
+
+  <a
+    class="button"
+    href="{{ url_for('main.projects') }}"
+  >
+    Back to Projects
+  </a>
+</div>
+
+{% if warning %}
+  <div class="flash warning">
+    {{ warning }}
+  </div>
+{% endif %}
+
+{% if preview.has_large_target %}
+  <section class="panel target-preview-warning">
+    <strong>Large target set</strong>
+
+    <p>
+      At least one workflow step targets
+      {{ preview.large_target_threshold }}
+      or more hosts. Review the hostnames before continuing.
+    </p>
+  </section>
+{% endif %}
+
+{% if preview.has_zero_target %}
+  <section class="panel target-preview-warning">
+    <strong>One or more steps target no hosts</strong>
+
+    <p>
+      Check the effective inventory and limit before continuing.
+    </p>
+  </section>
+{% endif %}
+
+{% if preview.has_dynamic_targets %}
+  <section class="panel target-preview-warning target-preview-dynamic-warning">
+    <strong>Inventory targets may change during execution</strong>
+    <p>
+      One or more later steps use a filtered inventory that will be
+      refreshed during this workflow. Host lists marked as dynamic are
+      the current preview only; Journeyman will resolve them again before
+      those steps run.
+    </p>
+  </section>
+{% endif %}
+
+<section class="panel">
+  <div class="target-preview-summary">
+    <div>
+      <span>Workflow steps</span>
+      <strong>{{ preview.steps | length }}</strong>
+    </div>
+
+    <div>
+      <span>Unique hosts across all steps</span>
+      <strong>{{ preview.total_unique_hosts }}</strong>
+    </div>
+  </div>
+</section>
+
+{% for step in preview.steps %}
+  <section class="panel target-preview-step">
+    <div class="target-preview-step-heading">
+      <div>
+        <h2>
+          Step {{ step.position }}:
+          {{ step.name }}
+        </h2>
+
+        <code>{{ step.playbook }}</code>
+      </div>
+
+      <span
+        class="status
+        {% if step.target_count == 0 %}
+          status-failed
+        {% elif step.target_count >=
+                 preview.large_target_threshold %}
+          status-cancelling
+        {% else %}
+          status-successful
+        {% endif %}"
+      >
+        {{ step.target_count }}
+        host{% if step.target_count != 1 %}s{% endif %}
+      </span>
+    </div>
+
+    <dl class="detail-grid">
+      <div>
+        <dt>Repository</dt>
+        <dd>
+          {{ step.repository_name }}
+        </dd>
+      </div>
+
+      <div>
+        <dt>Repository commit</dt>
+        <dd>
+          <code>{{ step.repository_commit[:12] }}</code>
+        </dd>
+      </div>
+
+      <div>
+        <dt>Inventory</dt>
+        <dd>
+          {{ step.inventory_name }}
+
+          {% if step.inventory_is_override %}
+            <span class="project-step-inventory-source">
+              Override
+            </span>
+          {% else %}
+            <span class="project-step-inventory-source">
+              Project default
+            </span>
+          {% endif %}
+
+          {% if step.inventory_type == "filtered" %}
+            <span class="project-step-inventory-source">
+              Filtered
+            </span>
+          {% endif %}
+        </dd>
+      </div>
+
+      <div>
+        <dt>Limit</dt>
+        <dd>
+          {% if step.limit %}
+            <code>{{ step.limit }}</code>
+          {% else %}
+            None
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    {% if step.refresh_affects_filtered_targets %}
+      <div class="target-preview-step-warning">
+        <strong>Refreshes inventory for later filtered steps</strong>
+        <p>
+          After this step completes, Journeyman will refresh inventories
+          used by dependent later steps. Their displayed host lists may
+          change before execution.
+        </p>
+      </div>
+    {% endif %}
+
+    {% if step.target_hosts_may_change %}
+      <div class="target-preview-step-warning">
+        <strong>Target list may change after inventory refresh</strong>
+        <p>
+          This step uses a filtered inventory that is refreshed by an
+          earlier dependency. The hosts below are the current preview;
+          Journeyman will resolve the inventory again before this step runs.
+        </p>
+      </div>
+    {% endif %}
+
+    <details class="target-hosts">
+      <summary>
+        Review {{ step.target_count }}
+        target host{% if step.target_count != 1 %}s{% endif %}
+      </summary>
+
+      {% if step.target_hosts %}
+        <div class="target-host-list">
+          {% for hostname in step.target_hosts %}
+            <code>{{ hostname }}</code>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p>
+          No hosts matched this step's inventory and limit.
+        </p>
+      {% endif %}
+    </details>
+  </section>
+{% endfor %}
+
+<section class="panel">
+  <form
+    method="post"
+    action="{{ url_for(
+      'main.project_run',
+      project_id=project.id
+    ) }}"
+    id="project-run-confirmation"
+    data-dispatch-progress
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input
+      type="hidden"
+      name="preview_digest"
+      value="{{ preview.digest }}"
+    >
+
+    <label class="checkbox-label target-confirmation">
+      <input
+        type="checkbox"
+        id="confirm-targets"
+        name="confirm_targets"
+        value="yes"
+        required
+      >
+
+      I have reviewed the target hosts for every workflow step.
+    </label>
+
+    <div class="form-actions">
+      <button
+        class="button primary"
+        id="queue-project-button"
+        type="submit"
+      >
+        Dispatch Project
+      </button>
+
+      <a
+        class="button"
+        href="{{ url_for('main.projects') }}"
+      >
+        Cancel
+      </a>
+    </div>
+  </form>
+</section>
+
+
+
+{% endblock %}

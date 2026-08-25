@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>Review rerun of Job #{{ job.id }}</h1>
+    <p>{{ job.project_name }}</p>
+  </div>
+
+  <a
+    class="button"
+    href="{{ url_for('main.job_detail', job_id=job.id) }}"
+  >
+    Back to Job
+  </a>
+</div>
+
+{% if warning %}
+  <div class="flash warning">
+    {{ warning }}
+  </div>
+{% endif %}
+
+<section class="panel">
+  <p>
+    This rerun will create a new Job from Job #{{ job.id }}'s saved
+    execution snapshot. Journeyman will not resolve the current Project or
+    Package definition again.
+  </p>
+
+  {% if rerun_scope == "failed" %}
+    <div class="flash warning">
+      Failed-host-only rerun: only the {{ failed_rerun_hosts | length }} host{% if failed_rerun_hosts | length != 1 %}s{% endif %}
+      whose final saved result was failed or unreachable will be targeted.
+      The workflow starts again from its beginning for those hosts.
+    </div>
+  {% endif %}
+
+  <dl class="detail-grid">
+    <div>
+      <dt>Project</dt>
+      <dd>{{ job.project_name }}</dd>
+    </div>
+
+    {% if job.package_snapshot %}
+      <div>
+        <dt>Package</dt>
+        <dd>{{ job.package_snapshot.package_name }}</dd>
+      </div>
+    {% endif %}
+
+    <div>
+      <dt>Source Job</dt>
+      <dd>#{{ job.id }}</dd>
+    </div>
+
+    <div>
+      <dt>Source Status</dt>
+      <dd>
+        <span class="status status-{{ job.status }}">
+          {{ job.status | replace('_', ' ') | title }}
+        </span>
+      </dd>
+    </div>
+
+    <div>
+      <dt>Originally Requested By</dt>
+      <dd>{{ job.requested_by }}</dd>
+    </div>
+
+    <div>
+      <dt>Execution Type</dt>
+      <dd>{{ job.execution_type }}</dd>
+    </div>
+
+    <div>
+      <dt>Workflow Steps</dt>
+      <dd>{{ preview_steps | length }}</dd>
+    </div>
+
+    <div>
+      <dt>Oversight Between All Steps</dt>
+      <dd>{{ "Yes" if job.oversight_required_between_all_steps else "No" }}</dd>
+    </div>
+  </dl>
+</section>
+
+{% if preview_steps %}
+  <div class="form-section-heading">
+    <div>
+      <h2>Saved Workflow</h2>
+      <p>
+        Repository revisions, inventories and execution hosts below are from
+        the original Job snapshot.
+      </p>
+    </div>
+  </div>
+
+  {% for step in preview_steps %}
+    <section class="panel target-preview-step">
+      <div class="target-preview-step-heading">
+        <div>
+          <h3>{{ step.position }}. {{ step.name }}</h3>
+          {% if step.inventory %}
+            <p>{{ step.inventory }}</p>
+          {% endif %}
+        </div>
+        <strong>
+          {{ step.host_count }} host{% if step.host_count != 1 %}s{% endif %}
+        </strong>
+      </div>
+
+      <dl class="detail-grid">
+        <div>
+          <dt>Repository</dt>
+          <dd>{{ step.repository or "—" }}</dd>
+        </div>
+        <div>
+          <dt>Commit</dt>
+          <dd><code>{{ step.commit or "Not recorded" }}</code></dd>
+        </div>
+        <div>
+          <dt>Inventory</dt>
+          <dd>{{ step.inventory or "—" }}</dd>
+        </div>
+        <div>
+          <dt>Limit</dt>
+          <dd><code>{{ step.limit or "—" }}</code></dd>
+        </div>
+      </dl>
+
+      <details class="target-hosts">
+        <summary>
+          Review {{ step.host_count }} saved execution
+          host{% if step.host_count != 1 %}s{% endif %}
+        </summary>
+
+        {% if step.hosts %}
+          <div class="target-host-list">
+            {% for hostname in step.hosts %}
+              <code>{{ hostname }}</code>
+            {% endfor %}
+          </div>
+        {% elif rerun_scope == "failed" %}
+          <p>No failed hosts from the source Job target this step; it will be a successful no-op if its workflow dependencies make it eligible.</p>
+        {% else %}
+          <p>
+            Hostnames are not individually recorded in execution slices for
+            this step. The saved inventory snapshot contains
+            {{ step.host_count }} host{% if step.host_count != 1 %}s{% endif %}.
+          </p>
+        {% endif %}
+      </details>
+    </section>
+  {% endfor %}
+{% else %}
+  <section class="panel">
+    <p>This Job has no saved workflow steps.</p>
+  </section>
+{% endif %}
+
+{% if rerun_blockers %}
+  <section class="panel">
+    <h2>Rerun unavailable</h2>
+    <p>
+      Journeyman cannot reproduce this Job's saved execution snapshot with
+      the execution environments currently available.
+    </p>
+    <ul>
+      {% for blocker in rerun_blockers %}
+        <li>{{ blocker }}</li>
+      {% endfor %}
+    </ul>
+    <p>
+      Launch the Project again to use its current Environment definitions.
+    </p>
+  </section>
+{% else %}
+
+<section class="panel">
+  <form
+    method="post"
+    action="{{ url_for('main.job_rerun', job_id=job.id) }}"
+    id="job-rerun-confirmation"
+    data-dispatch-progress
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="rerun_scope" value="{{ rerun_scope }}">
+
+    <label class="checkbox-label target-confirmation">
+      <input
+        type="checkbox"
+        id="confirm-rerun"
+        name="confirm_rerun"
+        value="yes"
+        required
+      >
+
+      I have reviewed the saved execution snapshot and want to rerun this Job{% if rerun_scope == "failed" %} for failed hosts only{% endif %}.
+    </label>
+
+    <div class="form-actions">
+      <button
+        class="button primary"
+        id="confirm-rerun-button"
+        type="submit"
+        disabled
+      >
+        {% if rerun_scope == "failed" %}Confirm failed-only rerun{% else %}Confirm rerun{% endif %}
+      </button>
+
+      <a
+        class="button"
+        href="{{ url_for('main.job_detail', job_id=job.id) }}"
+      >
+        Cancel
+      </a>
+    </div>
+  </form>
+</section>
+
+{% endif %}
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  const confirmation = document.getElementById("confirm-rerun");
+  const button = document.getElementById("confirm-rerun-button");
+
+  if (!confirmation || !button) {
+    return;
+  }
+
+  confirmation.addEventListener("change", function () {
+    button.disabled = !confirmation.checked;
+  });
+}());
+</script>
+
+{% endblock %}

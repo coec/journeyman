@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Notification Targets · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><h1>Notification Targets</h1><p>Reusable destinations for Journeyman notification rules.</p></div>
+  <a class="button primary" href="{{ url_for('main.notification_target_new') }}">＋ Add Target</a>
+</div>
+<section class="panel">
+  {% if targets %}
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Channel</th><th>Destination</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for target in targets %}
+      <tr>
+        <td><strong>{{ target.name }}</strong>{% if target.description %}<br><small>{{ target.description }}</small>{% endif %}</td>
+        <td>{{ target.channel|title }}</td>
+        <td>
+          {% if target.channel == 'email' %}{{ target.recipients }} via {{ target.host }}:{{ target.port or 25 }}
+          {% elif target.channel == 'webhook' %}{{ target.url }}
+          {% else %}{{ target.host }}:{{ target.port or 514 }} / {{ target.syslog_protocol|upper }}{% endif %}
+        </td>
+        <td>{{ 'Enabled' if target.enabled else 'Disabled' }}</td>
+        <td class="actions-cell">
+          <details class="action-menu">
+            <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
+            <div class="action-menu-items">
+              <form method="post" action="{{ url_for('main.notification_target_test', target_id=target.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="action-menu-item" type="submit">Test</button>
+              </form>
+              <a class="action-menu-item" href="{{ url_for('main.notification_target_edit', target_id=target.id) }}">Edit</a>
+              <form method="post" action="{{ url_for('main.notification_target_delete', target_id=target.id) }}" data-confirm="Delete this Notification Target?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="action-menu-item danger" type="submit">Delete</button>
+              </form>
+            </div>
+          </details>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No Notification Targets configured.</p>{% endif %}
+</section>
+{% endblock %}

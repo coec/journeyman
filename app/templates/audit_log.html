@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Audit Log · Journeyman{% endblock %}
+{% block content %}
+<section class="page-heading-row">
+  <div>
+    <h1>Audit Log</h1>
+    <p>Security and administrative activity recorded by Journeyman.</p>
+  </div>
+</section>
+
+<div
+  id="audit-live-banner"
+  class="panel audit-live-banner"
+  data-latest-audit-id="{{ latest_audit_id }}"
+  hidden
+>
+  <strong id="audit-live-message">New audit entries are available.</strong>
+  <a class="button secondary" href="{{ request.full_path if request.query_string else request.path }}">Refresh</a>
+</div>
+
+<section class="panel audit-filter-panel">
+  <form class="audit-filters" method="get">
+    <label>
+      Search
+      <input name="q" value="{{ query_text }}" placeholder="Actor, action, object, IP or request ID">
+    </label>
+    <label>
+      Action
+      <select name="action">
+        <option value="">All actions</option>
+        {% for action in actions %}
+          <option value="{{ action }}" {% if action == selected_action %}selected{% endif %}>{{ action }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Result
+      <select name="result">
+        <option value="">All results</option>
+        {% for value in ('queued', 'success', 'failure', 'cancelled', 'denied') %}
+          <option value="{{ value }}" {% if value == selected_result %}selected{% endif %}>{{ value|capitalize }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="audit-filter-actions">
+      <button class="button primary" type="submit">Filter</button>
+      <a class="button secondary" href="{{ url_for('main.audit_log') }}">Clear</a>
+    </div>
+  </form>
+</section>
+
+<section class="panel table-panel">
+  <div class="table-scroll">
+    <table class="audit-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Actor</th>
+          <th>Action</th>
+          <th>Object</th>
+          <th>Result</th>
+          <th>Source</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+          <tr>
+            <td class="nowrap">
+              <span class="utc-datetime" data-utc="{{ entry.occurred_at.isoformat() }}">
+                {{ entry.occurred_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC
+              </span>
+            </td>
+            <td>
+              <strong>{{ entry.actor_username }}</strong>
+              {% if entry.actor_role %}<small>{{ entry.actor_role }}{% if entry.authenticated_via %} · {{ entry.authenticated_via }}{% endif %}</small>{% endif %}
+            </td>
+            <td><code>{{ entry.action }}</code></td>
+            <td>
+              {% if entry.object_name %}<strong>{{ entry.object_name }}</strong>{% endif %}
+              {% if entry.object_type or entry.object_id %}<small>{{ entry.object_type }}{% if entry.object_id %} #{{ entry.object_id }}{% endif %}</small>{% endif %}
+            </td>
+            <td><span class="audit-result {{ entry.result }}">{{ entry.result }}</span></td>
+            <td>
+              {{ entry.source_ip or '—' }}
+              {% if entry.request_id %}<small title="{{ entry.request_id }}">{{ entry.request_id[:12] }}</small>{% endif %}
+            </td>
+            <td>
+              {% if entry.details_json and entry.details_json.strip() not in ('', '{}') %}
+                <details><summary>View</summary><pre>{{ entry.details_json }}</pre></details>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty-state">No audit events match the selected filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% include "_pagination.html" %}
+</section>
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  const banner = document.getElementById("audit-live-banner");
+  const message = document.getElementById("audit-live-message");
+  const initialLatestId = Number(banner.dataset.latestAuditId || "0");
+  const eventsUrl = {{ url_for('main.audit_log_events') | tojson }}
+    + "?after_id=" + encodeURIComponent(initialLatestId);
+  const latestUrl = {{ url_for('main.audit_log_latest_id') | tojson }};
+  const fallbackIntervalMilliseconds = 5000;
+  const maximumEventSourceErrors = 3;
+
+  let eventSource = null;
+  let fallbackTimer = null;
+  let eventSourceErrors = 0;
+
+  function showBanner(latestId, newCount) {
+    if (Number(latestId) <= initialLatestId) {
+      return;
+    }
+
+    const count = Math.max(Number(newCount) || 1, 1);
+    message.textContent = count === 1
+      ? "1 new audit entry is available."
+      : count + " new audit entries are available.";
+    banner.hidden = false;
+  }
+
+  function startFallbackPolling() {
+    if (fallbackTimer !== null) {
+      return;
+    }
+
+    fallbackTimer = window.setInterval(async function () {
+      if (document.hidden) {
+        return;
+      }
+
+      try {
+        const response = await window.fetch(latestUrl, {
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+        if (!response.ok) {
+          return;
+        }
+        const payload = await response.json();
+        showBanner(
+          payload.latest_id,
+          Number(payload.latest_id) - initialLatestId
+        );
+      } catch (error) {
+        return;
+      }
+    }, fallbackIntervalMilliseconds);
+  }
+
+  function startEventStream() {
+    if (!("EventSource" in window)) {
+      startFallbackPolling();
+      return;
+    }
+
+    eventSource = new window.EventSource(eventsUrl);
+
+    eventSource.addEventListener("audit-update", function (event) {
+      eventSourceErrors = 0;
+      const payload = JSON.parse(event.data || "{}");
+      showBanner(payload.latest_id, payload.new_count);
+    });
+
+    eventSource.onerror = function () {
+      eventSourceErrors += 1;
+      if (eventSourceErrors >= maximumEventSourceErrors) {
+        eventSource.close();
+        startFallbackPolling();
+      }
+    };
+  }
+
+  startEventStream();
+}());
+</script>
+{% endblock %}

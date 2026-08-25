@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Teams · Journeyman{% endblock %}
+
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .team-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, .7fr); gap: 16px; }
+  .team-search { padding: 16px; }
+  .team-search form.search { display: flex; gap: 8px; }
+  .team-search input[type="search"] { flex: 1; }
+  .team-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .team-description { max-width: 420px; }
+  @media (max-width: 950px) { .team-grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="page-heading">
+  <div>
+    <h1>Teams</h1>
+    <p>Register existing Active Directory groups and grant them Package execute permissions. Membership remains managed in AD.</p>
+  </div>
+  <a class="button" href="{{ url_for('main.directory_settings') }}">Directory Settings</a>
+</div>
+
+{% if not directory_settings.enabled %}
+  <div class="panel placeholder">
+    <h2>Directory integration is disabled</h2>
+    <p>Configure and enable LDAP before AD groups can be registered as Teams.</p>
+  </div>
+{% else %}
+  {% if directory_error %}<div class="flash error">Unable to search Active Directory: {{ directory_error }}</div>{% endif %}
+
+  <div class="team-grid">
+    <section class="panel repository-list">
+      <div class="detail-title padded-title">
+        <div><h2>Registered Teams</h2><span>{{ teams|length }} AD group{% if teams|length != 1 %}s{% endif %}</span></div>
+      </div>
+      {% if teams %}
+        <table>
+          <thead><tr><th>Team</th><th>AD group</th><th>Package grants</th><th>Created by</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for team in teams %}
+              <tr>
+                <td><strong>{{ team.display_name }}</strong>{% if team.description %}<small class="team-description">{{ team.description }}</small>{% endif %}</td>
+                <td>{{ team.sam_account_name or team.display_name }}<small class="break">{{ team.distinguished_name }}</small></td>
+                <td>
+                  {% set package_names = team_package_grants.get(team.object_guid|lower, []) %}
+                  {% if package_names %}
+                    {{ package_names|join(', ') }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>{{ team.created_by }}</td>
+                <td>
+                  <details class="action-menu">
+                    <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
+                    <div class="action-menu-items">
+                      <a class="action-menu-item" href="{{ url_for('main.teams', selected=team.id) }}">Members</a>
+                      <form method="post" action="{{ url_for('main.delete_team', team_id=team.id) }}" data-confirm="Remove this Team from Journeyman? AD will not be changed.">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="action-menu-item danger" type="submit">Remove</button>
+                      </form>
+                    </div>
+                  </details>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty-state"><h2>No Teams registered</h2><p>Search Active Directory and add the groups that should receive Package execution rights.</p></div>
+      {% endif %}
+    </section>
+
+    <aside class="panel team-search">
+      <h2>Find an AD group</h2>
+      <p class="team-search-help">Enter at least two characters. Journeyman validates the selected group again before storing it.</p>
+      <form class="search" method="get" action="{{ url_for('main.teams') }}">
+        <input type="search" name="q" value="{{ search_query }}" minlength="2" placeholder="Network Operations" required>
+        <button class="button primary" type="submit">Search</button>
+      </form>
+
+      {% if search_query and not directory_error %}
+        <div class="section-spaced">
+          {% if search_results %}
+            <table>
+              <thead><tr><th>Matching group</th><th></th></tr></thead>
+              <tbody>
+                {% for group in search_results %}
+                  <tr>
+                    <td><strong>{{ group.display_name }}</strong><small>{{ group.sam_account_name }}</small><small class="break">{{ group.distinguished_name }}</small></td>
+                    <td>
+                      {% if group.object_guid in registered_guids %}
+                        <span class="status status-successful">Added</span>
+                      {% else %}
+                        <form method="post" action="{{ url_for('main.add_team') }}">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                          <input type="hidden" name="search_query" value="{{ search_query }}">
+                          <input type="hidden" name="distinguished_name" value="{{ group.distinguished_name }}">
+                          <button class="button" type="submit">Add</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <div class="empty">No matching AD groups found.</div>
+          {% endif %}
+        </div>
+      {% endif %}
+    </aside>
+  </div>
+
+  {% if selected_team %}
+    <section class="panel repository-list section-spaced">
+      <div class="detail-title padded-title">
+        <div>
+          <h2>{{ selected_team.display_name }} members</h2>
+          <span>Read live from Active Directory{% if directory_settings.include_nested_groups %}, including nested groups{% endif %}</span>
+        </div>
+        <a class="button" href="{{ url_for('main.teams') }}">Close</a>
+      </div>
+      {% if not directory_error and team_members %}
+        <table>
+          <thead><tr><th>Username</th><th>Display name</th><th>UPN</th><th>Email</th></tr></thead>
+          <tbody>
+            {% for member in team_members %}
+              <tr>
+                <td class="repository-name">{{ member.username }}</td>
+                <td>{{ member.display_name }}</td>
+                <td>{{ member.user_principal_name or '—' }}</td>
+                <td>{{ member.mail or '—' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% elif not directory_error %}
+        <div class="empty">No enabled user members were found.</div>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endif %}
+{% endblock %}

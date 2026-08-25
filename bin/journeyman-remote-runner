@@ -1,0 +1,2506 @@
+#!/opt/journeyman/venv314/bin/python3
+"""Journeyman remote execution agent.
+
+The agent authenticates to the central Journeyman API, claims one assigned Job,
+downloads immutable repository artefacts, decrypts execution data, runs the
+steps locally, reports cancellation and completion, and removes its workspace.
+"""
+
+import argparse
+import fcntl
+import base64
+import hashlib
+from importlib import metadata as importlib_metadata
+import json
+import logging
+import os
+import re
+import shlex
+import shutil
+import signal
+import ssl
+import socket
+import subprocess
+import tarfile
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+LOGGER = logging.getLogger("journeyman-remote-runner")
+VERSION = "0.16"
+KEY_INFO = b"journeyman remote execution data v1"
+STOP = False
+
+
+def env(name, default=""):
+    return str(os.environ.get(name, default)).strip()
+
+
+BASE_URL = env("JOURNEYMAN_SERVER_URL").rstrip("/")
+RUNNER_UUID = env("JOURNEYMAN_RUNNER_UUID")
+RUNNER_SECRET = env("JOURNEYMAN_RUNNER_SECRET")
+WORK_ROOT = Path(env("JOURNEYMAN_REMOTE_WORK_ROOT", "/var/lib/journeyman/remote-jobs"))
+POLL_SECONDS = max(1, int(env("JOURNEYMAN_REMOTE_POLL_SECONDS", "5")))
+CONTROL_SECONDS = max(1, int(env("JOURNEYMAN_REMOTE_CONTROL_SECONDS", "2")))
+HEARTBEAT_SECONDS = max(5, int(env("JOURNEYMAN_REMOTE_HEARTBEAT_SECONDS", "15")))
+MAX_LIVE_OUTPUT_LENGTH = 2 * 1024 * 1024
+SIGNAL_SPOOL_ROOT = Path(env("JOURNEYMAN_SIGNAL_SPOOL_ROOT", "/var/spool/journeyman/signals"))
+SNMP_SOURCES_FILE = Path(env("JOURNEYMAN_SNMP_SOURCES_FILE", "/etc/journeyman/snmp-sources.json"))
+ENVIRONMENT_ROOT = Path(env("JOURNEYMAN_ENVIRONMENT_ROOT", "/opt/journeyman/environments"))
+ENVIRONMENT_MANIFEST_NAME = ".journeyman-environment.json"
+SYSTEM_ENVIRONMENT_NAME = "System Ansible"
+SYSTEM_ENVIRONMENT_REVISION = "builtin-system-v1"
+MAX_SPOOL_SIGNAL_BYTES = 256 * 1024
+SIGNAL_BATCH_SIZE = 50
+WORKER_LOCK = threading.Lock()
+ACTIVE_WORKERS = set()
+MAX_CONCURRENT_ASSIGNMENTS = 1
+RUNTIME_DEPENDENCY_NAMES = {"cryptography"}
+
+
+def _signal(signum, frame):
+    global STOP
+    STOP = True
+
+
+def _validated_https_url(value, label="Journeyman server URL"):
+    value = str(value or "").strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise RuntimeError("{} must use https:// with a hostname.".format(label))
+    if parsed.username or parsed.password:
+        raise RuntimeError("{} must not contain embedded credentials.".format(label))
+    return value
+
+
+def _ssl_context(ca_file=""):
+    ca_file = str(ca_file or env("JOURNEYMAN_CA_FILE")).strip()
+    if ca_file:
+        return ssl.create_default_context(cafile=ca_file)
+    return ssl.create_default_context()
+
+
+def _headers(token=None):
+    value = {
+        "X-Journeyman-Runner-ID": RUNNER_UUID,
+        "Authorization": "Bearer {}".format(RUNNER_SECRET),
+        "Accept": "application/json",
+    }
+    if token:
+        value["X-Journeyman-Dispatch-Token"] = token
+    return value
+
+
+def request(method, url, *, token=None, payload=None, binary=False):
+    data = None
+    headers = _headers(token)
+    if payload is not None:
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=_ssl_context()) as response:
+            body = response.read()
+            if binary:
+                return response.status, body
+            if not body or not body.strip():
+                return response.status, None
+            try:
+                return response.status, json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                content_type = str(response.headers.get("Content-Type") or "").strip()
+                preview = body[:200].decode("utf-8", "replace").replace("\n", " ").strip()
+                raise RuntimeError(
+                    "{} {} returned HTTP {} with non-JSON response"
+                    "{}: {}".format(
+                        method,
+                        url,
+                        response.status,
+                        " ({})".format(content_type) if content_type else "",
+                        preview,
+                    )
+                ) from exc
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        if exc.code == 204:
+            return 204, None
+        raise RuntimeError("{} {} failed: HTTP {} {}".format(method, url, exc.code, body)) from exc
+
+
+
+def register_remote_runner(
+    server_url,
+    token,
+    *,
+    config_path,
+    ca_file="",
+    work_root=None,
+    signal_spool_root=None,
+):
+    """Consume a one-time registration token and write the runner environment file."""
+
+    server_url = _validated_https_url(server_url)
+    token = str(token or "").strip()
+    if not token:
+        raise RuntimeError("Runner registration token is required.")
+
+    payload = json.dumps({
+        "token": token,
+        "hostname": socket.getfqdn() or socket.gethostname(),
+        "version": VERSION,
+    }, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        server_url + "/api/runners/register",
+        data=payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            req,
+            timeout=60,
+            context=_ssl_context(ca_file),
+        ) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        raise RuntimeError(
+            "Runner registration failed: HTTP {} {}".format(exc.code, body)
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Runner registration failed: {}".format(exc)) from exc
+
+    data = json.loads(body.decode("utf-8")) if body else {}
+    runner_uuid = str(data.get("runner_uuid") or "").strip()
+    runner_secret = str(data.get("runner_secret") or "").strip()
+    if not runner_uuid or not runner_secret:
+        raise RuntimeError("Runner registration response did not contain credentials.")
+
+    destination = Path(config_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    resolved_work_root = str(
+        work_root or "/var/lib/journeyman/remote-jobs"
+    ).strip()
+    resolved_signal_spool_root = str(
+        signal_spool_root or "/var/spool/journeyman/signals"
+    ).strip()
+    lines = [
+        "JOURNEYMAN_SERVER_URL={}".format(server_url),
+        "JOURNEYMAN_RUNNER_UUID={}".format(runner_uuid),
+        "JOURNEYMAN_RUNNER_SECRET={}".format(runner_secret),
+        "JOURNEYMAN_REMOTE_WORK_ROOT={}".format(resolved_work_root),
+        "JOURNEYMAN_REMOTE_POLL_SECONDS=5",
+        "JOURNEYMAN_REMOTE_CONTROL_SECONDS=2",
+        "JOURNEYMAN_SIGNAL_SPOOL_ROOT={}".format(resolved_signal_spool_root),
+    ]
+    if ca_file:
+        lines.append("JOURNEYMAN_CA_FILE={}".format(str(ca_file).strip()))
+
+    temporary = destination.with_name(".{}.tmp".format(destination.name))
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, destination)
+    return {
+        "runner_uuid": runner_uuid,
+        "name": str(data.get("name") or ""),
+        "site": str(data.get("site") or ""),
+    }
+
+def _load_env_file(path):
+    values = {}
+    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def unregister_remote_runner(config_path, *, delete=True, ca_file=""):
+    """Revoke this runner credential, optionally deleting its registry row."""
+
+    config = _load_env_file(config_path)
+    server_url = _validated_https_url(config.get("JOURNEYMAN_SERVER_URL"))
+    runner_uuid = str(config.get("JOURNEYMAN_RUNNER_UUID") or "").strip()
+    runner_secret = str(config.get("JOURNEYMAN_RUNNER_SECRET") or "").strip()
+    resolved_ca_file = str(
+        ca_file or config.get("JOURNEYMAN_CA_FILE") or ""
+    ).strip()
+    if not server_url or not runner_uuid or not runner_secret:
+        raise RuntimeError(
+            "Runner configuration does not contain server URL, UUID, and secret."
+        )
+
+    payload = json.dumps({"delete": bool(delete)}, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    req = urllib.request.Request(
+        server_url + "/api/runners/unregister",
+        data=payload,
+        headers={
+            "Accept": "application/json",
+            "Authorization": "Bearer {}".format(runner_secret),
+            "Content-Type": "application/json",
+            "X-Journeyman-Runner-ID": runner_uuid,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            req, timeout=60, context=_ssl_context(resolved_ca_file)
+        ) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        raise RuntimeError(
+            "Runner unregister failed: HTTP {} {}".format(exc.code, body)
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Runner unregister failed: {}".format(exc)) from exc
+
+    data = json.loads(body.decode("utf-8")) if body else {}
+    return data
+
+
+def api(path):
+    return BASE_URL + path
+
+
+def _safe_source_uuid(value):
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return ""
+
+
+def forward_signal_spool():
+    """Forward durable syslog-derived Signal files and remove only acknowledged files."""
+    if not SIGNAL_SPOOL_ROOT.is_dir():
+        return 0
+    forwarded = 0
+    for source_directory in sorted(SIGNAL_SPOOL_ROOT.iterdir()):
+        if not source_directory.is_dir() or source_directory.is_symlink():
+            continue
+        source_uuid = _safe_source_uuid(source_directory.name)
+        if not source_uuid:
+            continue
+        candidates = []
+        for path in sorted(source_directory.glob("*.json"))[:SIGNAL_BATCH_SIZE]:
+            try:
+                stat_result = path.stat()
+                if path.is_symlink() or not path.is_file() or stat_result.st_size > MAX_SPOOL_SIGNAL_BYTES:
+                    LOGGER.error("Ignoring unsafe/oversized Signal spool file %s", path)
+                    continue
+                item = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(item, dict):
+                    raise ValueError("Signal spool record is not a JSON object")
+                candidates.append((path, item))
+            except Exception:
+                LOGGER.exception("Unable to read Signal spool file %s", path)
+        if not candidates:
+            continue
+        _status, response = request(
+            "POST",
+            api("/api/runners/signals"),
+            payload={"source_uuid": source_uuid, "signals": [item for _path, item in candidates]},
+        )
+        results = response.get("results") if isinstance(response, dict) else None
+        if not isinstance(results, list) or len(results) != len(candidates):
+            raise RuntimeError("Signal forwarding response did not acknowledge every submitted file.")
+        rejected_directory = source_directory / "rejected"
+        for (path, _item), result in zip(candidates, results):
+            status = str((result or {}).get("status") or "")
+            if status in {"accepted", "duplicate"}:
+                path.unlink(missing_ok=True)
+                forwarded += 1
+            elif status == "rejected":
+                rejected_directory.mkdir(mode=0o700, exist_ok=True)
+                os.chmod(rejected_directory, 0o700)
+                destination = rejected_directory / path.name
+                os.replace(path, destination)
+                LOGGER.error(
+                    "Signal spool file %s was rejected by Journeyman and moved to %s: %s",
+                    path, destination, (result or {}).get("error") or "unspecified rejection",
+                )
+    return forwarded
+
+
+
+def _rpm_installed(package):
+    try:
+        completed = subprocess.run(
+            ["rpm", "-q", package],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+        return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _snmp_receiver_configuration():
+    path = SNMP_SOURCES_FILE
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+    except (OSError, ValueError):
+        value = []
+    if not isinstance(value, list):
+        value = []
+    cleaned = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        source_uuid = _safe_source_uuid(item.get("source_uuid"))
+        try:
+            port = int(item.get("port"))
+        except (TypeError, ValueError):
+            continue
+        if source_uuid and 1 <= port <= 65535:
+            cleaned.append({"source_uuid": source_uuid, "port": port})
+    cleaned.sort(key=lambda item: item["source_uuid"])
+    return cleaned
+
+
+def _configuration_fingerprint(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _service_active(name):
+    try:
+        completed = subprocess.run(
+            ["systemctl", "is-active", "--quiet", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+        return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def managed_capability_status():
+    """Report feature/service capability state without affecting dispatch capabilities."""
+    spool_helper = Path("/opt/journeyman/bin/journeyman-signal-spool").is_file()
+    syslog_receiver = bool(shutil.which("rsyslogd") or shutil.which("syslog-ng"))
+    snmp_helper = Path("/opt/journeyman/bin/journeyman-snmp-trap-spool").is_file()
+    net_snmp = _rpm_installed("net-snmp") and bool(shutil.which("snmptrapd"))
+    snmp_config = _snmp_receiver_configuration()
+    snmp_services_healthy = all(
+        _service_active("journeyman-snmptrapd-{}.service".format(item["source_uuid"]))
+        for item in snmp_config
+    )
+    snmp_installed = net_snmp and snmp_helper
+    snmp_healthy = snmp_installed and snmp_services_healthy
+    return {
+        "syslog_signal_receiver": {
+            "installed": spool_helper and syslog_receiver,
+            "healthy": spool_helper and syslog_receiver,
+            "message": "Ready" if spool_helper and syslog_receiver else "Requires rsyslog/syslog-ng and the Journeyman Signal spool helper",
+        },
+        "snmp_trap_receiver": {
+            "installed": snmp_installed,
+            "healthy": snmp_healthy,
+            "message": "Ready" if snmp_healthy else ("Receiver service is not healthy" if snmp_installed else "Requires net-snmp and the Journeyman SNMP trap helper"),
+            "configuration_fingerprint": _configuration_fingerprint(snmp_config),
+        },
+    }
+
+def _missing_system_packages(packages):
+    packages = [
+        str(item or "").strip()
+        for item in (packages or [])
+        if str(item or "").strip()
+    ]
+    if not packages:
+        return []
+    rpm = shutil.which("rpm")
+    if not rpm:
+        return packages
+
+    missing = []
+    for package in packages:
+        completed = subprocess.run(
+            [rpm, "-q", package],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if completed.returncode != 0:
+            missing.append(package)
+    return missing
+
+
+def execution_environment_status():
+    """Return runner-local execution Environments for heartbeat reporting.
+
+    The System Ansible Environment is intrinsic to the runner.  Synced named
+    Environments are discovered through a small manifest written inside each
+    runner-local Environment directory by the Environment sync workflow.
+    """
+
+    rows = []
+    system_ansible = shutil.which("ansible-playbook")
+    if system_ansible:
+        rows.append({
+            "name": SYSTEM_ENVIRONMENT_NAME,
+            "revision": SYSTEM_ENVIRONMENT_REVISION,
+            "path": "__SYSTEM_ANSIBLE__",
+            "status": "ready",
+            "message": "ansible-playbook is available in the runner service PATH.",
+        })
+    else:
+        rows.append({
+            "name": SYSTEM_ENVIRONMENT_NAME,
+            "revision": SYSTEM_ENVIRONMENT_REVISION,
+            "path": "__SYSTEM_ANSIBLE__",
+            "status": "failed",
+            "message": "ansible-playbook was not found in the runner service PATH.",
+        })
+
+    if not ENVIRONMENT_ROOT.is_dir():
+        return rows
+
+    for manifest_path in sorted(ENVIRONMENT_ROOT.glob("*/" + ENVIRONMENT_MANIFEST_NAME)):
+        try:
+            if manifest_path.stat().st_size > 64 * 1024:
+                raise RuntimeError("Environment manifest is too large.")
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise RuntimeError("Environment manifest is not an object.")
+
+            environment_id = payload.get("environment_id")
+            name = str(payload.get("name") or "").strip()
+            revision = str(payload.get("revision") or "").strip()
+            system_requirements = payload.get("system_requirements") or []
+            if not isinstance(system_requirements, list):
+                raise RuntimeError("Environment manifest system requirements are invalid.")
+            missing_system_packages = _missing_system_packages(system_requirements)
+            root = manifest_path.parent.resolve()
+            python_path = root / "bin" / "python"
+            ansible_path = root / "bin" / "ansible-playbook"
+            ready = (
+                python_path.is_file()
+                and os.access(python_path, os.X_OK)
+                and ansible_path.is_file()
+                and os.access(ansible_path, os.X_OK)
+                and bool(revision)
+                and bool(name)
+                and not missing_system_packages
+            )
+            row = {
+                "name": name,
+                "revision": revision,
+                "path": str(root),
+                "status": "ready" if ready else "failed",
+                "message": (
+                    "Python and ansible-playbook are available."
+                    if ready
+                    else (
+                        "Required runner system packages are missing: {}.".format(
+                            ", ".join(missing_system_packages)
+                        )
+                        if missing_system_packages
+                        else "Synced Environment is incomplete or not executable."
+                    )
+                ),
+            }
+            if environment_id not in (None, ""):
+                row["environment_id"] = environment_id
+            rows.append(row)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            LOGGER.warning("Unable to inspect Environment manifest %s: %s", manifest_path, exc)
+
+    return rows
+
+
+
+def _environment_slug(value):
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "environment"
+
+
+def _environment_sync_target(environment_id, name):
+    root = ENVIRONMENT_ROOT.resolve()
+    target = (root / "{}-{}".format(int(environment_id), _environment_slug(name))).resolve()
+    if root not in target.parents:
+        raise RuntimeError("Environment synchronization path escaped the configured root.")
+    return target
+
+
+def _redact_environment_sync_output(value, proxy_environment):
+    text = str(value or "")
+    secrets_to_redact = set()
+    for raw_value in (proxy_environment or {}).values():
+        raw_value = str(raw_value or "")
+        if not raw_value:
+            continue
+        secrets_to_redact.add(raw_value)
+        try:
+            parsed = urllib.parse.urlsplit(raw_value)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.password:
+            secrets_to_redact.add(parsed.password)
+            secrets_to_redact.add(urllib.parse.unquote(parsed.password))
+    for secret in sorted(secrets_to_redact, key=len, reverse=True):
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return text
+
+
+def _run_environment_sync_command(command, environment, label, proxy_environment):
+    process = subprocess.Popen(
+        command,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 900
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+            break
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                raise RuntimeError("Environment synchronization command timed out after 900 seconds.")
+            if STOP:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                raise RuntimeError("Environment synchronization interrupted by runner shutdown.")
+            try:
+                heartbeat(label, 0)
+            except Exception as exc:
+                LOGGER.warning("Unable to heartbeat during Environment synchronization: %s", exc)
+    output = "\n".join(
+        part.strip() for part in (stdout, stderr) if part and part.strip()
+    )
+    output = _redact_environment_sync_output(output, proxy_environment)
+    if process.returncode != 0:
+        raise RuntimeError(
+            output[-12000:] or "Command exited with {}.".format(process.returncode)
+        )
+    return output[-12000:]
+
+
+def _synced_environment_ready(target, environment_id, name, revision):
+    manifest_path = target / ENVIRONMENT_MANIFEST_NAME
+    python_path = target / "bin" / "python"
+    ansible_path = target / "bin" / "ansible-playbook"
+    if not (
+        manifest_path.is_file()
+        and python_path.is_file()
+        and os.access(python_path, os.X_OK)
+        and ansible_path.is_file()
+        and os.access(ansible_path, os.X_OK)
+    ):
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    try:
+        manifest_environment_id = int(payload.get("environment_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        manifest_environment_id == int(environment_id)
+        and str(payload.get("name") or "").strip() == name
+        and str(payload.get("revision") or "").strip() == revision
+    )
+
+
+def _ansible_core_release_series(version_output):
+    match = re.match(
+        r"^ansible-playbook\s+\[core\s+(\d+)\.(\d+)(?:[.\]\s]|$)",
+        str(version_output or "").strip(),
+    )
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def synchronize_execution_environment(manifest):
+    """Build one managed Environment from a control-plane sync manifest."""
+
+    payload = manifest.get("environment") or {}
+    if not isinstance(payload, dict):
+        raise RuntimeError("Environment synchronization payload is invalid.")
+
+    try:
+        environment_id = int(payload.get("environment_id"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Environment synchronization has an invalid environment_id.") from exc
+    if environment_id <= 0:
+        raise RuntimeError("Environment synchronization has an invalid environment_id.")
+
+    name = str(payload.get("name") or "").strip()
+    revision = str(payload.get("revision") or "").strip()
+    if not name or not re.fullmatch(r"[0-9a-f]{64}", revision):
+        raise RuntimeError("Environment synchronization name or revision is invalid.")
+
+    python_command = str(payload.get("python_command") or "python3").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._+-]+", python_command):
+        raise RuntimeError("Environment synchronization Python command is invalid.")
+    interpreter = shutil.which(python_command)
+    if not interpreter:
+        raise RuntimeError(
+            "Required Python interpreter {} is not installed on this runner.".format(
+                python_command
+            )
+        )
+
+    ansible_spec = str(payload.get("ansible_spec") or "ansible-core").strip()
+    ansible_compatibility_requirement = str(
+        payload.get("ansible_compatibility_requirement") or ""
+    ).strip()
+    expected_python_version = str(payload.get("expected_python_version") or "").strip()
+    expected_ansible_version = str(payload.get("expected_ansible_version") or "").strip()
+    pip_requirements = payload.get("pip_requirements") or []
+    system_requirements = payload.get("system_requirements") or []
+    collection_requirements = payload.get("collection_requirements") or []
+    if not isinstance(pip_requirements, list) or not all(
+        isinstance(item, str) and item.strip() for item in pip_requirements
+    ):
+        raise RuntimeError("Environment synchronization Python requirements are invalid.")
+    if not isinstance(system_requirements, list) or not all(
+        isinstance(item, str) and item.strip() for item in system_requirements
+    ):
+        raise RuntimeError("Environment synchronization system requirements are invalid.")
+    if not isinstance(collection_requirements, list) or not all(
+        isinstance(item, str) and item.strip() for item in collection_requirements
+    ):
+        raise RuntimeError("Environment synchronization collection requirements are invalid.")
+
+    missing_system_packages = _missing_system_packages(system_requirements)
+    if missing_system_packages:
+        raise RuntimeError(
+            "Required runner system packages are not installed: {}. "
+            "Run Manage Remote Runner -> Update, then synchronize again.".format(
+                ", ".join(missing_system_packages)
+            )
+        )
+
+    ansible_config = payload.get("ansible_config") or ""
+    if not isinstance(ansible_config, str) or len(ansible_config.encode("utf-8")) > 1024 * 1024:
+        raise RuntimeError("Environment synchronization Ansible configuration is invalid.")
+
+    proxy_environment = payload.get("proxy_environment") or {}
+    if not isinstance(proxy_environment, dict):
+        raise RuntimeError("Environment synchronization proxy environment is invalid.")
+    allowed_proxy_keys = {
+        "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"
+    }
+    if any(key not in allowed_proxy_keys for key in proxy_environment):
+        raise RuntimeError("Environment synchronization proxy environment contains unsupported keys.")
+    proxy_environment = {
+        str(key): str(value)
+        for key, value in proxy_environment.items()
+        if str(value)
+    }
+
+    ENVIRONMENT_ROOT.mkdir(parents=True, exist_ok=True)
+    target = _environment_sync_target(environment_id, name)
+    lock_path = ENVIRONMENT_ROOT / ".environment-{}.sync.lock".format(environment_id)
+
+    # Environment synchronization runs inside the hardened remote-runner
+    # systemd service.  ProtectSystem=strict intentionally makes the service
+    # account's normal ~/.ansible location read-only, so give Ansible a
+    # runner-local writable home beneath ENVIRONMENT_ROOT instead.
+    sync_ansible_home = ENVIRONMENT_ROOT / ".ansible-sync-{}".format(environment_id)
+    sync_ansible_tmp = sync_ansible_home / "tmp"
+    sync_ansible_cp = sync_ansible_home / "cp"
+    for path in (sync_ansible_home, sync_ansible_tmp, sync_ansible_cp):
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+
+    runtime_environment = dict(os.environ)
+    runtime_environment.update(proxy_environment)
+    runtime_environment["ANSIBLE_HOME"] = str(sync_ansible_home)
+    runtime_environment["ANSIBLE_LOCAL_TEMP"] = str(sync_ansible_tmp)
+    runtime_environment["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(sync_ansible_cp)
+    runtime_environment["PIP_NO_CACHE_DIR"] = "1"
+
+    # Multiple logical runners can share one physical host and therefore one
+    # runner-local Environment root. Serialize builds of the same Environment.
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        # If a sibling logical runner completed the same revision while this
+        # runner waited for the lock, acknowledge it without rebuilding.
+        if _synced_environment_ready(target, environment_id, name, revision):
+            return {
+                "status": "ready",
+                "revision": revision,
+                "path": str(target),
+                "message": "Environment is already synchronized on this host.",
+            }
+
+        previous = target.with_name(".{}.previous".format(target.name))
+        if previous.exists():
+            shutil.rmtree(previous, ignore_errors=True)
+        had_previous = target.exists()
+
+        try:
+            if had_previous:
+                target.rename(previous)
+
+            _run_environment_sync_command(
+                [interpreter, "-m", "venv", str(target)],
+                runtime_environment,
+                "Building Environment {}".format(name),
+                proxy_environment,
+            )
+            python_path = target / "bin" / "python"
+            ansible_path = target / "bin" / "ansible-playbook"
+            galaxy_path = target / "bin" / "ansible-galaxy"
+
+            _run_environment_sync_command(
+                [
+                    str(python_path),
+                    "-m",
+                    "pip",
+                    "install",
+                    ansible_spec,
+                    *([ansible_compatibility_requirement] if ansible_compatibility_requirement else []),
+                    *pip_requirements,
+                ],
+                runtime_environment,
+                "Installing Environment {} Python packages".format(name),
+                proxy_environment,
+            )
+
+            collections_path = target / "collections"
+            if collection_requirements:
+                collections_path.mkdir(mode=0o750, parents=True, exist_ok=True)
+                _run_environment_sync_command(
+                    [
+                        str(galaxy_path),
+                        "collection",
+                        "install",
+                        "--collections-path",
+                        str(collections_path),
+                        *collection_requirements,
+                    ],
+                    runtime_environment,
+                    "Installing Environment {} collections".format(name),
+                    proxy_environment,
+                )
+
+            if not python_path.is_file() or not os.access(python_path, os.X_OK):
+                raise RuntimeError("Synchronized Environment Python is not executable.")
+            if not ansible_path.is_file() or not os.access(ansible_path, os.X_OK):
+                raise RuntimeError("Synchronized Environment ansible-playbook is not executable.")
+
+            python_version_output = _run_environment_sync_command(
+                [str(python_path), "--version"],
+                runtime_environment,
+                "Validating Environment {}".format(name),
+                proxy_environment,
+            )
+            ansible_version_output = _run_environment_sync_command(
+                [str(ansible_path), "--version"],
+                runtime_environment,
+                "Validating Environment {}".format(name),
+                proxy_environment,
+            )
+            actual_python_version = python_version_output.splitlines()[0] if python_version_output else ""
+            actual_ansible_version = ansible_version_output.splitlines()[0] if ansible_version_output else ""
+            if expected_python_version and actual_python_version != expected_python_version:
+                raise RuntimeError(
+                    "Synchronized Environment Python version does not match the central Environment "
+                    "(expected {!r}, got {!r}).".format(
+                        expected_python_version, actual_python_version
+                    )
+                )
+            if expected_ansible_version:
+                expected_ansible_series = _ansible_core_release_series(expected_ansible_version)
+                actual_ansible_series = _ansible_core_release_series(actual_ansible_version)
+                if expected_ansible_series is not None and actual_ansible_series is not None:
+                    ansible_compatible = actual_ansible_series == expected_ansible_series
+                else:
+                    ansible_compatible = actual_ansible_version == expected_ansible_version
+                if not ansible_compatible:
+                    raise RuntimeError(
+                        "Synchronized Environment Ansible major.minor release does not match "
+                        "the central Environment (expected {!r}, got {!r}; installed {!r}).".format(
+                            expected_ansible_version,
+                            actual_ansible_version,
+                            ansible_compatibility_requirement or ansible_spec,
+                        )
+                    )
+
+            if ansible_config:
+                ansible_config_path = target / "ansible.cfg"
+                ansible_config_path.write_text(ansible_config, encoding="utf-8")
+                os.chmod(ansible_config_path, 0o640)
+
+            manifest_payload = {
+                "environment_id": environment_id,
+                "name": name,
+                "revision": revision,
+                "system_requirements": system_requirements,
+            }
+            manifest_path = target / ENVIRONMENT_MANIFEST_NAME
+            temporary_manifest = target / ".{}.tmp".format(ENVIRONMENT_MANIFEST_NAME)
+            temporary_manifest.write_text(
+                json.dumps(manifest_payload, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(temporary_manifest, 0o640)
+            os.replace(temporary_manifest, manifest_path)
+
+            if previous.exists():
+                shutil.rmtree(previous, ignore_errors=True)
+            return {
+                "status": "ready",
+                "revision": revision,
+                "path": str(target),
+                "message": "Environment synchronized successfully.",
+            }
+        except Exception:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            if previous.exists():
+                previous.rename(target)
+            raise
+
+
+def process_environment_sync(manifest):
+    sync_id = int(manifest.get("sync_id"))
+    complete_url = str(manifest.get("complete_url") or "").strip()
+    if not complete_url.startswith("/api/runners/environments/"):
+        raise RuntimeError("Environment synchronization has an invalid completion URL.")
+
+    proxy_environment = (manifest.get("environment") or {}).get("proxy_environment") or {}
+    try:
+        result = synchronize_execution_environment(manifest)
+    except Exception as exc:
+        result = {
+            "status": "failed",
+            "revision": str((manifest.get("environment") or {}).get("revision") or ""),
+            "path": "",
+            "message": _redact_environment_sync_output(str(exc), proxy_environment)[-12000:],
+        }
+        LOGGER.exception("Environment synchronization %s failed.", sync_id)
+
+    request("POST", api(complete_url), payload=result)
+    heartbeat("Ready", 0)
+    return result
+
+
+def _set_worker_capacity(value):
+    global MAX_CONCURRENT_ASSIGNMENTS
+    try:
+        capacity = int(value)
+    except (TypeError, ValueError):
+        capacity = 1
+    with WORKER_LOCK:
+        MAX_CONCURRENT_ASSIGNMENTS = max(1, min(capacity, 100))
+    return MAX_CONCURRENT_ASSIGNMENTS
+
+
+def worker_capacity():
+    with WORKER_LOCK:
+        return MAX_CONCURRENT_ASSIGNMENTS
+
+
+def active_assignment_count():
+    with WORKER_LOCK:
+        return len(ACTIVE_WORKERS)
+
+
+def available_worker_slots():
+    with WORKER_LOCK:
+        return max(0, MAX_CONCURRENT_ASSIGNMENTS - len(ACTIVE_WORKERS))
+
+
+def _runner_status_message():
+    running = active_assignment_count()
+    if running == 0:
+        return "Ready"
+    return "Executing {} assignment{}.".format(
+        running,
+        "" if running == 1 else "s",
+    )
+
+
+def runtime_dependency_versions():
+    """Return versions for only the control-plane-declared runner runtime set."""
+    with WORKER_LOCK:
+        names = sorted(RUNTIME_DEPENDENCY_NAMES)
+    versions = {}
+    for name in names:
+        try:
+            versions[name] = importlib_metadata.version(name)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+    return versions
+
+
+def _set_runtime_dependency_names(values):
+    if not isinstance(values, list):
+        return
+    normalized = {str(value or "").strip().lower().replace("_", "-") for value in values}
+    normalized.discard("")
+    if not normalized:
+        return
+    with WORKER_LOCK:
+        RUNTIME_DEPENDENCY_NAMES.clear()
+        RUNTIME_DEPENDENCY_NAMES.update(normalized)
+
+
+def heartbeat(status=None, running=None, include_details=True):
+    usage = shutil.disk_usage(WORK_ROOT)
+    try:
+        load1, load5, _load15 = os.getloadavg()
+    except (AttributeError, OSError):
+        load1 = None
+        load5 = None
+    if running is None:
+        running = active_assignment_count()
+    payload = {
+        "hostname": socket.gethostname(),
+        "version": VERSION,
+        "status_message": status or _runner_status_message(),
+        "running_steps": running,
+        "free_workspace_bytes": usage.free,
+        "load_average_1m": load1,
+        "load_average_5m": load5,
+        "cpu_count": os.cpu_count(),
+        "runtime_dependencies": runtime_dependency_versions(),
+    }
+    if include_details:
+        payload.update({
+            "capabilities": ["ansible", "shell"],
+            "managed_capabilities": managed_capability_status(),
+            "environments": execution_environment_status(),
+        })
+    _status, response = request(
+        "POST",
+        api("/api/runners/heartbeat"),
+        payload=payload,
+    )
+    if isinstance(response, dict) and "max_concurrent_steps" in response:
+        _set_worker_capacity(response.get("max_concurrent_steps"))
+    if isinstance(response, dict) and "runtime_dependency_names" in response:
+        _set_runtime_dependency_names(response.get("runtime_dependency_names"))
+    return response
+
+
+def remote_runner_heartbeat_loop():
+    """Keep runner liveness independent from long-running assignments."""
+    while not STOP:
+        try:
+            heartbeat()
+        except Exception:
+            LOGGER.exception("Unable to update remote runner heartbeat.")
+        for _ in range(HEARTBEAT_SECONDS):
+            if STOP:
+                return
+            time.sleep(1)
+
+
+def _execute_assignment_worker(manifest):
+    try:
+        execute_job(manifest)
+    except Exception:
+        LOGGER.exception(
+            "Remote assignment worker failed for Job #%s.",
+            manifest.get("job_id"),
+        )
+    finally:
+        current = threading.current_thread()
+        with WORKER_LOCK:
+            ACTIVE_WORKERS.discard(current)
+        try:
+            heartbeat(include_details=False)
+        except Exception:
+            LOGGER.exception("Unable to heartbeat after assignment completion.")
+
+
+def start_assignment(manifest):
+    """Start one assignment without exceeding the server-reported capacity."""
+    with WORKER_LOCK:
+        if len(ACTIVE_WORKERS) >= MAX_CONCURRENT_ASSIGNMENTS:
+            return False
+        worker = threading.Thread(
+            target=_execute_assignment_worker,
+            args=(manifest,),
+            name="remote-assignment-job-{}-{}".format(
+                manifest.get("job_id", "unknown"),
+                manifest.get("slice_id", "job"),
+            ),
+        )
+        ACTIVE_WORKERS.add(worker)
+    try:
+        worker.start()
+    except Exception:
+        with WORKER_LOCK:
+            ACTIVE_WORKERS.discard(worker)
+        raise
+    return True
+
+
+def wait_for_assignments():
+    while True:
+        with WORKER_LOCK:
+            workers = list(ACTIVE_WORKERS)
+        if not workers:
+            return
+        for worker in workers:
+            worker.join(timeout=1)
+
+
+def b64(value):
+    return base64.urlsafe_b64decode(value.encode("ascii"))
+
+
+def decrypt_execution_data(envelope, token):
+    salt, nonce, aad, ciphertext = map(b64, [
+        envelope["salt"], envelope["nonce"], envelope["aad"], envelope["ciphertext"]
+    ])
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=KEY_INFO).derive(token.encode())
+    plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+    if hashlib.sha256(plaintext).hexdigest() != envelope["plaintext_sha256"]:
+        raise RuntimeError("Execution-data checksum mismatch.")
+    return json.loads(plaintext.decode("utf-8"))
+
+
+def safe_extract(archive, destination):
+    destination = destination.resolve()
+    with tarfile.open(archive, "r:gz") as source:
+        for member in source.getmembers():
+            target = (destination / member.name).resolve()
+            try:
+                target.relative_to(destination)
+            except ValueError as exc:
+                raise RuntimeError("Repository archive contains an unsafe path.") from exc
+            if member.issym() or member.islnk():
+                raise RuntimeError("Repository archive contains a link.")
+            if not (member.isdir() or member.isfile()):
+                raise RuntimeError(
+                    "Repository archive contains an unsupported special file."
+                )
+        source.extractall(destination)
+
+
+def download_repositories(manifest, workspace, token):
+    result = {}
+    for item in manifest.get("repositories") or []:
+        status, content = request("GET", item["download_url"], token=token, binary=True)
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != item["sha256"] or len(content) != int(item["size_bytes"]):
+            raise RuntimeError("Repository artefact verification failed.")
+        root = workspace / "repositories" / str(item["snapshot_id"])
+        root.mkdir(parents=True)
+        archive = workspace / (item.get("filename") or "repository.tar.gz")
+        archive.write_bytes(content)
+        safe_extract(archive, root)
+        archive.unlink()
+        result[int(item["snapshot_id"])] = root
+    return result
+
+
+def build_inventory_script_bytes(inventory_data):
+    """
+    Wrap canonical ``ansible-inventory --list`` JSON in an executable dynamic
+    inventory script.
+
+    Journeyman stores immutable inventories in canonical output form.  That
+    structure is not valid as a static YAML/JSON inventory input, so remote
+    runners must expose it through the dynamic-inventory ``--list``/``--host``
+    interface just like the built-in local runner does.
+    """
+
+    payload = json.dumps(
+        inventory_data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded_payload = base64.b64encode(payload).decode("ascii")
+
+    script = r"""#!/usr/bin/env python3
+import base64
+import json
+import sys
+
+_PAYLOAD = base64.b64decode({encoded_payload})
+_INVENTORY = json.loads(_PAYLOAD.decode("utf-8"))
+
+
+def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--list":
+        sys.stdout.buffer.write(_PAYLOAD)
+        if not _PAYLOAD.endswith(b"\n"):
+            sys.stdout.buffer.write(b"\n")
+        return 0
+
+    if len(sys.argv) == 3 and sys.argv[1] == "--host":
+        hostvars = (
+            _INVENTORY
+            .get("_meta", {{}})
+            .get("hostvars", {{}})
+        )
+        json.dump(
+            hostvars.get(sys.argv[2], {{}}),
+            sys.stdout,
+            sort_keys=True,
+        )
+        sys.stdout.write("\n")
+        return 0
+
+    json.dump({{}}, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".format(encoded_payload=repr(encoded_payload))
+
+    return script.encode("utf-8")
+
+
+def materialize_execution_data(data, workspace):
+    inventories = {}
+    invdir = workspace / "inventories"
+    invdir.mkdir(exist_ok=True)
+    for item in data.get("inventories") or []:
+        canonical = json.dumps(
+            item["data"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        if (
+            item.get("content_sha256")
+            and hashlib.sha256(canonical).hexdigest()
+            != item["content_sha256"]
+        ):
+            LOGGER.warning(
+                "Inventory %s canonical checksum differs; using encrypted payload.",
+                item["snapshot_id"],
+            )
+
+        path = invdir / "{}.py".format(item["snapshot_id"])
+        path.write_bytes(build_inventory_script_bytes(item["data"]))
+        os.chmod(path, 0o700)
+        inventories[int(item["snapshot_id"])] = path
+
+    credentials = {
+        int(item["snapshot_id"]): item
+        for item in data.get("credentials") or []
+    }
+    step_data = {
+        int(item["position"]): item
+        for item in data.get("steps") or []
+    }
+    return inventories, credentials, step_data
+
+
+def materialize_step_extra_vars(mapping, workspace):
+    values = mapping.get("extra_vars") or {}
+    if not isinstance(values, dict):
+        raise RuntimeError("Step extra variables are not an object.")
+    if not values:
+        return None
+
+    private_directory = workspace / "private"
+    private_directory.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(private_directory, 0o700)
+    path = private_directory / "step-{}-extra-vars.json".format(
+        mapping.get("position", "unknown")
+    )
+    path.write_text(
+        json.dumps(
+            values,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+
+def package_environment(data, execution_type):
+    if execution_type not in {"shell", "remote_shell"} or not data.get("package"):
+        return {}
+    definition = data["package"].get("definition") or {}
+    values = data["package"].get("execution_vars") or {}
+    result = {}
+    for item in definition.get("inputs") or []:
+        if item.get("binding_type") != "extra_var":
+            continue
+        name = str(item.get("variable_name") or "").strip()
+        if name not in values or values[name] is None:
+            continue
+        value = values[name]
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        elif isinstance(value, (list, dict)):
+            value = json.dumps(value, separators=(",", ":"), sort_keys=True)
+        else:
+            value = str(value)
+        result["JOURNEYMAN_INPUT_{}".format(name.upper())] = value
+    return result
+
+
+def step_environment(step, execution_type, credentials, mapping, execution_data):
+    result = dict(os.environ)
+    result["JOURNEYMAN_JOB_ID"] = str(execution_data["job_id"])
+    result["JOURNEYMAN_STEP_ID"] = str(step["id"])
+    result["JOURNEYMAN_STEP_NAME"] = str(step.get("name") or "")
+    result.update(package_environment(execution_data, execution_type))
+    if execution_type in {"ansible", "remote_shell"}:
+        result["ANSIBLE_CONFIG"] = step.get("ansible_config_path") or "/etc/ansible/ansible.cfg"
+        environment_path = str(step.get("environment_path") or "").strip()
+        if environment_path and environment_path != "__SYSTEM_ANSIBLE__":
+            runner_environment_path = Path(environment_path)
+            runner_ansible_config = runner_environment_path / "ansible.cfg"
+            if runner_ansible_config.is_file():
+                result["ANSIBLE_CONFIG"] = str(runner_ansible_config)
+            collections_path = runner_environment_path / "collections"
+            if collections_path.is_dir():
+                # ansible-core versions have used both names; setting both is
+                # harmless and keeps synced collections runner-local.
+                result["ANSIBLE_COLLECTIONS_PATH"] = str(collections_path)
+                result["ANSIBLE_COLLECTIONS_PATHS"] = str(collections_path)
+    for snapshot_id in mapping.get("credential_snapshot_ids") or []:
+        credential = credentials[int(snapshot_id)]
+        if credential.get("type") == "machine":
+            cfg = credential.get("data") or {}
+            become_method = str(cfg.get("become_method") or "").strip()
+            become_user = str(cfg.get("become_user") or "").strip()
+            if become_method:
+                result["ANSIBLE_BECOME_METHOD"] = become_method
+            if become_user:
+                result["ANSIBLE_BECOME_USER"] = become_user
+            continue
+        if credential.get("type") != "environment_variables":
+            continue
+        cfg = credential.get("data") or {}
+        user_var = cfg.get("username_environment_variable")
+        secret_var = cfg.get("secret_environment_variable")
+        if user_var and secret_var:
+            result[user_var] = str(credential.get("username") or "")
+            result[secret_var] = str(cfg.get("password") or "")
+    return result
+
+
+def prepare_ansible_workspace_environment(environment, workspace):
+    """
+    Keep all Ansible runtime state inside the runner's writable workspace.
+
+    The remote-runner systemd unit intentionally uses ProtectSystem=strict and
+    only grants write access beneath JOURNEYMAN_REMOTE_WORK_ROOT.  Ansible's
+    normal defaults use ~/.ansible/tmp and ~/.ansible/cp, which resolves to
+    /var/lib/journeyman for the service account and is therefore read-only.
+    """
+    result = dict(environment)
+    ansible_home = Path(workspace) / "private" / "ansible"
+    local_temp = ansible_home / "tmp"
+    control_path = ansible_home / "cp"
+
+    for path in (ansible_home, local_temp, control_path):
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+
+    result["ANSIBLE_HOME"] = str(ansible_home)
+    result["ANSIBLE_LOCAL_TEMP"] = str(local_temp)
+    result["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(control_path)
+
+    # ``delegate_to: localhost`` uses Ansible's POSIX shell remote_tmp
+    # setting for module staging.  The runner service account's normal
+    # ~/.ansible path is intentionally read-only under ProtectSystem=strict.
+    # Use a per-Job /tmp path instead.  This value is also safe for ordinary
+    # POSIX managed hosts because /tmp is target-local; Windows shell plugins
+    # retain their normal %TEMP% behaviour.
+    remote_temp = "/tmp/.ansible-journeyman-{}".format(
+        Path(workspace).name
+    )
+    result["ANSIBLE_REMOTE_TEMP"] = remote_temp
+    result["ANSIBLE_REMOTE_TMP"] = remote_temp
+    return result
+
+
+REMOTE_SHELL_CALLBACK = r'''
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
+import json
+import os
+import tempfile
+from ansible.plugins.callback import CallbackBase
+
+
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = "aggregate"
+    CALLBACK_NAME = "journeyman_remote_shell"
+    CALLBACK_NEEDS_ENABLED = True
+
+    def __init__(self):
+        super(CallbackModule, self).__init__()
+        self.results = {}
+
+    def _capture(self, result, status):
+        host = result._host.get_name()
+        if os.environ.get("JOURNEYMAN_HOST_RESULTS_STATUS_ONLY", "") == "1":
+            self.results[host] = {
+                "host": host,
+                "status": status,
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+            }
+            return
+        data = result._result or {}
+        stderr = data.get("stderr") or ""
+        if status != "successful" and not stderr:
+            stderr = data.get("msg") or data.get("exception") or ""
+        self.results[host] = {
+            "host": host,
+            "status": status,
+            "exit_code": data.get("rc"),
+            "stdout": str(data.get("stdout") or ""),
+            "stderr": str(stderr),
+        }
+
+    def v2_runner_on_ok(self, result, **kwargs):
+        self._capture(result, "successful")
+
+    def v2_runner_on_failed(self, result, ignore_errors=False):
+        self._capture(result, "failed")
+
+    def v2_runner_on_unreachable(self, result):
+        self._capture(result, "unreachable")
+
+    def v2_playbook_on_stats(self, stats):
+        for host in sorted((stats.processed or {}).keys()):
+            summary = stats.summarize(host) or {}
+            if int(summary.get("unreachable") or 0) > 0:
+                status = "unreachable"
+            elif int(summary.get("failures") or 0) > 0:
+                status = "failed"
+            else:
+                status = "successful"
+            row = self.results.setdefault(
+                host,
+                {
+                    "host": host,
+                    "status": status,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                },
+            )
+            row["status"] = status
+
+        destination = os.environ.get(
+            "JOURNEYMAN_REMOTE_SHELL_RESULTS_FILE", ""
+        ).strip()
+        if not destination:
+            return
+        directory = os.path.dirname(destination)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=".journeyman-host-results-", suffix=".json",
+            dir=directory, text=True
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(
+                    [self.results[key] for key in sorted(self.results)],
+                    output, ensure_ascii=False, sort_keys=True
+                )
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_path, destination)
+        except Exception:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            raise
+'''
+
+
+def prepare_remote_shell_callback(workspace):
+    callback_directory = workspace / "callback_plugins"
+    callback_directory.mkdir(mode=0o700, exist_ok=True)
+    path = callback_directory / "journeyman_remote_shell.py"
+    path.write_text(REMOTE_SHELL_CALLBACK, encoding="utf-8")
+    os.chmod(path, 0o600)
+    return callback_directory
+
+
+def build_remote_shell_playbook(step, repository, environment, workspace):
+    repository_root = repository.resolve()
+    artifact = (repository_root / step["playbook"]).resolve()
+    artifact.relative_to(repository_root)
+    if not artifact.is_file():
+        raise RuntimeError("Step artefact does not exist: {}".format(artifact))
+
+    remote_environment = {
+        name: "{{{{ lookup('ansible.builtin.env', '{}') }}}}".format(name)
+        for name in sorted(environment)
+        if name.startswith("JOURNEYMAN_INPUT_")
+    }
+    play = {
+        "name": "Journeyman remote shell",
+        "hosts": "all",
+        "gather_facts": False,
+        "become": bool(step.get("remote_shell_become")),
+        "tasks": [{
+            "name": "Journeyman remote shell script",
+            "ansible.builtin.script": {"cmd": str(artifact)},
+            "environment": remote_environment,
+        }],
+    }
+
+    serial = int(step.get("remote_shell_serial") or 0)
+    if serial > 0:
+        play["serial"] = serial
+
+    playbook = [play]
+    private_directory = workspace / "private"
+    private_directory.mkdir(mode=0o700, exist_ok=True)
+    path = private_directory / "remote-shell-step-{}.json".format(step["id"])
+    path.write_text(json.dumps(playbook, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
+def read_remote_shell_results(path):
+    if not path.is_file():
+        return []
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise RuntimeError("Remote shell host results are invalid.")
+    return value
+
+
+_CREDENTIAL_PLACEHOLDER_RE = re.compile(r"{{\s*(user|passwd)\s*}}")
+
+
+def _render_credential_extra_vars(mapping, username="", password=""):
+    replacements = {
+        "user": str(username or ""),
+        "passwd": str(password or ""),
+    }
+
+    def render(value):
+        if isinstance(value, dict):
+            return {str(key): render(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [render(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        return _CREDENTIAL_PLACEHOLDER_RE.sub(
+            lambda match: replacements[match.group(1)],
+            value,
+        )
+
+    return render(mapping or {})
+
+
+def materialize_machine_credential_extra_vars(
+    step,
+    execution_type,
+    credentials,
+    mapping,
+    workspace,
+):
+    """Materialize the step's Machine credential in its private workspace."""
+
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+
+    credential_ids = mapping.get("credential_snapshot_ids") or []
+    machine_credentials = []
+
+    for snapshot_id in credential_ids:
+        credential = credentials.get(int(snapshot_id))
+        if credential is None:
+            raise RuntimeError(
+                "Execution data is missing credential snapshot {}."
+                .format(snapshot_id)
+            )
+        if credential.get("type") == "machine":
+            machine_credentials.append(credential)
+
+    if not machine_credentials:
+        return None
+
+    if len(machine_credentials) > 1:
+        raise RuntimeError(
+            "Remote step {} has more than one Machine credential."
+            .format(step["position"])
+        )
+
+    credential = machine_credentials[0]
+    data = credential.get("data") or {}
+    variables = {}
+
+    has_environment_credential = any(
+        (credentials.get(int(snapshot_id)) or {}).get("type")
+        == "environment_variables"
+        for snapshot_id in credential_ids
+    )
+    prefix = "linux_" if has_environment_credential else ""
+
+    username = str(credential.get("username") or "").strip()
+    if username:
+        variables[prefix + "ansible_user"] = username
+
+    password = data.get("password")
+    if password:
+        variables[prefix + "ansible_password"] = str(password)
+
+    private_directory = workspace / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    private_key = data.get("ssh_private_key")
+    if private_key:
+        key_path = private_directory / (
+            "machine-credential-step-{}.key".format(step["position"])
+        )
+        key_path.write_text(str(private_key), encoding="utf-8")
+        os.chmod(key_path, 0o600)
+        variables[prefix + "ansible_private_key_file"] = str(key_path)
+
+    key_passphrase = data.get("ssh_key_passphrase")
+    if key_passphrase:
+        variables[prefix + "ansible_private_key_passphrase"] = str(key_passphrase)
+
+    become_password = data.get("become_password")
+    if become_password:
+        variables[prefix + "ansible_become_password"] = str(become_password)
+
+    variables.update(
+        _render_credential_extra_vars(
+            data.get("extra_vars") or {},
+            username=username,
+            password=password,
+        )
+    )
+
+    if not variables:
+        return None
+
+    variables_path = private_directory / (
+        "machine-credential-step-{}.json".format(step["position"])
+    )
+    variables_path.write_text(
+        json.dumps(
+            variables,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(variables_path, 0o600)
+    return variables_path
+
+
+
+def materialize_windows_credential_extra_vars(
+    step,
+    execution_type,
+    credentials,
+    mapping,
+    workspace,
+):
+    """Materialize the step's Windows credential using namespaced variables."""
+
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+    credential_ids = mapping.get("credential_snapshot_ids") or []
+    windows_credentials = []
+    for snapshot_id in credential_ids:
+        credential = credentials.get(int(snapshot_id))
+        if credential is None:
+            raise RuntimeError(
+                "Execution data is missing credential snapshot {}.".format(snapshot_id)
+            )
+        if credential.get("type") == "windows":
+            windows_credentials.append(credential)
+    if not windows_credentials:
+        return None
+    if len(windows_credentials) > 1:
+        raise RuntimeError(
+            "Remote step {} has more than one Windows credential.".format(
+                step["position"]
+            )
+        )
+    credential = windows_credentials[0]
+    data = credential.get("data") or {}
+    variables = {}
+    username = str(credential.get("username") or "").strip()
+    if username:
+        variables["win_ansible_user"] = username
+    password = data.get("password")
+    if password:
+        variables["win_ansible_password"] = str(password)
+    variables.update(
+        _render_credential_extra_vars(
+            data.get("extra_vars") or {},
+            username=username,
+            password=password,
+        )
+    )
+    if not variables:
+        return None
+    private_directory = workspace / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private_directory / (
+        "windows-credential-step-{}.json".format(step["position"])
+    )
+    path.write_text(
+        json.dumps(variables, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+
+def _render_custom_credential_extra_vars(data):
+    definition = (data or {}).get("definition") or {}
+    fields = definition.get("fields") or []
+    values = (data or {}).get("values") or {}
+    extra_vars = definition.get("extra_vars") or {}
+    field_ids = {str(field.get("id") or "") for field in fields}
+    missing = [
+        field_id for field_id in sorted(field_ids)
+        if not str(values.get(field_id) or "").strip()
+    ]
+    if missing:
+        raise RuntimeError(
+            "Custom credential is missing required field value(s): {}."
+            .format(", ".join(missing))
+        )
+    placeholder_re = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+
+    def render(value):
+        if isinstance(value, dict):
+            return {str(key): render(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [render(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        def replace(match):
+            field_id = match.group(1)
+            if field_id not in field_ids:
+                raise RuntimeError(
+                    "Custom credential injector references unknown field {!r}."
+                    .format(field_id)
+                )
+            return str(values.get(field_id) or "")
+        return placeholder_re.sub(replace, value)
+
+    return render(extra_vars)
+
+
+def materialize_custom_credential_extra_vars(
+    step, execution_type, credentials, mapping, workspace
+):
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+    credential_ids = mapping.get("credential_snapshot_ids") or []
+    custom_credentials = []
+    for snapshot_id in credential_ids:
+        credential = credentials.get(int(snapshot_id))
+        if credential is None:
+            raise RuntimeError(
+                "Execution data is missing credential snapshot {}.".format(snapshot_id)
+            )
+        if credential.get("type") == "custom":
+            custom_credentials.append(credential)
+    if not custom_credentials:
+        return None
+    if len(custom_credentials) > 1:
+        raise RuntimeError(
+            "Remote step {} has more than one Custom credential."
+            .format(step["position"])
+        )
+    variables = _render_custom_credential_extra_vars(
+        custom_credentials[0].get("data") or {}
+    )
+    if not variables:
+        return None
+    private_directory = workspace / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private_directory / "custom-credential-step-{}.json".format(step["position"])
+    path.write_text(
+        json.dumps(variables, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+def script_command(artifact):
+    """Build the local command for a repository-backed Script artifact."""
+    artifact = Path(artifact)
+    try:
+        with artifact.open("rb") as handle:
+            first_line = handle.readline(256)
+    except OSError as exc:
+        raise RuntimeError(
+            "Unable to read Script artifact {}: {}".format(artifact, exc)
+        ) from exc
+
+    if first_line.startswith(b"#!"):
+        try:
+            directive = first_line[2:].decode("utf-8").strip()
+            interpreter = shlex.split(directive)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                "Script artifact has an invalid shebang: {}".format(artifact)
+            ) from exc
+        if not interpreter or not interpreter[0].startswith("/"):
+            raise RuntimeError(
+                "Script artifact shebang must name an absolute interpreter: {}"
+                .format(artifact)
+            )
+        return interpreter + [str(artifact)]
+
+    if artifact.suffix.lower() == ".sh":
+        return ["/bin/bash", str(artifact)]
+
+    raise RuntimeError(
+        "Script artifact must have a shebang or a .sh extension: {}"
+        .format(artifact)
+    )
+
+
+def build_command(
+    step,
+    execution_type,
+    repository,
+    inventory,
+    environment=None,
+    workspace=None,
+    machine_extra_vars_path=None,
+    windows_extra_vars_path=None,
+    custom_extra_vars_path=None,
+    step_extra_vars_path=None,
+):
+    artifact = (repository / step["playbook"]).resolve()
+    artifact.relative_to(repository.resolve())
+    if not artifact.is_file():
+        raise RuntimeError("Step artefact does not exist: {}".format(artifact))
+    if execution_type == "shell":
+        return script_command(artifact)
+    if execution_type == "remote_shell":
+        if inventory is None or workspace is None:
+            raise RuntimeError("Remote shell step has no inventory or workspace.")
+        artifact = build_remote_shell_playbook(
+            step, repository, environment or {}, workspace
+        )
+    environment_path = step.get("environment_path") or ""
+    executable = "ansible-playbook"
+    if environment_path and environment_path != "__SYSTEM_ANSIBLE__":
+        executable = str(Path(environment_path) / "bin" / "ansible-playbook")
+    command = [executable, "--inventory", str(inventory)]
+    if execution_type != "remote_shell" and bool(step.get("check_mode", False)):
+        command.append("--check")
+    verbosity = int(step.get("verbosity") or 0)
+    if verbosity:
+        command.append("-" + ("v" * verbosity))
+    for key, option in (("limit", "--limit"), ("tags", "--tags"), ("skip_tags", "--skip-tags")):
+        if execution_type == "remote_shell" and key in {"tags", "skip_tags"}:
+            continue
+        if step.get(key):
+            command.extend([option, str(step[key])])
+
+    if step_extra_vars_path is not None:
+        step_extra_vars_path = Path(step_extra_vars_path)
+        if not step_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Step extra-vars file does not exist: {}"
+                .format(step_extra_vars_path)
+            )
+        command.extend(
+            ["--extra-vars", "@{}".format(step_extra_vars_path)]
+        )
+
+    if machine_extra_vars_path is not None:
+        machine_extra_vars_path = Path(machine_extra_vars_path)
+        if not machine_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Machine credential extra-vars file does not exist: {}"
+                .format(machine_extra_vars_path)
+            )
+        command.extend(
+            ["--extra-vars", "@{}".format(machine_extra_vars_path)]
+        )
+
+    if windows_extra_vars_path is not None:
+        windows_extra_vars_path = Path(windows_extra_vars_path)
+        if not windows_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Windows credential extra-vars file does not exist: {}"
+                .format(windows_extra_vars_path)
+            )
+        command.extend(
+            ["--extra-vars", "@{}".format(windows_extra_vars_path)]
+        )
+
+    if custom_extra_vars_path is not None:
+        custom_extra_vars_path = Path(custom_extra_vars_path)
+        if not custom_extra_vars_path.is_file():
+            raise RuntimeError(
+                "Custom credential extra-vars file does not exist: {}"
+                .format(custom_extra_vars_path)
+            )
+        command.extend(
+            ["--extra-vars", "@{}".format(custom_extra_vars_path)]
+        )
+
+    command.append(str(artifact))
+    return command
+
+
+def _read_live_output(path):
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(MAX_LIVE_OUTPUT_LENGTH + 1)
+    except FileNotFoundError:
+        return ""
+    if len(text) <= MAX_LIVE_OUTPUT_LENGTH:
+        return text
+    marker = "\n[output truncated by Journeyman]\n"
+    return text[: MAX_LIVE_OUTPUT_LENGTH - len(marker)] + marker
+
+
+def run_process(
+    command,
+    cwd,
+    environment,
+    job_id,
+    token,
+    control_url=None,
+    output_url=None,
+):
+    stdout_fd, stdout_name = tempfile.mkstemp(prefix=".journeyman-stdout-", dir=str(WORK_ROOT))
+    stderr_fd, stderr_name = tempfile.mkstemp(prefix=".journeyman-stderr-", dir=str(WORK_ROOT))
+    os.close(stdout_fd)
+    os.close(stderr_fd)
+    stdout_path = Path(stdout_name)
+    stderr_path = Path(stderr_name)
+    cancelled = False
+    last_output = (None, None)
+
+    try:
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+            "w", encoding="utf-8"
+        ) as stderr_file:
+            process = subprocess.Popen(
+                command,
+                cwd=str(cwd),
+                env=environment,
+                text=True,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
+
+            while process.poll() is None:
+                if STOP:
+                    cancelled = True
+                else:
+                    _, control = request(
+                        "GET",
+                        api(control_url or "/api/runners/jobs/{}/control".format(job_id)),
+                        token=token,
+                    )
+                    cancelled = bool(control.get("cancel_requested"))
+
+                stdout_file.flush()
+                stderr_file.flush()
+                current_output = (
+                    _read_live_output(stdout_path),
+                    _read_live_output(stderr_path),
+                )
+                if output_url and current_output != last_output:
+                    try:
+                        request(
+                            "POST",
+                            api(output_url),
+                            token=token,
+                            payload={
+                                "command": " ".join(command),
+                                "stdout": current_output[0],
+                                "stderr": current_output[1],
+                            },
+                        )
+                        last_output = current_output
+                    except Exception as exc:
+                        LOGGER.warning("Unable to publish live slice output: %s", exc)
+
+                if cancelled:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    break
+                time.sleep(CONTROL_SECONDS)
+
+            returncode = process.wait()
+
+        stdout = _read_live_output(stdout_path)
+        stderr = _read_live_output(stderr_path)
+        return returncode, stdout, stderr, cancelled
+    finally:
+        for path in (stdout_path, stderr_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def remote_dependency_state(step, completed):
+    dependencies = [
+        int(value)
+        for value in (step.get("depends_on") or [])
+    ]
+
+    if not dependencies:
+        return "blocked" if step.get("failure_only") else "eligible"
+
+    if any(position not in completed for position in dependencies):
+        return "waiting"
+
+    statuses = [completed[position] for position in dependencies]
+
+    if step.get("failure_only"):
+        return "eligible" if "failed" in statuses else "blocked"
+
+    return (
+        "eligible"
+        if all(status == "successful" for status in statuses)
+        else "blocked"
+    )
+
+
+def remote_has_failure_branch(step_position, steps):
+    return any(
+        candidate.get("failure_only")
+        and int(step_position)
+        in [
+            int(value)
+            for value in (candidate.get("depends_on") or [])
+        ]
+        for candidate in steps
+    )
+
+
+def execute_job(manifest):
+    job_id, token = int(manifest["job_id"]), manifest["dispatch_token"]
+    slice_id = manifest.get("slice_id")
+    workspace_prefix = (
+        "job-{}-slice-{}-".format(job_id, slice_id)
+        if slice_id is not None
+        else "job-{}-".format(job_id)
+    )
+    workspace = Path(tempfile.mkdtemp(prefix=workspace_prefix, dir=str(WORK_ROOT)))
+    start_url = manifest.get("start_url") or "/api/runners/jobs/{}/start".format(job_id)
+    control_url = manifest.get("control_url") or "/api/runners/jobs/{}/control".format(job_id)
+    complete_url = manifest.get("complete_url") or "/api/runners/jobs/{}/complete".format(job_id)
+    results = []
+    final_status, exit_code, message = "failed", 1, "Remote execution failed."
+    try:
+        repositories = download_repositories(manifest, workspace, token)
+        _, envelope = request("GET", manifest["execution_data"]["url"], token=token)
+        execution_data = decrypt_execution_data(envelope, token)
+        inventories, credentials, mappings = materialize_execution_data(execution_data, workspace)
+        request("POST", api(start_url), token=token, payload={})
+        completed = {}
+        pending = sorted(
+            manifest.get("steps") or [],
+            key=lambda item: item["position"],
+        )
+
+        while pending:
+            progress = False
+
+            for step in list(pending):
+                state = remote_dependency_state(step, completed)
+
+                if state == "waiting":
+                    continue
+
+                if state == "blocked":
+                    branch_not_selected = bool(
+                        step.get("failure_only")
+                    )
+
+                    if not branch_not_selected:
+                        failed_dependencies = [
+                            int(position)
+                            for position in (
+                                step.get("depends_on") or []
+                            )
+                            if completed.get(
+                                int(position)
+                            ) == "failed"
+                        ]
+
+                        branch_not_selected = bool(
+                            failed_dependencies
+                            and all(
+                                remote_has_failure_branch(
+                                    position,
+                                    manifest.get("steps") or [],
+                                )
+                                for position in failed_dependencies
+                            )
+                        )
+
+                    result_status = (
+                        "skipped"
+                        if branch_not_selected
+                        else "blocked"
+                    )
+
+                    results.append({
+                        "position": step["position"],
+                        "status": result_status,
+                        "exit_code": None,
+                        "command": "",
+                        "stdout": "",
+                        "stderr": (
+                            "Workflow branch was not selected."
+                            if branch_not_selected
+                            else "Dependency did not succeed."
+                        ),
+                        "host_results": [],
+                    })
+                    completed[int(step["position"])] = result_status
+                    pending.remove(step)
+                    progress = True
+                    continue
+            mapping = mappings[int(step["position"])]
+            repository = repositories[int(step["repository_snapshot_id"])]
+            inventory = inventories.get(int(mapping["inventory_snapshot_id"])) if mapping.get("inventory_snapshot_id") else None
+            if manifest["execution_type"] in {"ansible", "remote_shell"} and inventory is None:
+                raise RuntimeError("Ansible step has no inventory snapshot.")
+            environment = step_environment(
+                step, manifest["execution_type"], credentials, mapping, execution_data
+            )
+            if manifest["execution_type"] in {"ansible", "remote_shell"}:
+                environment = prepare_ansible_workspace_environment(
+                    environment,
+                    workspace,
+                )
+            host_results_path = workspace / "private" / (
+                "step-{}-host-results.json".format(step["position"])
+            )
+            if manifest["execution_type"] in {"ansible", "remote_shell"}:
+                callback_directory = prepare_remote_shell_callback(workspace)
+                existing_callback_paths = environment.get("ANSIBLE_CALLBACK_PLUGINS", "")
+                callback_paths = [str(callback_directory)]
+                if existing_callback_paths:
+                    callback_paths.append(existing_callback_paths)
+                environment["ANSIBLE_CALLBACK_PLUGINS"] = os.pathsep.join(callback_paths)
+                enabled = [
+                    item.strip()
+                    for item in environment.get("ANSIBLE_CALLBACKS_ENABLED", "").split(",")
+                    if item.strip()
+                ]
+                if "journeyman_remote_shell" not in enabled:
+                    enabled.append("journeyman_remote_shell")
+                environment["ANSIBLE_CALLBACKS_ENABLED"] = ",".join(enabled)
+                environment["JOURNEYMAN_REMOTE_SHELL_RESULTS_FILE"] = str(
+                    host_results_path
+                )
+                if manifest["execution_type"] == "ansible":
+                    environment["JOURNEYMAN_HOST_RESULTS_STATUS_ONLY"] = "1"
+            step_extra_vars_path = materialize_step_extra_vars(
+                mapping,
+                workspace,
+            )
+            machine_extra_vars_path = materialize_machine_credential_extra_vars(
+                step,
+                manifest["execution_type"],
+                credentials,
+                mapping,
+                workspace,
+            )
+            windows_extra_vars_path = materialize_windows_credential_extra_vars(
+                step,
+                manifest["execution_type"],
+                credentials,
+                mapping,
+                workspace,
+            )
+            custom_extra_vars_path = materialize_custom_credential_extra_vars(
+                step,
+                manifest["execution_type"],
+                credentials,
+                mapping,
+                workspace,
+            )
+
+            command = build_command(
+                step,
+                manifest["execution_type"],
+                repository,
+                inventory,
+                environment=environment,
+                workspace=workspace,
+                machine_extra_vars_path=machine_extra_vars_path,
+                windows_extra_vars_path=windows_extra_vars_path,
+                custom_extra_vars_path=custom_extra_vars_path,
+                step_extra_vars_path=step_extra_vars_path,
+            )
+            rc, stdout, stderr, cancelled = run_process(
+                command,
+                repository,
+                environment,
+                job_id,
+                token,
+                control_url=control_url,
+                output_url=manifest.get("output_url"),
+            )
+            status = "cancelled" if cancelled else ("successful" if rc == 0 else "failed")
+            host_results = (
+                read_remote_shell_results(host_results_path)
+                if manifest["execution_type"] in {"ansible", "remote_shell"}
+                else []
+            )
+            results.append({"position": step["position"], "status": status, "exit_code": rc,
+                            "command": " ".join(command), "stdout": stdout, "stderr": stderr,
+                            "host_results": host_results})
+            completed[int(step["position"])] = status
+
+            if (
+                status == "successful"
+                and step.get("refresh_inventory_after")
+            ):
+                _, refresh_response = request(
+                    "POST",
+                    api(
+                        "/api/runners/jobs/{}/refresh-inventories"
+                        .format(job_id)
+                    ),
+                    token=token,
+                    payload={
+                        "position": step["position"],
+                    },
+                )
+
+                refreshed_execution_data = (
+                    decrypt_execution_data(
+                        refresh_response[
+                            "execution_data"
+                        ],
+                        token,
+                    )
+                )
+
+                (
+                    inventories,
+                    credentials,
+                    mappings,
+                ) = materialize_execution_data(
+                    refreshed_execution_data,
+                    workspace,
+                )
+
+                execution_data = (
+                    refreshed_execution_data
+                )
+
+            pending.remove(step)
+            progress = True
+
+            if cancelled:
+                final_status, exit_code, message = "cancelled", rc, "Remote Job cancelled."
+                pending = []
+                break
+
+            if (
+                rc != 0
+                and not step.get("continue_on_failure")
+                and not remote_has_failure_branch(
+                    step["position"],
+                    manifest.get("steps") or [],
+                )
+            ):
+                final_status, exit_code, message = (
+                    "failed",
+                    rc,
+                    "Remote step {} failed.".format(step["position"]),
+                )
+                pending = []
+                break
+
+            if not pending:
+                break
+
+            if not progress:
+                break
+
+        if pending:
+            for step in pending:
+                results.append({
+                    "position": step["position"],
+                    "status": "blocked",
+                    "exit_code": None,
+                    "command": "",
+                    "stdout": "",
+                    "stderr": "Workflow dependencies could not be satisfied.",
+                    "host_results": [],
+                })
+
+        if final_status != "cancelled":
+            failed_positions = {
+                int(item["position"])
+                for item in results
+                if item["status"] == "failed"
+            }
+            unhandled_failed_positions = {
+                position
+                for position in failed_positions
+                if not remote_has_failure_branch(
+                    position,
+                    manifest.get("steps") or [],
+                )
+            }
+            blocked = any(
+                item["status"] == "blocked"
+                for item in results
+            )
+
+            if unhandled_failed_positions or blocked:
+                final_status, exit_code, message = (
+                    "failed",
+                    1,
+                    "Remote Job completed with unhandled failed or "
+                    "blocked steps.",
+                )
+            else:
+                final_status, exit_code, message = (
+                    "successful",
+                    0,
+                    "Remote Job completed successfully.",
+                )
+    except Exception as exc:
+        LOGGER.exception("Remote Job #%s failed.", job_id)
+        message = str(exc)[:4000]
+    finally:
+        try:
+            request(
+                "POST",
+                api(complete_url),
+                token=token,
+                payload={
+                    "status": final_status,
+                    "exit_code": exit_code,
+                    "message": message,
+                    "steps": results,
+                },
+            )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Journeyman remote execution agent")
+    subparsers = parser.add_subparsers(dest="command")
+    register_parser = subparsers.add_parser(
+        "register",
+        help="register this runner using a one-time token",
+    )
+    register_parser.add_argument("--server", required=True)
+    token_group = register_parser.add_mutually_exclusive_group(required=True)
+    token_group.add_argument("--token")
+    token_group.add_argument(
+        "--token-env",
+        help="read the one-time registration token from this environment variable",
+    )
+    register_parser.add_argument(
+        "--config",
+        default="/etc/journeyman/remote-runner.env",
+    )
+    register_parser.add_argument("--ca-file", default="")
+    register_parser.add_argument(
+        "--work-root",
+        default="/var/lib/journeyman/remote-jobs",
+    )
+    register_parser.add_argument(
+        "--signal-spool-root",
+        default="/var/spool/journeyman/signals",
+        help=(
+            "durable Signal spool root for this runner instance; use a distinct "
+            "path when multiple runners share one host"
+        ),
+    )
+    unregister_parser = subparsers.add_parser(
+        "unregister",
+        help="revoke this runner and optionally delete its control-plane record",
+    )
+    unregister_parser.add_argument(
+        "--config",
+        default="/etc/journeyman/remote-runner.env",
+    )
+    unregister_parser.add_argument("--ca-file", default="")
+    unregister_parser.add_argument(
+        "--keep-record",
+        action="store_true",
+        help="revoke and disable the runner but retain its registry row",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = _parse_args()
+    if args.command == "register":
+        try:
+            registration_token = (
+                os.environ.get(args.token_env, "")
+                if args.token_env
+                else args.token
+            )
+            result = register_remote_runner(
+                args.server,
+                registration_token,
+                config_path=args.config,
+                ca_file=args.ca_file,
+                work_root=args.work_root,
+                signal_spool_root=args.signal_spool_root,
+            )
+        except Exception as exc:
+            raise SystemExit(str(exc)) from exc
+        print(
+            "Registered runner {} ({})".format(
+                result.get("name") or result["runner_uuid"],
+                result["runner_uuid"],
+            )
+        )
+        return
+
+    if args.command == "unregister":
+        try:
+            result = unregister_remote_runner(
+                args.config,
+                delete=not args.keep_record,
+                ca_file=args.ca_file,
+            )
+        except Exception as exc:
+            raise SystemExit(str(exc)) from exc
+        print(
+            "Runner {} {}.".format(
+                result.get("name") or "",
+                result.get("status") or "unregistered",
+            ).strip()
+        )
+        return
+
+    if not BASE_URL or not RUNNER_UUID or not RUNNER_SECRET:
+        raise SystemExit("JOURNEYMAN_SERVER_URL, JOURNEYMAN_RUNNER_UUID and JOURNEYMAN_RUNNER_SECRET are required.")
+    try:
+        _validated_https_url(BASE_URL)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    WORK_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(WORK_ROOT, 0o700)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    signal.signal(signal.SIGTERM, _signal)
+    signal.signal(signal.SIGINT, _signal)
+    heartbeat()
+    heartbeat_thread = threading.Thread(
+        target=remote_runner_heartbeat_loop,
+        name="remote-runner-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        while not STOP:
+            try:
+                forwarded = forward_signal_spool()
+                if forwarded:
+                    LOGGER.info("Forwarded %s durable Signal spool record(s).", forwarded)
+
+                # Environment synchronization mutates a runner-local virtualenv.
+                # Preserve the previous serialization guarantee by only claiming
+                # it when no Job/slice assignment is using an Environment.
+                if active_assignment_count() == 0:
+                    sync_manifest = None
+                    try:
+                        _sync_status, sync_manifest = request(
+                            "POST", api("/api/runners/environments/claim"), payload={}
+                        )
+                    except Exception:
+                        LOGGER.exception("Environment synchronization poll failed.")
+
+                    if sync_manifest:
+                        process_environment_sync(sync_manifest)
+                        continue
+
+                claimed = False
+                while not STOP and available_worker_slots() > 0:
+                    status, manifest = request(
+                        "POST", api("/api/runners/jobs/claim"), payload={}
+                    )
+                    if status == 204 or not manifest:
+                        break
+                    if not start_assignment(manifest):
+                        break
+                    claimed = True
+                    # Make the server-side capacity view catch up immediately,
+                    # rather than waiting for the periodic heartbeat.
+                    try:
+                        heartbeat(include_details=False)
+                    except Exception:
+                        LOGGER.exception(
+                            "Unable to heartbeat after claiming an assignment."
+                        )
+
+                if not claimed:
+                    time.sleep(POLL_SECONDS)
+            except Exception:
+                LOGGER.exception("Remote runner poll failed.")
+                time.sleep(POLL_SECONDS)
+    finally:
+        wait_for_assignments()
+
+
+if __name__ == "__main__":
+    main()

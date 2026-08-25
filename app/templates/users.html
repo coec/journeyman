@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Users · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Users</h1>
+    <p>Read-only Active Directory users eligible to access Journeyman through the configured role groups.</p>
+  </div>
+  <a class="button" href="{{ url_for('main.directory_settings') }}">Directory Settings</a>
+</div>
+
+{% if not directory_settings.enabled %}
+  <div class="panel placeholder">
+    <h2>Directory integration is disabled</h2>
+    <p>Configure and enable LDAP before Journeyman can list eligible users.</p>
+  </div>
+{% elif directory_error %}
+  <div class="flash error">Unable to read Active Directory: {{ directory_error }}</div>
+{% else %}
+  <div class="stats">
+    <div class="stat"><span>Eligible users</span><strong>{{ users|length }}</strong></div>
+    <div class="stat"><span>Administrators</span><strong>{{ users|selectattr('role', 'equalto', 'Administrator')|list|length }}</strong></div>
+    <div class="stat"><span>Users</span><strong>{{ users|selectattr('role', 'equalto', 'User')|list|length }}</strong></div>
+    <div class="stat"><span>Nested groups</span><strong>{% if directory_settings.include_nested_groups %}On{% else %}Off{% endif %}</strong></div>
+  </div>
+
+  <section class="panel repository-list">
+    {% if users %}
+      <table>
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Display name</th>
+            <th>Role</th>
+            <th>Direct Package grants</th>
+            <th>UPN</th>
+            <th>Email</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+            <tr>
+              <td class="repository-name">{{ user.username }}</td>
+              <td>{{ user.display_name }}</td>
+              <td><span class="status {% if user.role == 'Administrator' %}status-running{% else %}status-successful{% endif %}">{{ user.role }}</span></td>
+              <td>
+                {% set package_names = user_package_grants.get(user.object_guid|lower, []) %}
+                {% if package_names %}
+                  {{ package_names|join(', ') }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="break">{{ user.user_principal_name or '—' }}</td>
+              <td class="break">{{ user.mail or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="empty-state">
+        <h2>No eligible users found</h2>
+        <p>Check the configured role group names and LDAP search bases.</p>
+      </div>
+    {% endif %}
+  </section>
+{% endif %}
+{% endblock %}

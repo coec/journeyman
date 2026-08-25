@@ -1,0 +1,13 @@
+namespace: journeyman
+name: operation
+version: 1.0.0
+readme: README.md
+authors:
+  - Journeyman contributors
+description: Operational modules for the Journeyman automation platform.
+license:
+  - Apache-2.0
+tags:
+  - automation
+  - orchestration
+  - operations

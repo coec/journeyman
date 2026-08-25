@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}Directory Settings · Journeyman{% endblock %}
+
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .directory-page { max-width: 1180px; }
+  .directory-intro { margin-bottom: 20px; }
+  .directory-intro p { margin-top: 6px; }
+  .settings-tabs { display: flex; gap: 8px; margin: 18px 0; flex-wrap: wrap; }
+  .settings-tabs a { padding: 9px 13px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+  .settings-tabs a.active { color: #fff; background: var(--blue); border-color: var(--blue); }
+  .directory-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; }
+  .directory-card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .directory-card + .directory-card { margin-top: 16px; }
+  .directory-card h2 { margin: 0 0 6px; }
+  .directory-card > p { margin-bottom: 18px; }
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .field { min-width: 0; }
+  .field.wide { grid-column: 1 / -1; }
+  .field label { display: block; font-weight: 700; margin-bottom: 6px; }
+  .field input { width: 100%; }
+  .field small { display: block; margin-top: 5px; color: var(--muted); line-height: 1.35; }
+  .check-row { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: 7px; background: #f8fafc; }
+  .check-row input { margin-top: 3px; }
+  .check-row strong, .check-row small { display: block; }
+  .check-row small { color: var(--muted); margin-top: 3px; }
+  .server-table input[type="text"], .server-table input[type="number"] { width: 100%; min-width: 90px; }
+  .server-table td { vertical-align: middle; }
+  .server-table .toggle-cell { width: 80px; text-align: center; }
+  .server-table .remove-cell { width: 55px; text-align: right; }
+  .server-status { max-width: 240px; }
+  .server-status small { overflow-wrap: anywhere; }
+  .form-actions { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+  .side-list { margin: 0; padding-left: 18px; color: var(--muted); }
+  .side-list li { margin-bottom: 9px; line-height: 1.4; }
+  .settings-error { margin-bottom: 16px; border-left: 4px solid var(--red); }
+  .settings-error h2 { margin-top: 0; }
+  .status-good { color: var(--green); font-weight: 700; }
+  .status-bad { color: var(--red); font-weight: 700; }
+  @media (max-width: 950px) { .directory-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } .field.wide { grid-column: auto; } }
+</style>
+
+<div class="directory-page">
+  <header class="directory-intro">
+    <h1>System Settings</h1>
+    <p>Configure Journeyman's LDAP connection, role groups, and redundant Active Directory servers.</p>
+  </header>
+
+  <nav class="settings-tabs" aria-label="Settings sections">
+    <a href="{{ url_for('main.system_settings') }}">Web and TLS</a>
+    <a class="active" href="{{ url_for('main.directory_settings') }}">Directory and Authentication</a>
+    <a href="{{ url_for('main.environment_build_settings') }}">Environment Builds</a>
+    <a href="{{ url_for('main.data_retention_settings') }}">Data Retention</a>
+    <a href="{{ url_for('main.release_testing_settings') }}">Release Testing</a>
+  </nav>
+
+  {% if errors %}
+    <section class="directory-card settings-error">
+      <h2>Directory settings were not saved</h2>
+      <ul>
+        {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <div class="directory-grid">
+    <div>
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="has_bind_password" value="{% if form_data.has_bind_password %}1{% else %}0{% endif %}">
+
+        <section class="directory-card">
+          <h2>Directory connection</h2>
+          <p>Journeyman uses a read-only service account for directory searches. User passwords will later be verified by binding directly as the user.</p>
+
+          <label class="check-row">
+            <input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}>
+            <span>
+              <strong>Enable LDAP directory integration</strong>
+              <small>At least two enabled LDAPS servers are required before this can be saved as enabled.</small>
+            </span>
+          </label>
+
+          <div class="form-grid" class="form-grid section-spaced">
+            <div class="field wide">
+              <label for="base_dn">Base DN</label>
+              <input id="base_dn" name="base_dn" value="{{ form_data.base_dn }}" placeholder="DC=example,DC=com" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="user_search_base">User search base</label>
+              <input id="user_search_base" name="user_search_base" value="{{ form_data.user_search_base }}" placeholder="OU=Users,DC=example,DC=com" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="group_search_base">Group search base</label>
+              <input id="group_search_base" name="group_search_base" value="{{ form_data.group_search_base }}" placeholder="OU=Groups,DC=example,DC=com" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="bind_username">Bind account</label>
+              <input id="bind_username" name="bind_username" value="{{ form_data.bind_username }}" placeholder="svc_journeyman@example.com" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="bind_password">Bind password</label>
+              <input id="bind_password" type="password" name="bind_password" value="" autocomplete="new-password" placeholder="{% if form_data.has_bind_password %}Stored — leave blank to keep{% else %}Required{% endif %}">
+              <small>The password is encrypted and is never displayed after saving.</small>
+            </div>
+            <div class="field wide">
+              <label for="ca_certificate_path">LDAP CA certificate path</label>
+              <input id="ca_certificate_path" name="ca_certificate_path" value="{{ form_data.ca_certificate_path }}" placeholder="/etc/pki/ca-trust/source/anchors/directory-ca.pem" autocomplete="off" spellcheck="false">
+              <small>Certificate verification is mandatory for enabled servers.</small>
+            </div>
+            <div class="field">
+              <label for="connect_timeout_seconds">Connection timeout</label>
+              <input id="connect_timeout_seconds" type="number" min="1" max="30" name="connect_timeout_seconds" value="{{ form_data.connect_timeout_seconds }}">
+            </div>
+            <div class="field">
+              <label for="operation_timeout_seconds">Operation timeout</label>
+              <input id="operation_timeout_seconds" type="number" min="1" max="120" name="operation_timeout_seconds" value="{{ form_data.operation_timeout_seconds }}">
+            </div>
+          </div>
+        </section>
+
+        <section class="directory-card">
+          <h2>Role groups</h2>
+          <p>AD decides who is eligible to use Journeyman. Administrator membership takes precedence when a user belongs to both groups.</p>
+          <div class="form-grid">
+            <div class="field">
+              <label for="administrator_group_name">Administrator AD group</label>
+              <input id="administrator_group_name" name="administrator_group_name" value="{{ form_data.administrator_group_name }}" maxlength="255">
+            </div>
+            <div class="field">
+              <label for="user_group_name">User AD group</label>
+              <input id="user_group_name" name="user_group_name" value="{{ form_data.user_group_name }}" maxlength="255">
+            </div>
+            <label class="check-row field wide">
+              <input type="checkbox" name="include_nested_groups" {% if form_data.include_nested_groups %}checked{% endif %}>
+              <span>
+                <strong>Include nested AD group membership</strong>
+                <small>Recommended. Members inherited through nested groups are included on the Users page and in future authorization checks.</small>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="directory-card">
+          <div class="page-heading compact-heading">
+            <div>
+              <h2>Active Directory servers</h2>
+              <p>Servers are tried in priority order. A network or TLS failure moves to the next enabled server.</p>
+            </div>
+            <button type="button" class="button" id="add-server">Add Server</button>
+          </div>
+
+          <div class="table-scroll">
+            <table class="server-table">
+              <thead>
+                <tr>
+                  <th>Priority</th>
+                  <th>Server</th>
+                  <th>Port</th>
+                  <th class="toggle-cell">LDAPS</th>
+                  <th class="toggle-cell">Enabled</th>
+                  <th>Last test</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="server-rows">
+                {% for server in form_data.servers %}
+                  <tr class="server-row">
+                    <td class="server-position">{{ loop.index }}</td>
+                    <td><input type="text" name="server_host" value="{{ server.host }}" placeholder="dc0{{ loop.index }}.example.internal" autocomplete="off" spellcheck="false"></td>
+                    <td><input type="number" name="server_port" value="{{ server.port }}" min="1" max="65535"></td>
+                    <td class="toggle-cell"><input type="checkbox" name="server_use_ssl" value="{{ loop.index }}" {% if server.use_ssl %}checked{% endif %}></td>
+                    <td class="toggle-cell"><input type="checkbox" name="server_enabled" value="{{ loop.index }}" {% if server.enabled %}checked{% endif %}></td>
+                    <td class="server-status">
+                      {% set persisted = settings.servers[loop.index0] if loop.index0 < settings.servers|length else none %}
+                      {% if persisted and persisted.last_test_ok is not none %}
+                        <span class="{% if persisted.last_test_ok %}status-good{% else %}status-bad{% endif %}">{% if persisted.last_test_ok %}Passed{% else %}Failed{% endif %}</span>
+                        <small>{{ persisted.last_test_message }}</small>
+                      {% else %}<small>Not tested</small>{% endif %}
+                    </td>
+                    <td class="remove-cell"><button type="button" class="icon-button remove-server" title="Remove server">×</button></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="form-actions">
+            <a class="button" href="{{ url_for('main.system_settings') }}">Cancel</a>
+            <button type="submit" class="button primary">Save Directory Settings</button>
+          </div>
+        </section>
+      </form>
+    </div>
+
+    <aside>
+      <section class="directory-card">
+        <h2>Connection tests</h2>
+        <p>Tests each saved, enabled server independently using the stored bind account and certificate settings. Save changes before testing; directory integration does not need to be enabled yet.</p>
+        <form method="post" action="{{ url_for('main.test_directory_settings') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="button full" type="submit">Test All Saved Servers</button>
+        </form>
+      </section>
+
+      <section class="directory-card">
+        <h2>Failover rules</h2>
+        <ul class="side-list">
+          <li>Connection, TLS, timeout, or service failures advance to the next server.</li>
+          <li>Directory queries fail closed when every enabled server is unavailable.</li>
+          <li>At least two enabled LDAPS servers are required.</li>
+          <li>AD remains authoritative for users and Team membership.</li>
+        </ul>
+      </section>
+
+      <section class="directory-card">
+        <h2>Last updated</h2>
+        <dl>
+          <dt>By</dt><dd>{{ settings.updated_by }}</dd>
+          <dt>Status</dt><dd>{% if settings.enabled %}Enabled{% else %}Disabled{% endif %}</dd>
+          <dt>Stored bind secret</dt><dd>{% if settings.has_bind_password() %}Yes{% else %}No{% endif %}</dd>
+        </dl>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  const body = document.getElementById("server-rows");
+  const add = document.getElementById("add-server");
+
+  function reindex() {
+    const rows = Array.from(body.querySelectorAll(".server-row"));
+    rows.forEach((row, index) => {
+      const position = index + 1;
+      row.querySelector(".server-position").textContent = position;
+      row.querySelector('input[name="server_use_ssl"]').value = position;
+      row.querySelector('input[name="server_enabled"]').value = position;
+      const placeholder = row.querySelector('input[name="server_host"]');
+      placeholder.placeholder = `dc${String(position).padStart(2, "0")}.example.internal`;
+    });
+    body.querySelectorAll(".remove-server").forEach((button, index) => {
+      button.disabled = index === 0;
+      button.title = index === 0
+        ? "The primary server cannot be removed"
+        : "Remove server";
+    });
+  }
+
+  add.addEventListener("click", function () {
+    const row = document.createElement("tr");
+    row.className = "server-row";
+    row.innerHTML = `
+      <td class="server-position"></td>
+      <td><input type="text" name="server_host" value="" autocomplete="off" spellcheck="false"></td>
+      <td><input type="number" name="server_port" value="636" min="1" max="65535"></td>
+      <td class="toggle-cell"><input type="checkbox" name="server_use_ssl" checked></td>
+      <td class="toggle-cell"><input type="checkbox" name="server_enabled" checked></td>
+      <td class="server-status"><small>Not tested</small></td>
+      <td class="remove-cell"><button type="button" class="icon-button remove-server" title="Remove server">×</button></td>`;
+    body.appendChild(row);
+    reindex();
+  });
+
+  body.addEventListener("click", function (event) {
+    if (!event.target.classList.contains("remove-server")) return;
+    const row = event.target.closest(".server-row");
+    if (row === body.querySelector(".server-row")) return;
+    row.remove();
+    reindex();
+  });
+
+  reindex();
+}());
+</script>
+{% endblock %}

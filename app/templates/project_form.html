@@ -1,0 +1,1411 @@
+{% extends "base.html" %} {% block title %} {{ 'Edit' if project else 'Add' }} Project · Journeyman {% endblock %} {% block content %}
+<div class="page-heading">
+    <div>
+        <h1>{{ 'Edit Project' if project else 'Add Project' }}</h1>
+        <p>
+            Configure an Ansible or Script workflow.
+        </p>
+    </div>
+
+    {% if project %}
+    <div class="page-heading-actions">
+      {% if project.steps|length > 1 %}
+      <a class="button" href="{{ url_for('main.projects', flowchart=project.id) }}#project-{{ project.id }}">Flowchart</a>
+      {% endif %}
+      <a class="button" href="{{ url_for('main.project_notifications', project_id=project.id) }}">Notifications</a>
+      <a class="button" href="{{ url_for('main.projects') }}#project-{{ project.id }}">← Back to Projects</a>
+    </div>
+    {% endif %}
+</div>
+
+<section class="panel form-panel project-form-panel">
+    {% if not repositories %}
+    <div class="flash error">
+        No synchronized repositories are available.
+    </div>
+    {% endif %}
+
+    <form method="post" id="project-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="editor-tabs-shell project-editor-shell">
+            <div class="editor-tabs-scroll" role="tablist" aria-label="Project editor">
+                <button class="project-editor-tab active" type="button" data-project-tab="project" role="tab" aria-selected="true" aria-controls="project-main-panel">Project</button>
+                <button class="project-editor-tab" type="button" data-project-tab="defaults" role="tab" aria-selected="false" aria-controls="project-defaults-panel">Defaults</button>
+                <div id="project-step-tabs" class="project-step-tabs" role="presentation"></div>
+            </div>
+            <div class="editor-tabs-actions">
+                <button class="project-editor-tab add-step-tab" type="button" id="add-step">+ Add Step</button>
+            </div>
+        </div>
+
+        <div id="project-main-panel" class="project-tab-panel active" role="tabpanel">
+        <label>
+            Name
+            <input name="name" required value="{{ form_data.name }}">
+        </label>
+
+        <label>
+            Description
+            <textarea name="description" rows="3">{{ form_data.description }}</textarea>
+        </label>
+
+        <label>
+            Project type
+            <select name="execution_type" id="project-execution-type">
+                <option value="ansible" {% if form_data.execution_type == "ansible" %}selected{% endif %}>Ansible</option>
+                <option value="shell" {% if form_data.execution_type == "shell" %}selected{% endif %}>Script</option>
+                <option value="remote_shell" {% if form_data.execution_type == "remote_shell" %}selected{% endif %}>Remote Script</option>
+            </select>
+            <small>All steps in a Project use the same execution type.</small>
+        </label>
+
+        <label class="checkbox-label ansible-playbook-only-field">
+            <input type="checkbox" name="check_mode" {% if form_data.check_mode %}checked{% endif %}>
+            Run in Ansible check mode (--check)
+            <small>Applies --check to every Ansible playbook step in this Project.</small>
+        </label>
+
+        <div id="local-shell-notice" class="notice warning" hidden>
+            <strong>Local execution:</strong> scripts run once on the selected Journeyman runner.
+            They are not executed on inventory hosts.
+        </div>
+
+        <div id="remote-shell-notice" class="notice" hidden>
+            <strong>Remote Script:</strong> Journeyman uses Ansible to copy and execute the selected script on each inventory host.
+            Return code, stdout and stderr are retained separately for every host.
+        </div>
+
+        <label class="inventory-field">
+            Default Inventory
+            <select name="inventory_id">
+                <option value="">None</option>
+
+                {% for inventory in inventories %}
+                <option
+                    value="{{ inventory.id }}"
+                    {% if form_data.inventory_id == inventory.id %}
+                    selected
+                    {% endif %}
+                >
+                    {{ inventory.name }}
+                    ({{ inventory.inventory_type|replace('_', ' ')|title }})
+                </option>
+                {% endfor %}
+            </select>
+
+            <small>
+                Workflow steps use this inventory unless a step selects an override.
+            </small>
+        </label>
+
+        <label>
+            Default Execution Destination
+            <select name="default_runner_destination" id="project-default-runner">
+                <option value="local" {% if form_data.default_runner_id is none and form_data.default_runner_crew_id is none %}selected{% endif %}>Built-in local runner</option>
+                {% if runner_crews %}
+                <optgroup label="Runner Crews">
+                    {% for crew in runner_crews %}
+                    <option value="crew:{{ crew.id }}" {% if form_data.default_runner_crew_id == crew.id %}selected{% endif %}>
+                        {{ crew.name }} — {{ crew.runners|length }} member{{ '' if crew.runners|length == 1 else 's' }}
+                    </option>
+                    {% endfor %}
+                </optgroup>
+                {% endif %}
+                {% if remote_runners %}
+                <optgroup label="Individual Runners">
+                    {% for runner in remote_runners %}
+                    <option value="runner:{{ runner.id }}" {% if form_data.default_runner_id == runner.id %}selected{% endif %}>
+                        {{ runner.name }}{% if runner.hostname %} — {{ runner.hostname }}{% endif %}{% if runner.site %} · {{ runner.site }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </optgroup>
+                {% endif %}
+            </select>
+            <small>Runner Crews select the least-busy healthy member when work is queued. An explicit inventory <code>journeyman_runner</code> still overrides the Project default for that host.</small>
+        </label>
+
+        <label>
+            Maximum parallel steps
+            <input
+                type="number"
+                name="max_parallel_steps"
+                min="1"
+                max="32"
+                required
+                value="{{ form_data.max_parallel_steps }}"
+            >
+            <small>Independent dependency branches may run together, up to this Project limit. Set 1 for sequential execution.</small>
+        </label>
+
+        <div class="form-subsection oversight-controls">
+            <strong>Oversight</strong>
+            <label class="checkbox-label">
+                <input type="checkbox" id="project-oversight-all">
+                Oversight required between all steps
+            </label>
+            <small>Tick to require oversight at every applicable workflow boundary. A grey checkbox means oversight is enabled only after selected steps. Root execution starts without oversight, and terminal steps cannot require oversight because nothing follows them.</small>
+        </div>
+
+        <label>
+            Project concurrency
+            <select name="concurrency_policy">
+                <option value="unrestricted" {% if form_data.concurrency_policy == "unrestricted" %}selected{% endif %}>Unrestricted — no concurrency restrictions</option>
+                <option value="distinct_parameters" {% if form_data.concurrency_policy == "distinct_parameters" %}selected{% endif %}>Distinct parameters — reject same-parameter duplicates</option>
+                <option value="serialized" {% if form_data.concurrency_policy == "serialized" %}selected{% endif %}>Serialized — queue additional instances</option>
+                <option value="exclusive" {% if form_data.concurrency_policy is not defined or form_data.concurrency_policy == "exclusive" %}selected{% endif %}>Exclusive — reject additional instances</option>
+            </select>
+            <small>Concurrency is enforced for this Project regardless of whether it is launched directly, through a Package, schedule, Reaction, API, or rerun.</small>
+        </label>
+
+        <label class="checkbox-label">
+            <input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}> Enabled
+        </label>
+        </div>
+
+        <div id="project-defaults-panel" class="project-tab-panel" role="tabpanel" hidden>
+        <label>
+            Credentials
+            <select name="credential_ids" multiple size="5">
+                {% for credential in credentials %}
+                <option value="{{ credential.id }}" {% if credential.id in form_data.credential_ids %}selected{% endif %}>
+                    {{ credential.name }} ({{ credential.credential_type|replace('_',' ')|title }})
+                </option>
+                {% endfor %}
+            </select>
+            <small>Effective defaults allow no more than one credential of each type.</small>
+        </label>
+
+        <label>
+            Repository
+            <select name="repository_id" id="project-default-repository">
+                <option value="">None</option>
+                {% for repository in repositories %}
+                <option value="{{ repository.id }}" {% if form_data.repository_id == repository.id %}selected{% endif %}>
+                    {{ repository.name }}
+                </option>
+                {% endfor %}
+            </select>
+            <small>Steps may inherit this repository or select an override.</small>
+        </label>
+
+        <label>
+            Execution Environment
+            <select name="environment_id">
+                <option value="">System default environment</option>
+                {% for environment in environments %}
+                <option value="{{ environment.id }}" {% if form_data.environment_id == environment.id %}selected{% endif %}>
+                    {{ environment.name }}{% if environment.is_default %} — System Default{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        </div>
+
+        <div id="workflow-steps" class="project-step-panels">
+            {% for step in form_data.steps %}
+            <section class="workflow-step project-tab-panel panel" role="tabpanel">
+                <div class="workflow-step-header">
+                    <strong>
+              Step <span class="step-number">{{ loop.index }}</span>
+            </strong>
+
+                    <div class="workflow-step-actions">
+                        <button class="icon-button move-step-up" type="button" title="Move up">
+                            ↑
+                        </button>
+
+                        <button class="icon-button move-step-down" type="button" title="Move down">
+                            ↓
+                        </button>
+
+                        <button class="button clone-step" type="button">
+                            Clone
+                        </button>
+
+                        <button class="button danger remove-step" type="button">
+                            Remove
+                        </button>
+                    </div>
+                </div>
+
+                <label>
+                    Step name
+                    <input name="step_name" value="{{ step.name }}" placeholder="Publish content views">
+                </label>
+
+                <fieldset class="step-dependency-fieldset">
+                    <legend>Depends on</legend>
+                    <div
+                        class="step-dependencies"
+                        data-selected='{{ step.dependency_positions | tojson }}'
+                    ></div>
+                    <small>Leave every box unticked for a root step. The step becomes eligible after all selected dependencies succeed.</small>
+                </fieldset>
+
+                <label class="checkbox-label">
+                    <input
+                        type="checkbox"
+                        class="step-failure-only"
+                        name="step_failure_only"
+                        value="{{ loop.index0 }}"
+                        {% if step.failure_only %}checked{% endif %}
+                    >
+                    On failure only
+                    <small>
+                        Run this recovery step only if at least one selected
+                        dependency fails. It must have a dependency.
+                    </small>
+                </label>
+
+                <label class="checkbox-label step-oversight-field">
+                    <input type="checkbox" class="step-oversight-after" name="step_oversight_after" value="{{ loop.index0 }}" {% if step.oversight_after %}checked{% endif %}>
+                    Oversight after this step
+                    <small>Pause before any dependent next step(s) run so the reviewer can inspect their resolved execution state.</small>
+                </label>
+
+                <label>
+                    Repository
+                    <select class="step-repository" name="step_repository_id">
+                        <option value="">Use project default repository</option>
+
+                        {% for repository in repositories %}
+                        <option value="{{ repository.id }}" {% if step.repository_id==repository.id %} selected {% endif %}>
+                            {{ repository.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </label>
+
+                <label class="checkbox-label">
+                    <input type="checkbox" class="step-refresh-repository" name="step_refresh_repository" value="{{ loop.index0 }}" {% if step.refresh_repository %}checked{% endif %}>
+                    Refresh repository before execution
+                    <small>Synchronizes this step's repository before previewing and snapshotting the job.</small>
+                </label>
+
+                <label class="checkbox-label">
+                    <input type="checkbox" class="step-refresh-inventory-after" name="step_refresh_inventory_after" value="{{ loop.index0 }}" {% if step.refresh_inventory_after %}checked{% endif %}>
+                    Refresh inventories after this step succeeds
+                    <small>Re-resolves inventories used by dependent later steps so newly created or registered hosts can be used without starting a new Job.</small>
+                </label>
+
+                <label class="inventory-field">
+                    Inventory override
+
+                    <select name="step_inventory_id">
+                        <option value="">
+                            Use project inventory
+                        </option>
+
+                        {% for inventory in inventories %}
+                        <option
+                            value="{{ inventory.id }}"
+                            {% if step.inventory_id == inventory.id %}
+                            selected
+                            {% endif %}
+                        >
+                            {{ inventory.name }}
+                            ({{ inventory.inventory_type
+                                |replace('_', ' ')
+                                |title }})
+                            {% if not inventory.enabled %}
+                                — Disabled
+                            {% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+
+                    <small>
+                        Leave unchanged to use the project default inventory.
+                    </small>
+                </label>
+
+                <label>
+                    Execution environment
+                    <select name="step_environment_id">
+                        <option value="">Use project/default environment</option>
+                        {% for environment in environments %}
+                        <option value="{{ environment.id }}" {% if step.environment_id == environment.id %}selected{% endif %}>
+                            {{ environment.name }}{% if environment.is_default %} — Default{% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <small>The selected environment is snapshotted when the job is queued.</small>
+                </label>
+
+                <label class="checkbox-label">
+                    <input type="checkbox" class="step-credentials-override" name="step_credentials_override" value="{{ loop.index0 }}" {% if step.credentials_override %}checked{% endif %}>
+                    Override project credentials
+                </label>
+
+                <label>
+                    Credentials
+                    <select class="step-credentials" name="step_0_credential_ids" multiple size=5 {% if not step.credentials_override %}disabled{% endif %}>
+                        {% for credential in credentials %}
+                        <option value="{{ credential.id }}" {% if credential.id in step.credential_ids %} selected{% endif %}>
+                            {{ credential.name }} ({{ credential.credential_type|replace('_',' ')|title }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <small>Untick override to inherit all project credentials. Hold Ctrl to select multiple credentials</small>
+                </label>
+
+                <label>
+                    <span class="step-artifact-label">Ansible YAML file</span>
+                    <select class="step-playbook" name="step_playbook" data-selected="{{ step.playbook }}">
+                        <option value="">
+                            Select a repository first
+                        </option>
+                    </select>
+                </label>
+
+                <div class="workflow-step-grid">
+                    <label class="ansible-only-field">
+                        Limit override
+                        <input name="step_limit" value="{{ step.limit }}" placeholder="Inherit project limit">
+                    </label>
+
+                    <label class="ansible-only-field ansible-playbook-only-field">
+                        Tags override
+                        <input name="step_tags" value="{{ step.tags }}" placeholder="Inherit project tags">
+                    </label>
+
+                    <label class="ansible-only-field ansible-playbook-only-field">
+                        Skip-tags override
+                        <input name="step_skip_tags" value="{{ step.skip_tags }}" placeholder="Inherit project skip tags">
+                    </label>
+
+                    <label class="ansible-only-field ansible-playbook-only-field">
+                        Extra variables (YAML)
+                        <textarea name="step_extra_vars" rows="3" placeholder="my_index: 0">{{ step.extra_vars_yaml }}</textarea>
+                        <small>Applied only to this step. Step values override Package extra variables with the same name. Do not store secrets here.</small>
+                    </label>
+
+                    <label>
+                        On failure
+                        <select name="step_failure_behaviour">
+                            <option value="stop" {% if not step.continue_on_failure %} selected {% endif %}>
+                                Stop project execution
+                            </option>
+
+                            <option value="continue" {% if step.continue_on_failure %} selected {% endif %}>
+                                Continue workflow
+                            </option>
+                        </select>
+                    </label>
+
+                    <label class="ansible-playbook-only-field">
+                        Verbosity
+                        <select name="step_verbosity">
+                            {% set verbosity_labels = {
+                                0: "Normal output",
+                                1: "Verbose",
+                                2: "More verbose",
+                                3: "Connection debugging",
+                                4: "Detailed connection/plugin debugging",
+                                5: "Maximum troubleshooting detail"
+                            } %}
+                            {% for level in range(0, 6) %}
+                            <option value="{{ level }}" {% if step.verbosity == level %}selected{% endif %}>
+                                {{ level }} — {{ verbosity_labels[level] }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <small>Levels 1–5 correspond to -v through -vvvvv.</small>
+                    </label>
+
+                </div>
+            </section>
+            {% endfor %}
+
+        </div>
+
+        <div class="project-save-note">
+            Projects may be saved while incomplete. Journeyman blocks Dispatch until all execution requirements are satisfied.
+        </div>
+
+        <div class="form-actions project-editor-actions">
+            <button class="button primary" type="submit">
+                {{ 'Save Project' if project else 'Add Project' }}
+            </button>
+
+            <a class="button" href="{{ url_for('main.projects') }}">
+        Cancel
+      </a>
+        </div>
+    </form>
+</section>
+
+<template id="workflow-step-template">
+    <section class="workflow-step project-tab-panel panel" role="tabpanel">
+        <div class="workflow-step-header">
+            <strong>
+        Step <span class="step-number"></span>
+      </strong>
+
+            <div class="workflow-step-actions">
+                <button class="icon-button move-step-up" type="button" title="Move up">
+                    ↑
+                </button>
+
+                <button class="icon-button move-step-down" type="button" title="Move down">
+                    ↓
+                </button>
+
+                <button class="button clone-step" type="button">
+                    Clone
+                </button>
+
+                <button class="button danger remove-step" type="button">
+                    Remove
+                </button>
+            </div>
+        </div>
+
+        <label>
+            Step name
+            <input name="step_name" placeholder="Workflow step">
+        </label>
+
+        <fieldset class="step-dependency-fieldset">
+            <legend>Depends on</legend>
+            <div
+                class="step-dependencies"
+                data-selected="[]"
+            ></div>
+            <small>Leave every box unticked for a root step. The step becomes eligible after all selected dependencies succeed.</small>
+        </fieldset>
+
+        <label class="checkbox-label">
+            <input
+                type="checkbox"
+                class="step-failure-only"
+                name="step_failure_only"
+                value="0"
+            >
+            On failure only
+            <small>
+                Run this recovery step only if at least one selected
+                dependency fails. It must have a dependency.
+            </small>
+        </label>
+
+        <label class="checkbox-label step-oversight-field">
+            <input type="checkbox" class="step-oversight-after" name="step_oversight_after" value="0">
+            Oversight after this step
+            <small>Pause before any dependent next step(s) run so the reviewer can inspect their resolved execution state.</small>
+        </label>
+
+        <label>
+            Repository
+            <select class="step-repository" name="step_repository_id">
+                <option value="">Use project default repository</option>
+
+                {% for repository in repositories %}
+                <option value="{{ repository.id }}">
+                    {{ repository.name }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label class="checkbox-label">
+            <input type="checkbox" class="step-refresh-repository" name="step_refresh_repository" value="0">
+            Refresh repository before execution
+            <small>Synchronizes this step's repository before previewing and snapshotting the job.</small>
+        </label>
+
+        <label class="checkbox-label">
+            <input type="checkbox" class="step-refresh-inventory-after" name="step_refresh_inventory_after" value="0">
+            Refresh inventories after this step succeeds
+            <small>Re-resolves inventories used by dependent later steps so newly created or registered hosts can be used without starting a new Job.</small>
+        </label>
+
+        <label class="inventory-field">
+            Inventory override
+
+            <select name="step_inventory_id">
+                <option value="" selected>
+                    Use project inventory
+                </option>
+
+                {% for inventory in inventories %}
+                <option value="{{ inventory.id }}">
+                    {{ inventory.name }}
+                    ({{ inventory.inventory_type
+                        |replace('_', ' ')
+                        |title }})
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            Execution environment
+            <select name="step_environment_id">
+                <option value="">Use project/default environment</option>
+                {% for environment in environments %}
+                <option value="{{ environment.id }}">
+                    {{ environment.name }}{% if environment.is_default %} — Default{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label class="checkbox-label">
+            <input type="checkbox" class="step-credentials-override" name="step_credentials_override" value="0">
+            Override project credentials
+        </label>
+
+        <label>
+            Credentials
+            <select class="step-credentials" name="step_0_credential_ids" multiple size=5 disabled>
+                {% for credential in credentials %}
+                <option value="{{ credential.id }}">
+                    {{ credential.name }} ({{ credential.credential_type|replace('_',' ')|title }})
+                </option>
+                {% endfor %}
+            </select>
+            <small>Untick override to inherit all project credentials. Hold Ctrl to select multiple credentials</small>
+        </label>
+
+        <label>
+            <span class="step-artifact-label">Ansible YAML file</span>
+            <select class="step-playbook" name="step_playbook" data-selected="">
+                <option value="">Select a repository first</option>
+            </select>
+        </label>
+
+        <div class="workflow-step-grid">
+            <label class="ansible-only-field">
+                Limit override
+                <input name="step_limit" placeholder="Inherit project limit">
+            </label>
+
+            <label class="ansible-only-field ansible-playbook-only-field">
+                Tags override
+                <input name="step_tags" placeholder="Inherit project tags">
+            </label>
+
+            <label class="ansible-only-field ansible-playbook-only-field">
+                Skip-tags override
+                <input name="step_skip_tags" placeholder="Inherit project skip tags">
+            </label>
+
+            <label class="ansible-only-field ansible-playbook-only-field">
+                Extra variables (YAML)
+                <textarea name="step_extra_vars" rows="3" placeholder="my_index: 0"></textarea>
+                <small>Applied only to this step. Step values override Package extra variables with the same name. Do not store secrets here.</small>
+            </label>
+
+            <label>
+                On failure
+                <select name="step_failure_behaviour">
+                    <option value="stop">Stop project execution</option>
+                    <option value="continue">
+                        Continue workflow
+                    </option>
+                </select>
+
+            </label>
+            <label class="remote-shell-only-field">
+                Remote Script batch size
+                <input name="step_remote_shell_serial" type="number" min="0" max="10000" value="0">
+                <small>0 runs against all eligible hosts at once; otherwise this is Ansible serial batch size.</small>
+            </label>
+
+            <label class="checkbox-label remote-shell-only-field">
+                <input type="checkbox" name="step_remote_shell_become" value="0">
+                Use privilege escalation (become)
+            </label>
+
+            <label class="ansible-playbook-only-field">
+                Verbosity
+                <select name="step_verbosity">
+                    {% set verbosity_labels = {
+                        0: "Normal output",
+                        1: "Verbose",
+                        2: "More verbose",
+                        3: "Connection debugging",
+                        4: "Detailed connection/plugin debugging",
+                        5: "Maximum troubleshooting detail"
+                    } %}
+                    {% for level in range(0, 6) %}
+                    <option value="{{ level }}" {% if level==0 %} selected {% endif %}>
+                        {{ level }} — {{ verbosity_labels[level] }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <small>Levels 1–5 correspond to -v through -vvvvv.</small>
+            </label>
+
+        </div>
+    </section>
+</template>
+
+<script nonce="{{ csp_nonce }}">
+    const ansibleFilesByRepository =
+        {{ ansible_files_by_repository | tojson }};
+    const shellFilesByRepository =
+        {{ shell_files_by_repository | tojson }};
+    const executionTypeSelect =
+        document.getElementById("project-execution-type");
+
+    function filesByRepository() {
+      return ["shell", "remote_shell"].includes(executionTypeSelect.value)
+        ? shellFilesByRepository
+        : ansibleFilesByRepository;
+    }
+    
+      const stepsContainer =
+        document.getElementById("workflow-steps");
+    
+      const stepTemplate =
+        document.getElementById("workflow-step-template");
+
+      const projectMainPanel =
+        document.getElementById("project-main-panel");
+      const projectDefaultsPanel =
+        document.getElementById("project-defaults-panel");
+      const stepTabsContainer =
+        document.getElementById("project-step-tabs");
+      const projectTabButton =
+        document.querySelector('[data-project-tab="project"]');
+      const defaultsTabButton =
+        document.querySelector('[data-project-tab="defaults"]');
+      let activeStep = null;
+
+      function stepHasReadinessIssue(step) {
+        const repository = effectiveRepositoryId(step);
+        const playbook = step.querySelector('.step-playbook');
+        const failureOnly = step.querySelector('.step-failure-only');
+        const dependencies = step.querySelectorAll('.step-dependencies input[type="checkbox"]:checked');
+        if (!repository || !playbook || !playbook.value) return true;
+        if (failureOnly && failureOnly.checked && dependencies.length === 0) return true;
+        if (executionTypeSelect.value !== "shell") {
+          const stepInventory = step.querySelector('select[name="step_inventory_id"]');
+          const projectInventory = document.querySelector('select[name="inventory_id"]');
+          if (!(stepInventory && stepInventory.value) && !(projectInventory && projectInventory.value)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function stepTabLabel(step, index) {
+        const nameInput = step.querySelector('input[name="step_name"]');
+        const name = nameInput ? nameInput.value.trim() : "";
+        const label = name ? `${index + 1}. ${name}` : `Step ${index + 1}`;
+        return stepHasReadinessIssue(step) ? `${label} ⚠` : label;
+      }
+
+      function deactivateStepTabs() {
+        stepsContainer.querySelectorAll(".workflow-step").forEach((step) => {
+          step.hidden = true;
+          step.classList.remove("active");
+        });
+        stepTabsContainer.querySelectorAll(".project-editor-tab").forEach((tab) => {
+          tab.classList.remove("active");
+          tab.setAttribute("aria-selected", "false");
+        });
+      }
+
+      function activateProjectTab() {
+        activeStep = null;
+        projectMainPanel.hidden = false;
+        projectMainPanel.classList.add("active");
+        projectDefaultsPanel.hidden = true;
+        projectDefaultsPanel.classList.remove("active");
+        projectTabButton.classList.add("active");
+        projectTabButton.setAttribute("aria-selected", "true");
+        defaultsTabButton.classList.remove("active");
+        defaultsTabButton.setAttribute("aria-selected", "false");
+        deactivateStepTabs();
+      }
+
+      function activateDefaultsTab() {
+        activeStep = null;
+        projectMainPanel.hidden = true;
+        projectMainPanel.classList.remove("active");
+        projectDefaultsPanel.hidden = false;
+        projectDefaultsPanel.classList.add("active");
+        projectTabButton.classList.remove("active");
+        projectTabButton.setAttribute("aria-selected", "false");
+        defaultsTabButton.classList.add("active");
+        defaultsTabButton.setAttribute("aria-selected", "true");
+        deactivateStepTabs();
+      }
+
+      function activateStepTab(step) {
+        if (!step) return;
+        activeStep = step;
+        projectMainPanel.hidden = true;
+        projectMainPanel.classList.remove("active");
+        projectDefaultsPanel.hidden = true;
+        projectDefaultsPanel.classList.remove("active");
+        projectTabButton.classList.remove("active");
+        projectTabButton.setAttribute("aria-selected", "false");
+        defaultsTabButton.classList.remove("active");
+        defaultsTabButton.setAttribute("aria-selected", "false");
+        const steps = Array.from(stepsContainer.querySelectorAll(".workflow-step"));
+        steps.forEach((candidate) => {
+          const active = candidate === step;
+          candidate.hidden = !active;
+          candidate.classList.toggle("active", active);
+        });
+        stepTabsContainer.querySelectorAll(".project-editor-tab").forEach((tab, index) => {
+          const active = steps[index] === step;
+          tab.classList.toggle("active", active);
+          tab.setAttribute("aria-selected", active ? "true" : "false");
+        });
+      }
+
+      function updateStepTabs() {
+        const steps = Array.from(stepsContainer.querySelectorAll(".workflow-step"));
+        stepTabsContainer.innerHTML = "";
+        steps.forEach((step, index) => {
+          const panelId = `project-step-panel-${index + 1}`;
+          step.id = panelId;
+          const tab = document.createElement("button");
+          tab.type = "button";
+          tab.className = "project-editor-tab";
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-controls", panelId);
+          tab.textContent = stepTabLabel(step, index);
+          tab.classList.toggle("has-issue", stepHasReadinessIssue(step));
+          tab.title = stepHasReadinessIssue(step)
+            ? `${tab.textContent.replace(" ⚠", "")} — not ready to dispatch`
+            : tab.textContent;
+          tab.addEventListener("click", () => activateStepTab(step));
+          stepTabsContainer.appendChild(tab);
+        });
+
+        if (activeStep && steps.includes(activeStep)) {
+          activateStepTab(activeStep);
+        } else if (!projectDefaultsPanel.hidden) {
+          activateDefaultsTab();
+        } else if (!projectMainPanel.hidden) {
+          activateProjectTab();
+        } else if (steps.length) {
+          activateStepTab(steps[0]);
+        }
+      }
+
+      projectTabButton.addEventListener("click", activateProjectTab);
+      defaultsTabButton.addEventListener("click", activateDefaultsTab);
+
+      document.getElementById("project-form").addEventListener("invalid", (event) => {
+        const panel = event.target.closest("#project-main-panel, #project-defaults-panel, .workflow-step");
+        if (!panel || !panel.hidden) return;
+        if (panel.id === "project-main-panel") {
+          activateProjectTab();
+          return;
+        }
+        if (panel.id === "project-defaults-panel") {
+          activateDefaultsTab();
+          return;
+        }
+        activateStepTab(panel);
+      }, true);
+
+      function effectiveRepositoryId(step) {
+        const repositorySelect =
+          step.querySelector(".step-repository");
+
+        if (repositorySelect && repositorySelect.value) {
+          return repositorySelect.value;
+        }
+
+        const defaultRepositorySelect =
+          document.getElementById("project-default-repository");
+
+        return defaultRepositorySelect
+          ? defaultRepositorySelect.value
+          : "";
+      }
+
+      function populatePlaybookSelect(select) {
+        const step =
+          select.closest(".workflow-step");
+
+        const repositoryId =
+          effectiveRepositoryId(step);
+
+        const selectedValue = select.dataset.selected || select.value;
+    
+        const entries =
+          filesByRepository()[repositoryId] || [];
+    
+        select.innerHTML = "";
+    
+        const placeholder =
+          document.createElement("option");
+    
+        placeholder.value = "";
+    
+        const isShellArtifact =
+          ["shell", "remote_shell"].includes(executionTypeSelect.value);
+
+        if (!repositoryId) {
+          placeholder.textContent =
+            "Select a repository first";
+        } else if (!entries.length) {
+          placeholder.textContent =
+            isShellArtifact
+              ? "No shell scripts found"
+              : "No Ansible YAML files found";
+        } else {
+          placeholder.textContent =
+            isShellArtifact
+              ? "Select a shell script"
+              : "Select an Ansible YAML file";
+        }
+    
+        select.appendChild(placeholder);
+    
+        for (const entry of entries) {
+          const option =
+            document.createElement("option");
+    
+          option.value = entry.path;
+    
+          if (entry.classification === "shell_script") {
+            option.textContent = entry.path;
+          } else if (
+            entry.classification === "likely_playbook"
+          ) {
+            option.textContent =
+              `${entry.path} — likely playbook`;
+          } else if (
+            entry.classification ===
+            "likely_non_playbook"
+          ) {
+            option.textContent =
+              `${entry.path} — likely not a playbook`;
+          } else {
+            option.textContent =
+              `${entry.path} — unclassified`;
+          }
+    
+          if (entry.path === selectedValue) {
+            option.selected = true;
+          }
+    
+          select.appendChild(option);
+        }
+    
+        select.dataset.selected = "";
+      }
+    
+      function populateAllPlaybookSelects() {
+        document
+          .querySelectorAll(".step-playbook")
+          .forEach((select) => {
+            populatePlaybookSelect(select);
+          });
+      }
+    
+      function updateDependencyOptions(steps) {
+        steps.forEach((step, index) => {
+          const container = step.querySelector(".step-dependencies");
+          if (!container) return;
+
+          let selected = Array.from(
+            container.querySelectorAll('input[type="checkbox"]:checked')
+          ).map((input) => input.value);
+
+          if (container.dataset.selected) {
+            try {
+              selected = JSON.parse(container.dataset.selected).map(String);
+            } catch (error) {
+              selected = [];
+            }
+            container.dataset.selected = "";
+          }
+
+          container.innerHTML = "";
+
+          steps.forEach((candidate, candidateIndex) => {
+            if (candidateIndex === index) return;
+
+            const dependencyPosition = String(candidateIndex + 1);
+            const nameInput = candidate.querySelector('input[name="step_name"]');
+            const stepName = nameInput && nameInput.value.trim()
+              ? nameInput.value.trim()
+              : `Step ${candidateIndex + 1}`;
+
+            const label = document.createElement("label");
+            label.className = "step-dependency-option";
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.name = `step_${index}_dependency_positions`;
+            checkbox.value = dependencyPosition;
+            checkbox.checked = selected.includes(dependencyPosition);
+
+            const text = document.createElement("span");
+
+            const stepNumber = document.createElement("strong");
+            stepNumber.textContent = `Step ${candidateIndex + 1}`;
+
+            const stepNameText = document.createElement("span");
+            stepNameText.textContent = ` — ${stepName}`;
+
+            text.appendChild(stepNumber);
+            text.appendChild(stepNameText);
+
+            label.appendChild(checkbox);
+            label.appendChild(text);
+            container.appendChild(label);
+          });
+
+          if (!container.children.length) {
+            const message = document.createElement("span");
+            message.className = "muted";
+            message.textContent = "No other steps are available.";
+            container.appendChild(message);
+          }
+        });
+      }
+
+      function captureDependencyReferences() {
+        const steps = Array.from(
+          stepsContainer.querySelectorAll(".workflow-step")
+        );
+        const references = new Map();
+
+        steps.forEach((step) => {
+          const selected = [];
+          step.querySelectorAll(
+            '.step-dependencies input[type="checkbox"]:checked'
+          ).forEach((checkbox) => {
+            const dependency = steps[Number(checkbox.value) - 1];
+            if (dependency) selected.push(dependency);
+          });
+          references.set(step, selected);
+        });
+
+        return references;
+      }
+
+      function restoreDependencyReferences(references) {
+        const steps = Array.from(
+          stepsContainer.querySelectorAll(".workflow-step")
+        );
+
+        steps.forEach((step) => {
+          const container = step.querySelector(".step-dependencies");
+          if (!container) return;
+
+          const positions = (references.get(step) || [])
+            .map((dependency) => steps.indexOf(dependency) + 1)
+            .filter((position) => position > 0);
+
+          container.dataset.selected = JSON.stringify(positions);
+        });
+
+        updateDependencyOptions(steps);
+      }
+
+      function copyStepControlState(source, clone) {
+        const sourceControls = source.querySelectorAll(
+          "input, select, textarea"
+        );
+        const cloneControls = clone.querySelectorAll(
+          "input, select, textarea"
+        );
+
+        sourceControls.forEach((sourceControl, index) => {
+          const cloneControl = cloneControls[index];
+          if (!cloneControl) return;
+
+          if (
+            sourceControl instanceof HTMLInputElement
+            && (
+              sourceControl.type === "checkbox"
+              || sourceControl.type === "radio"
+            )
+          ) {
+            cloneControl.checked = sourceControl.checked;
+            return;
+          }
+
+          if (sourceControl instanceof HTMLSelectElement) {
+            Array.from(cloneControl.options).forEach(
+              (option, optionIndex) => {
+                option.selected = Boolean(
+                  sourceControl.options[optionIndex]?.selected
+                );
+              }
+            );
+            cloneControl.dataset.selected = sourceControl.value;
+            return;
+          }
+
+          cloneControl.value = sourceControl.value;
+        });
+      }
+
+      function cloneStep(sourceStep) {
+        const references = captureDependencyReferences();
+        const clone = sourceStep.cloneNode(true);
+
+        copyStepControlState(sourceStep, clone);
+
+        const nameInput = clone.querySelector(
+          'input[name="step_name"]'
+        );
+        if (nameInput) {
+          const sourceName = nameInput.value.trim();
+          nameInput.value = sourceName
+            ? `${sourceName} (copy)`
+            : "Step copy";
+        }
+
+        references.set(
+          clone,
+          [...(references.get(sourceStep) || [])]
+        );
+
+        sourceStep.insertAdjacentElement("afterend", clone);
+
+        updateStepNumbers();
+        restoreDependencyReferences(references);
+        populatePlaybookSelect(
+          clone.querySelector(".step-playbook")
+        );
+        updateExecutionTypeUi();
+        activateStepTab(clone);
+      }
+
+      function updateOversightControls() {
+        const steps = Array.from(
+          stepsContainer.querySelectorAll(".workflow-step")
+        );
+        const dependencyTargets = new Set();
+
+        steps.forEach((step) => {
+          step.querySelectorAll(
+            '.step-dependencies input[type="checkbox"]:checked'
+          ).forEach((checkbox) => {
+            dependencyTargets.add(Number(checkbox.value) - 1);
+          });
+        });
+
+        const applicable = [];
+        steps.forEach((step, index) => {
+          const field = step.querySelector(".step-oversight-field");
+          const checkbox = step.querySelector(".step-oversight-after");
+          const hasDependent = dependencyTargets.has(index);
+          if (field) field.hidden = !hasDependent;
+          if (checkbox) {
+            checkbox.disabled = !hasDependent;
+            if (!hasDependent) checkbox.checked = false;
+            else applicable.push(checkbox);
+          }
+        });
+
+        const projectCheckbox = document.getElementById("project-oversight-all");
+        if (!projectCheckbox) return;
+        const checked = applicable.filter((checkbox) => checkbox.checked).length;
+        projectCheckbox.disabled = applicable.length === 0;
+        projectCheckbox.checked = applicable.length > 0 && checked === applicable.length;
+        projectCheckbox.indeterminate = checked > 0 && checked < applicable.length;
+      }
+
+      function updateStepNumbers() {
+        const steps = Array.from(
+          stepsContainer.querySelectorAll(
+            ".workflow-step"
+          )
+        );
+    
+        steps.forEach((step, index) => {
+          step.querySelector(
+            ".step-number"
+          ).textContent = index + 1;
+    
+          const credentialSelect =
+            step.querySelector(".step-credentials");
+    
+          if (credentialSelect) {
+            credentialSelect.name =
+              `step_${index}_credential_ids`;
+          }
+
+          const credentialOverride =
+            step.querySelector(".step-credentials-override");
+
+          if (credentialOverride) {
+            credentialOverride.value = String(index);
+            if (credentialSelect) {
+              credentialSelect.disabled = !credentialOverride.checked;
+            }
+          }
+
+
+          const refreshRepository =
+            step.querySelector(".step-refresh-repository");
+
+          if (refreshRepository) {
+            refreshRepository.value = String(index);
+          }
+
+          const oversightAfter =
+            step.querySelector(".step-oversight-after");
+          if (oversightAfter) {
+            oversightAfter.value = String(index);
+          }
+    
+          step.querySelector(
+            ".move-step-up"
+          ).disabled = index === 0;
+    
+          step.querySelector(
+            ".move-step-down"
+          ).disabled =
+            index === steps.length - 1;
+    
+          step.querySelector(
+            ".remove-step"
+          ).disabled = steps.length === 1;
+        });
+
+        updateDependencyOptions(steps);
+        updateOversightControls();
+        updateStepTabs();
+      }
+    
+      function addStep() {
+        const fragment =
+          stepTemplate.content.cloneNode(true);
+    
+        stepsContainer.appendChild(fragment);
+    
+        const newStep =
+          stepsContainer.lastElementChild;
+    
+        const playbookSelect =
+          newStep.querySelector(".step-playbook");
+    
+        populatePlaybookSelect(playbookSelect);
+        updateStepNumbers();
+        activateStepTab(newStep);
+      }
+      document.addEventListener(
+        "click",
+        (event) => {
+          const addButton = event.target.closest(
+            "#add-step"
+          );
+
+          if (!addButton) {
+            return;
+          }
+
+          addStep();
+        }
+      );
+    
+      document.addEventListener(
+        "change",
+        (event) => {
+          if (!event.target.matches("#project-default-repository")) {
+            return;
+          }
+
+          updateStepTabs();
+          document
+            .querySelectorAll(".workflow-step")
+            .forEach((step) => {
+              const repositorySelect =
+                step.querySelector(".step-repository");
+
+              if (!repositorySelect || repositorySelect.value) {
+                return;
+              }
+
+              const playbookSelect =
+                step.querySelector(".step-playbook");
+
+              if (!playbookSelect) {
+                return;
+              }
+
+              playbookSelect.dataset.selected = "";
+              populatePlaybookSelect(playbookSelect);
+            });
+        }
+      );
+
+      stepsContainer.addEventListener(
+        "input",
+        (event) => {
+          if (event.target.matches('input[name="step_name"]')) {
+            updateStepNumbers();
+          }
+        }
+      );
+
+      stepsContainer.addEventListener(
+        "change",
+        (event) => {
+          updateStepTabs();
+          if (event.target.matches('.step-dependencies input[type="checkbox"]')) {
+            updateOversightControls();
+            return;
+          }
+          if (event.target.matches(".step-oversight-after")) {
+            updateOversightControls();
+            return;
+          }
+          if (event.target.matches(".step-credentials-override")) {
+            const step = event.target.closest(".workflow-step");
+            const select = step.querySelector(".step-credentials");
+            if (select) select.disabled = !event.target.checked;
+            return;
+          }
+
+          if (
+            !event.target.matches(".step-repository")
+          ) {
+            return;
+          }
+    
+          const step =
+            event.target.closest(".workflow-step");
+    
+          const playbookSelect =
+            step.querySelector(".step-playbook");
+    
+          playbookSelect.dataset.selected = "";
+    
+          populatePlaybookSelect(
+            playbookSelect
+          );
+        }
+      );
+    
+      stepsContainer.addEventListener(
+        "click",
+        (event) => {
+          const step =
+            event.target.closest(".workflow-step");
+    
+          if (!step) {
+            return;
+          }
+    
+          if (
+            event.target.closest(".clone-step")
+          ) {
+            cloneStep(step);
+            return;
+          }
+
+          if (
+            event.target.closest(".remove-step")
+          ) {
+            const references = captureDependencyReferences();
+            references.delete(step);
+
+            references.forEach((dependencies, owner) => {
+              references.set(
+                owner,
+                dependencies.filter(
+                  (dependency) => dependency !== step
+                )
+              );
+            });
+
+            const nextActive = step.nextElementSibling || step.previousElementSibling;
+            step.remove();
+            activeStep = nextActive || null;
+            updateStepNumbers();
+            restoreDependencyReferences(references);
+            if (activeStep) activateStepTab(activeStep);
+            else activateProjectTab();
+            return;
+          }
+
+          if (
+            event.target.closest(".move-step-up")
+          ) {
+            const references = captureDependencyReferences();
+            const previous = step.previousElementSibling;
+
+            if (previous) {
+              stepsContainer.insertBefore(step, previous);
+            }
+
+            updateStepNumbers();
+            restoreDependencyReferences(references);
+            return;
+          }
+
+          if (
+            event.target.closest(".move-step-down")
+          ) {
+            const references = captureDependencyReferences();
+            const next = step.nextElementSibling;
+
+            if (next) {
+              stepsContainer.insertBefore(next, step);
+            }
+
+            updateStepNumbers();
+            restoreDependencyReferences(references);
+          }
+        }
+      );
+
+      function updateExecutionTypeUi() {
+        const executionType = executionTypeSelect.value;
+        const isLocalShell = executionType === "shell";
+        const isRemoteShell = executionType === "remote_shell";
+        document.querySelectorAll(".remote-shell-only-field").forEach((field) => {
+          field.style.display = isRemoteShell ? "" : "none";
+        });
+        const isShellArtifact = isLocalShell || isRemoteShell;
+        document.querySelectorAll(".step-artifact-label").forEach((label) => {
+          label.textContent = isShellArtifact ? "Script" : "Ansible YAML file";
+        });
+        document.querySelectorAll(".ansible-only-field").forEach((field) => {
+          field.hidden = isLocalShell;
+        });
+        document.querySelectorAll(".ansible-playbook-only-field").forEach((field) => {
+          field.hidden = isLocalShell || isRemoteShell;
+        });
+        document.querySelectorAll(".inventory-field").forEach((field) => {
+          field.hidden = isLocalShell;
+          field.querySelectorAll("select").forEach((select) => {
+            select.disabled = isLocalShell;
+          });
+        });
+        const localShellNotice = document.getElementById("local-shell-notice");
+        if (localShellNotice) localShellNotice.hidden = !isLocalShell;
+        const remoteShellNotice = document.getElementById("remote-shell-notice");
+        if (remoteShellNotice) remoteShellNotice.hidden = !isRemoteShell;
+        populateAllPlaybookSelects();
+        updateStepTabs();
+      }
+
+      const projectInventorySelect = document.querySelector('select[name="inventory_id"]');
+      if (projectInventorySelect) {
+        projectInventorySelect.addEventListener("change", updateStepTabs);
+      }
+
+      const projectOversightAll = document.getElementById("project-oversight-all");
+      if (projectOversightAll) {
+        projectOversightAll.addEventListener("change", () => {
+          document.querySelectorAll(".step-oversight-after:not(:disabled)")
+            .forEach((checkbox) => { checkbox.checked = projectOversightAll.checked; });
+          updateOversightControls();
+        });
+      }
+
+      executionTypeSelect.addEventListener("change", updateExecutionTypeUi);
+      updateExecutionTypeUi();
+      updateStepNumbers();
+</script>
+{% endblock %}

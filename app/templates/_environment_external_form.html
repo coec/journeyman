@@ -1,0 +1,22 @@
+<form method="post" action="{{ form_action }}" class="form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Name<input name="name" value="{{ environment.name if environment else '' }}" required placeholder="Existing automation environment"></label>
+  <label>Absolute path<input name="path" value="{{ environment.path if environment else '' }}" required placeholder="/opt/automation/venvs/network"></label>
+  <label class="full-width">Build proxy credential (optional)
+    <small>Select a URL / API credential to use as the HTTP(S) proxy for pip and ansible-galaxy operations for this Environment. None and HTTP Basic authentication are supported. Leave blank to use the global Environment Builds proxy configuration, if enabled.</small>
+    <select name="proxy_credential_id">
+      <option value="">Use global Environment Builds proxy settings</option>
+      {% for credential in proxy_credentials %}
+      <option value="{{ credential.id }}" {% if environment and environment.proxy_credential_id == credential.id %}selected{% endif %}>{{ credential.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="full-width">Ansible configuration file <small>Absolute path on every runner that may execute this Environment.</small><input name="ansible_config_path" value="{{ (environment.ansible_config_path if environment else '/etc/ansible/ansible.cfg') or '/etc/ansible/ansible.cfg' }}" required></label>
+  <label class="full-width">Additional Python packages <small>One package specification per line. Journeyman installs these into the registered virtual environment without recreating it. Command-line options and URLs are rejected.</small><textarea name="pip_requirements" rows="5" placeholder="jmespath&#10;dnspython==2.7.0">{{ environment.pip_requirements if environment else '' }}</textarea></label>
+  <label class="full-width">Runner system packages <small>One RPM/DNF package name per line. These are installed on remote execution runners by Manage Remote Runner; they are not passed to pip.</small><textarea name="system_requirements" rows="4" placeholder="adcli&#10;krb5-workstation">{{ environment.system_requirements if environment else '' }}</textarea></label>
+  <label class="full-width">Ansible collections <small>One namespace.collection or namespace.collection:version per line. Journeyman installs these using the registered environment's ansible-galaxy executable.</small><textarea name="collections" rows="5" placeholder="community.general&#10;cisco.ios">{{ environment.collection_requirements if environment else '' }}</textarea></label>
+  <div class="form-actions">
+    {% if environment %}<a class="button" href="{{ url_for('main.environments') }}">Cancel</a>{% endif %}
+    <button class="button primary" type="submit">{{ submit_label }}</button>
+  </div>
+</form>

@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Atomically spool normalized Signal JSON lines for a Journeyman Runner.
+
+This is intentionally not a syslog parser or listener. Configure rsyslog or
+syslog-ng to select/normalize the messages of interest and pipe one JSON object
+per line to this helper.
+"""
+import argparse
+import json
+import os
+import tempfile
+import uuid
+from pathlib import Path
+import sys
+
+JOURNEYMAN_ROOT = Path(__file__).resolve().parents[1]
+if str(JOURNEYMAN_ROOT) not in sys.path:
+    sys.path.insert(0, str(JOURNEYMAN_ROOT))
+
+from journeyman_configuration import load_journeyman_configuration
+
+load_journeyman_configuration()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source_uuid")
+    parser.add_argument("--spool-root", default=os.environ.get("JOURNEYMAN_SIGNAL_SPOOL_ROOT", "/var/spool/journeyman/signals"))
+    args = parser.parse_args()
+    try:
+        source_uuid = str(uuid.UUID(args.source_uuid))
+    except ValueError as exc:
+        raise SystemExit("source_uuid must be a UUID") from exc
+
+    directory = Path(args.spool_root) / source_uuid
+    directory.mkdir(parents=True, exist_ok=True, mode=0o2770)
+    os.chmod(directory, 0o2770)
+
+    for raw_line in __import__("sys").stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            value = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit("input is not valid JSON: {}".format(exc)) from exc
+        if not isinstance(value, dict):
+            raise SystemExit("each input line must be a JSON object")
+        signal_id = str(value.get("signal_id") or "").strip()
+        sender_ip = str(value.get("sender_ip") or "").strip()
+        if not signal_id or not sender_ip:
+            raise SystemExit("signal_id and sender_ip are required")
+        value.setdefault("signal_type", "syslog")
+        encoded = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        if len(encoded) > 256 * 1024:
+            raise SystemExit("Signal exceeds 256 KiB")
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".signal-", suffix=".tmp", dir=str(directory))
+        try:
+            os.fchmod(descriptor, 0o660)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            destination = directory / ("{}-{}.json".format(__import__("time").time_ns(), uuid.uuid4().hex))
+            os.replace(temporary_name, destination)
+        except Exception:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
+
+
+if __name__ == "__main__":
+    main()

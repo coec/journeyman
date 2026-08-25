@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""SMIT-like terminal menu for dispatching Journeyman Packages."""
+
+import argparse
+import getpass
+import json
+import os
+import ssl
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import HTTPSHandler, Request, build_opener
+
+
+def _request(base_url, token, path, *, method="GET", payload=None, verify_tls=True):
+    url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    headers = {"Accept": "application/json", "Authorization": "Bearer " + token}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode("utf-8")
+    context = ssl.create_default_context()
+    if not verify_tls:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    opener = build_opener(HTTPSHandler(context=context))
+    try:
+        with opener.open(Request(url, data=data, headers=headers, method=method), timeout=30) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            message = body.get("error", {}).get("message") or str(body)
+        except Exception:
+            message = str(exc)
+        raise RuntimeError("Journeyman API returned HTTP {}: {}".format(exc.code, message)) from exc
+    except (URLError, OSError, ValueError) as exc:
+        raise RuntimeError("Unable to call Journeyman API: {}".format(exc)) from exc
+
+
+def _matches(rule, values):
+    if not isinstance(rule, dict) or not rule:
+        return True
+    if set(rule) == {"all"}:
+        return all(_matches(item, values) for item in rule["all"])
+    if set(rule) == {"any"}:
+        return any(_matches(item, values) for item in rule["any"])
+    if set(rule) == {"not"}:
+        return not _matches(rule["not"], values)
+    for key, expected in rule.items():
+        actual = values.get(key)
+        if isinstance(expected, list):
+            if actual not in expected:
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def _parse_value(field, raw):
+    kind = field["type"]
+    if kind == "integer":
+        return int(raw)
+    if kind == "boolean":
+        return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    if kind == "email_addresses":
+        return raw.strip()
+    return raw
+
+
+def _prompt_field(field, values):
+    conditions = field.get("conditions") or {}
+    if conditions.get("visible_when") and not _matches(conditions["visible_when"], values):
+        return None, False
+    required = bool(field.get("required"))
+    if conditions.get("required_when"):
+        required = required or _matches(conditions["required_when"], values)
+    label = field.get("label") or field["variable_name"]
+    help_text = str(field.get("help_text") or "").strip()
+    if help_text:
+        print("    " + help_text)
+    choices = field.get("choices") or []
+    default = field.get("default")
+    if choices:
+        print("    Choices:")
+        for index, choice in enumerate(choices, start=1):
+            print("      {}) {}".format(index, choice))
+    suffix = ""
+    if default not in (None, "") and not field.get("secret"):
+        suffix = " [{}]".format(default)
+    while True:
+        if field.get("secret") or field["type"] == "password":
+            raw = getpass.getpass("{}{}: ".format(label, suffix))
+        else:
+            raw = input("{}{}: ".format(label, suffix))
+        if not raw and default is not None:
+            return default, True
+        if choices and raw.isdigit() and 1 <= int(raw) <= len(choices):
+            return choices[int(raw) - 1], True
+        if not raw:
+            if required:
+                print("    A value is required.")
+                continue
+            return None, False
+        try:
+            value = _parse_value(field, raw)
+        except ValueError:
+            print("    Invalid {} value.".format(field["type"]))
+            continue
+        if choices and value not in choices:
+            print("    Select one of the listed choices.")
+            continue
+        return value, True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Journeyman SMIT-like Package launcher")
+    parser.add_argument("--url", default=os.environ.get("JOURNEYMAN_URL", ""))
+    parser.add_argument("--token", default=os.environ.get("JOURNEYMAN_API_TOKEN", ""))
+    parser.add_argument("--no-verify-tls", action="store_true")
+    args = parser.parse_args()
+    if not args.url or not args.token:
+        parser.error("--url/JOURNEYMAN_URL and --token/JOURNEYMAN_API_TOKEN are required")
+    try:
+        _status, document = _request(args.url, args.token, "/api/v1/packages", verify_tls=not args.no_verify_tls)
+        packages = [row for row in document.get("packages", []) if row.get("enabled")]
+        if not packages:
+            print("No dispatchable Packages are available.")
+            return 1
+        while True:
+            print("\nJourneyman SMIT — Packages\n")
+            for index, package in enumerate(packages, start=1):
+                print("  {}) {}".format(index, package["name"]))
+            print("  q) Quit")
+            choice = input("\nSelection: ").strip()
+            if choice.lower() in {"q", "quit", "exit"}:
+                return 0
+            if not choice.isdigit() or not 1 <= int(choice) <= len(packages):
+                print("Invalid selection.")
+                continue
+            package = packages[int(choice) - 1]
+            print("\n{}\nProject: {}\n".format(package["name"], package.get("project_name") or ""))
+            values = {}
+            for field in package.get("inputs", []):
+                value, supplied = _prompt_field(field, values)
+                if supplied:
+                    values[field["variable_name"]] = value
+            confirm = input("\nDispatch this Package? [y/N]: ").strip().lower()
+            if confirm not in {"y", "yes"}:
+                print("Not dispatched.")
+                continue
+            _status, result = _request(
+                args.url, args.token,
+                "/api/v1/packages/{}/dispatch".format(package["id"]),
+                method="POST", payload={"inputs": values}, verify_tls=not args.no_verify_tls,
+            )
+            job = result.get("job") or {}
+            print("Queued Job #{} ({})".format(job.get("id", "?"), job.get("status", "queued")))
+    except (RuntimeError, KeyboardInterrupt) as exc:
+        print("\n{}".format(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

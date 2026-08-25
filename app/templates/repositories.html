@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Repositories · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Repositories</h1>
+    <p>Manage Git and Directory repositories used by Journeyman projects.</p>
+  </div>
+
+  <a class="button primary" href="{{ url_for('main.repository_new') }}">
+    ＋ Add Repository
+  </a>
+</div>
+
+<section class="panel">
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Source</th>
+          <th>Branch</th>
+          <th>Status</th>
+          <th>Last Sync</th>
+          <th>Commit</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+
+      <tbody>
+      {% for repository in repositories %}
+        <tr>
+          <td>
+            <strong>{{ repository.name }}</strong>
+            {% if repository.description %}
+              <small>{{ repository.description }}</small>
+            {% endif %}
+          </td>
+
+          <td>{{ repository.repository_type|capitalize }}</td>
+
+          <td class="repo">
+            {{ repository.directory_path if repository.repository_type == 'directory' else repository.url }}
+          </td>
+
+          <td>
+            {{ '—' if repository.repository_type == 'directory' else repository.default_branch }}
+          </td>
+
+          <td>
+            <span class="badge {{ repository.status }}">
+              {{ repository.status|replace('_', ' ') }}
+            </span>
+          </td>
+
+          <td>
+            {% if repository.last_sync_at %}
+              <span
+                class="utc-datetime"
+                data-utc="{{ repository.last_sync_at.isoformat() }}"
+              >
+                {{ repository.last_sync_at }}
+              </span>
+            {% else %}
+              <span class="muted">Never</span>
+            {% endif %}
+          </td>
+
+          <td>
+            {% if repository.last_commit %}
+              <code>{{ repository.last_commit[:7] }}</code>
+              {% if repository.last_commit_message %}
+                <small>{{ repository.last_commit_message }}</small>
+              {% endif %}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+
+          <td>
+            <details class="action-menu">
+              <summary class="button action-menu-trigger">
+                Actions <span aria-hidden="true">▾</span>
+              </summary>
+
+              <div class="action-menu-items">
+                <form
+                  method="post"
+                  action="{{ url_for('main.repository_sync', repository_id=repository.id) }}"
+                >
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="action-menu-item" type="submit">
+                    {% if repository.url == 'builtin://journeyman' %}
+                      Refresh Built-in Automation
+                    {% elif repository.repository_type == 'directory' %}
+                      Refresh Directory Snapshot
+                    {% else %}
+                      Sync
+                    {% endif %}
+                  </button>
+                </form>
+
+                <a
+                  class="action-menu-item"
+                  href="{{ url_for('main.repository_edit', repository_id=repository.id) }}"
+                >
+                  Edit
+                </a>
+
+                <form
+                  method="post"
+                  action="{{ url_for('main.repository_delete', repository_id=repository.id) }}"
+                  data-confirm="{% if repository.repository_type == 'directory' %}Delete this repository definition and its Journeyman snapshot? The source directory will not be deleted.{% else %}Delete this repository and its local checkout?{% endif %}"
+                >
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="action-menu-item danger" type="submit">Delete</button>
+                </form>
+              </div>
+            </details>
+          </td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="8" class="empty">No repositories found.</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% include "_pagination.html" %}
+</section>
+{% endblock %}

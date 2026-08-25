@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if source else 'Add' }} Source · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>{{ 'Edit Source' if source else 'Add Source' }}</h1><p>Configure a trusted Signal origin.</p></div></div>
+<section class="panel form-panel"><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>Name<input name="name" required maxlength="120" value="{{ form_data.name }}"></label>
+<label>Description<textarea name="description" rows="3" maxlength="500">{{ form_data.description }}</textarea></label>
+<label>Type<select name="source_type" id="source-type" {% if source %}disabled{% endif %}><option value="zabbix" {% if form_data.source_type=='zabbix' %}selected{% endif %}>Zabbix</option><option value="syslog" {% if form_data.source_type=='syslog' %}selected{% endif %}>Syslog via Runner</option><option value="snmp_trap" {% if form_data.source_type=='snmp_trap' %}selected{% endif %}>SNMP Trap via Runner</option></select>{% if source %}<input type="hidden" name="source_type" value="{{ source.source_type }}">{% endif %}</label>
+{% if source %}<label>Source UUID<input type="text" value="{{ source.source_uuid }}" readonly spellcheck="false" autocomplete="off"><small>Public Source identifier used by senders such as the Zabbix webhook. This is not the HMAC secret and may be copied whenever needed.</small></label>{% endif %}
+<label class="checkbox-row"><input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}><span><strong>Enabled</strong><br><small>Disabled Sources cannot submit Signals.</small></span></label>
+<div id="zabbix-settings">
+<label>Zabbix URL<input name="zabbix_url" value="{{ form_data.zabbix_url }}" placeholder="https://zabbix.example/"><small>Identity/documentation only. Incoming requests are authenticated by HMAC and sender network, not DNS.</small></label>
+</div>
+<div id="runner-settings">
+<label>Runner<select name="runner_id"><option value="">Select a remote Runner</option>{% for runner in runners %}<option value="{{ runner.id }}" {% if form_data.runner_id == runner.id|string %}selected{% endif %}>{{ runner.name }} — {{ runner.hostname }}</option>{% endfor %}</select><small>Runner-received Sources use the Runner's authenticated Journeyman channel to forward Signals.</small></label>
+<div id="snmp-settings">
+<label>UDP listen port<input name="snmp_port" type="number" min="1" max="65535" value="{{ form_data.snmp_port }}"><small>Defaults to the standard SNMP trap port 162. Each SNMP Trap Source on a Runner must use a different port.</small></label>
+<p class="muted"><small>The initial receiver uses sender network policy rather than retaining SNMP community strings. SNMPv3 receiver credentials are not configured by this Source type yet.</small></p>
+</div>
+</div>
+<label>Allowed sender IPs / networks<textarea name="allowed_networks" rows="5" spellcheck="false" placeholder="192.0.2.15/32">{{ form_data.allowed_networks|join('\n') }}</textarea><small>One IPv4/IPv6 address or CIDR per line. For Zabbix this is the HTTPS peer; for Syslog or SNMP this is the original sender recorded by the Runner.</small></label>
+<div class="form-actions"><button class="button primary" type="submit">Save Source</button><a class="button" href="{{ url_for('main.sources') }}">Cancel</a></div>
+</form></section>
+{% if source and source.source_type == 'zabbix' %}<section class="panel"><h2>Zabbix authentication</h2><p>The HMAC secret cannot be displayed again. Regenerating it immediately invalidates the previous secret.</p><form method="post" action="{{ url_for('main.source_regenerate_secret', source_id=source.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button danger" type="submit">Regenerate HMAC Secret</button></form></section>{% endif %}
+<script nonce="{{ csp_nonce }}">
+(function(){const type=document.getElementById('source-type');const z=document.getElementById('zabbix-settings');const r=document.getElementById('runner-settings');const n=document.getElementById('snmp-settings');function update(){const v=type.value;z.style.display=v==='zabbix'?'':'none';r.style.display=(v==='syslog'||v==='snmp_trap')?'':'none';n.style.display=v==='snmp_trap'?'':'none';} type.addEventListener('change',update);update();})();
+</script>
+{% endblock %}

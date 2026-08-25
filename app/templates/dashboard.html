@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard · Journeyman{% endblock %}
+
+{% block content %}
+<div id="dashboard-live-content">
+<div class="page-heading dashboard-heading">
+  <div>
+    <h1>Dashboard</h1>
+    <p>
+      {% if is_admin %}
+        Current automation activity and platform health at a glance.
+      {% else %}
+        Your available automation and recent job activity.
+      {% endif %}
+    </p>
+  </div>
+</div>
+
+<section class="dashboard-metrics">
+  <a class="metric-card" href="{{ url_for('main.jobs') }}">
+    <span class="metric-label">Active jobs</span>
+    <strong>{{ dashboard.active_job_count }}</strong>
+    <small>Queued, running, or stopping</small>
+  </a>
+
+  <a class="metric-card" href="{{ url_for('main.packages') }}">
+    <span class="metric-label">Available packages</span>
+    <strong>{{ dashboard.available_package_count }}</strong>
+    <small>Packages you may dispatch</small>
+  </a>
+
+  <a class="metric-card{% if dashboard.failed_job_count %} metric-warning{% endif %}" href="{{ url_for('main.jobs') }}">
+    <span class="metric-label">Failed jobs</span>
+    <strong>{{ dashboard.failed_job_count }}</strong>
+    <small>Visible execution failures</small>
+  </a>
+
+  {% if is_admin %}
+    <a class="metric-card" href="{{ url_for('main.projects') }}">
+      <span class="metric-label">Enabled projects</span>
+      <strong>{{ dashboard.enabled_project_count }}</strong>
+      <small>Available project definitions</small>
+    </a>
+  {% endif %}
+</section>
+
+{% if is_admin %}
+<section class="dashboard-metrics dashboard-metrics-secondary">
+  <a class="metric-card compact" href="{{ url_for('main.packages') }}">
+    <span class="metric-label">Enabled packages</span>
+    <strong>{{ dashboard.enabled_package_count }}</strong>
+  </a>
+  <a class="metric-card compact{% if dashboard.repository_problem_count %} metric-warning{% endif %}" href="{{ url_for('main.repositories') }}">
+    <span class="metric-label">Repository issues</span>
+    <strong>{{ dashboard.repository_problem_count }}</strong>
+    <small>Failed or never synchronised</small>
+  </a>
+  <a class="metric-card compact{% if dashboard.inventory_problem_count %} metric-warning{% endif %}" href="{{ url_for('main.inventories') }}">
+    <span class="metric-label">Inventory issues</span>
+    <strong>{{ dashboard.inventory_problem_count }}</strong>
+    <small>Failed or never refreshed</small>
+  </a>
+</section>
+
+<section class="dashboard-storage" aria-label="Journeyman storage">
+  {% for storage in dashboard.storage %}
+    <a class="storage-card storage-{{ storage.status }}" href="{{ url_for('main.system_status') }}">
+      <span class="metric-label">{{ storage.path }}</span>
+      {% if storage.error %}
+        <strong>Unavailable</strong>
+        <small>{{ storage.error }}</small>
+      {% else %}
+        <strong>{{ '%.1f'|format(storage.used_percent) }}% used</strong>
+        <small>{{ storage.free_display }} available · filesystem {{ storage.mount_point }}</small>
+      {% endif %}
+    </a>
+  {% endfor %}
+</section>
+{% endif %}
+
+<div class="dashboard-grid">
+  <section class="panel dashboard-panel">
+    <div class="panel-heading-row">
+      <div>
+        <h2>Recent jobs</h2>
+        <p>Most recent jobs visible to your account.</p>
+      </div>
+      <a class="button secondary" href="{{ url_for('main.jobs') }}">View all jobs</a>
+    </div>
+
+    {% if dashboard.recent_jobs %}
+      <div class="dashboard-list">
+        {% for job in dashboard.recent_jobs %}
+          <a class="dashboard-list-row" href="{{ url_for('main.job_detail', job_id=job.id) }}">
+            <span class="dashboard-list-main">
+              <strong>#{{ job.id }} · {{ job.project_name }}</strong>
+              <small>
+                Requested by {{ job.requested_by }}
+                {% if job.queued_at %}
+                  · <span class="utc-datetime" data-utc="{{ job.queued_at.isoformat() }}">{{ job.queued_at }}</span>
+                {% endif %}
+              </small>
+            </span>
+            <span class="status status-{{ job.status }}">
+              {{ job.status | replace('_', ' ') | title }}
+            </span>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state compact-empty">
+        <h3>No jobs yet</h3>
+        <p>Dispatch an available Package to create your first Job.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="panel dashboard-panel">
+    <div class="panel-heading-row">
+      <div>
+        <h2>Available packages</h2>
+        <p>Packages currently authorised for your account.</p>
+      </div>
+      <a class="button secondary" href="{{ url_for('main.packages') }}">View all packages</a>
+    </div>
+
+    {% if dashboard.available_packages %}
+      <div class="dashboard-list">
+        {% for package in dashboard.available_packages %}
+          <a class="dashboard-list-row" href="{{ url_for('main.project_package_launch', package_id=package.id) }}">
+            <span class="dashboard-list-main">
+              <strong>{{ package.name }}</strong>
+              <small>{{ package.description or package.project.name }}</small>
+            </span>
+            <span class="dashboard-launch">Dispatch →</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state compact-empty">
+        <h3>No packages available</h3>
+        <p>No enabled Package has been granted to your account.</p>
+      </div>
+    {% endif %}
+  </section>
+</div>
+</div>
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  const eventsUrl = {{ url_for('main.dashboard_events') | tojson }};
+  const pageUrl = {{ url_for('main.index') | tojson }};
+  const fallbackIntervalMilliseconds = 5000;
+  const maximumEventSourceErrors = 3;
+
+  let eventSource = null;
+  let fallbackTimer = null;
+  let eventSourceErrors = 0;
+  let refreshInProgress = false;
+
+  async function refreshDashboardContent() {
+    if (refreshInProgress || document.hidden) {
+      return;
+    }
+
+    refreshInProgress = true;
+
+    try {
+      const current = document.getElementById("dashboard-live-content");
+      const response = await window.fetch(pageUrl, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {"X-Journeyman-Live-Refresh": "1"}
+      });
+
+      if (!response.ok) {
+        throw new Error("Dashboard refresh returned HTTP " + response.status);
+      }
+
+      const documentText = await response.text();
+      const parsed = new window.DOMParser().parseFromString(documentText, "text/html");
+      const replacement = parsed.getElementById("dashboard-live-content");
+
+      if (!current || !replacement) {
+        throw new Error("Live Dashboard content was not present in the response.");
+      }
+
+      current.replaceWith(replacement);
+
+      if (window.Journeyman) {
+        window.Journeyman.formatUtcDates();
+      }
+    } finally {
+      refreshInProgress = false;
+    }
+  }
+
+  function startFallbackPolling() {
+    if (fallbackTimer !== null) {
+      return;
+    }
+
+    fallbackTimer = window.setInterval(function () {
+      refreshDashboardContent().catch(function () {});
+    }, fallbackIntervalMilliseconds);
+  }
+
+  function startEventStream() {
+    if (!("EventSource" in window)) {
+      startFallbackPolling();
+      return;
+    }
+
+    eventSource = new window.EventSource(eventsUrl);
+
+    eventSource.addEventListener("dashboard-update", function () {
+      eventSourceErrors = 0;
+      refreshDashboardContent().catch(function () {});
+    });
+
+    eventSource.onerror = function () {
+      eventSourceErrors += 1;
+      if (eventSourceErrors >= maximumEventSourceErrors) {
+        eventSource.close();
+        startFallbackPolling();
+      }
+    };
+  }
+
+  startEventStream();
+}());
+</script>
+{% endblock %}

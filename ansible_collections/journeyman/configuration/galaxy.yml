@@ -1,0 +1,15 @@
+namespace: journeyman
+name: configuration
+version: 1.0.0
+readme: README.md
+authors:
+  - Journeyman contributors
+description: Declarative configuration modules for the Journeyman automation platform.
+license:
+  - Apache-2.0
+tags:
+  - automation
+  - orchestration
+  - configuration
+dependencies:
+  journeyman.operation: ">=1.0.0"

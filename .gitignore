@@ -1,0 +1,103 @@
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and locally installed collections
+venv/
+.venv/
+env/
+.ansible/
+
+# Flask runtime state and databases
+instance/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.pid
+*.log
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Ansible/runtime output
+*.retry
+artifacts/
+job_artifacts/
+runtime/
+tmp/
+
+# Editor and backup files
+*.swp
+*.swo
+*~
+*.bak
+*.backup
+*.orig
+*.rej
+
+# IDE and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Repository is located in the service account home directory.
+# Ignore all hidden home-directory content by default.
+.*
+!.gitignore
+!.env.example
+
+# User-local caches and packages
+.cache/
+.local/
+.config/
+.ssh/
+
+# Service-account home files
+.ansible/
+.cache/
+.local/
+.ssh/
+.lesshst
+.python_history
+.sqlite_history
+dead.letter
+
+# Runtime and generated data
+instance/
+__pycache__/
+venv/
+
+# Manual backups and archives
+journeyman.zip
+journeyman.zip-*
+
+# Temporary migration and application copies
+b627b936e84c_allow_multiple_credentials_per_project_.txt
+cc/
+
+
+# Local source-file backups
+*.before-*
+*.bak
+*.backup
+*.orig
+/venv
+/venv39/
+/venv314/
+/repositories/

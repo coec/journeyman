@@ -1,0 +1,476 @@
+#!/opt/journeyman/venv/bin/python3
+"""Local control-plane helper used by Journeyman built-in automation."""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+JOURNEYMAN_ROOT = Path("/opt/journeyman")
+if str(JOURNEYMAN_ROOT) not in sys.path:
+    sys.path.insert(0, str(JOURNEYMAN_ROOT))
+
+from journeyman_configuration import load_journeyman_configuration
+
+load_journeyman_configuration()
+
+from app import create_app  # noqa: E402
+from app.services.audit import record_audit_event  # noqa: E402
+from app import db  # noqa: E402
+from app.models import Credential, Runner  # noqa: E402
+from app.services.environments import required_runner_environment_system_packages  # noqa: E402
+from app.services.runner_capabilities import (  # noqa: E402
+    required_runner_packages,
+    runner_capability_rows,
+    snmp_host_configuration,
+    snmp_source_configuration,
+)
+from app.services.runner_runtime_dependencies import (  # noqa: E402
+    RUNNER_RUNTIME_ROOT_PACKAGES,
+    RunnerRuntimeDependencyError,
+    canonical_runner_runtime_dependencies,
+    canonical_runner_runtime_requirements,
+)
+from app.services.runners import (  # noqa: E402
+    RunnerRemovalError,
+    delete_runner,
+    ensure_remote_management_target,
+    find_runner_for_management,
+    issue_registration_token,
+    unregister_runner,
+    runner_removal_references,
+)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Manage a Journeyman runner from the local control plane.",
+    )
+    parser.add_argument(
+        "action",
+        choices=(
+            "guard-target",
+            "prepare-install",
+            "prepare-update",
+            "prepare-recovery",
+            "set-management-defaults",
+            "verify-registered",
+            "capability-packages",
+            "environment-packages",
+            "runtime-dependencies",
+            "receiver-config",
+            "verify-capabilities",
+            "preflight-unregister",
+            "preflight-delete",
+            "unregister",
+            "delete",
+        ),
+        help="Control-plane action to validate or perform.",
+    )
+    parser.add_argument(
+        "--runner",
+        default="",
+        help="Runner name, registered hostname/FQDN, or UUID.",
+    )
+    parser.add_argument("--host", default="", help="Remote runner host/FQDN.")
+    parser.add_argument("--name", default="", help="Runner display name.")
+    parser.add_argument("--site", default="", help="Runner site/execution zone.")
+    parser.add_argument(
+        "--max-concurrent-steps",
+        type=int,
+        default=1,
+        help="Maximum concurrent steps for a new runner.",
+    )
+    parser.add_argument(
+        "--capabilities",
+        default="ansible",
+        help="Comma-separated runner capabilities.",
+    )
+    parser.add_argument(
+        "--bootstrap-credential-id",
+        type=int,
+        default=0,
+        help="Machine credential ID last used to manage this runner.",
+    )
+    parser.add_argument(
+        "--pip-proxy-required",
+        choices=("true", "false"),
+        default="false",
+        help="Whether pip proxy use is part of the saved management defaults.",
+    )
+    parser.add_argument(
+        "--pip-proxy-credential-id",
+        type=int,
+        default=0,
+        help="URL credential ID last used for the runner pip proxy.",
+    )
+    parser.add_argument(
+        "--expected-version",
+        default="",
+        help="Require verify-registered to observe this runner version.",
+    )
+    return parser.parse_args()
+
+
+def _management_selection_values(args):
+    bootstrap_id = args.bootstrap_credential_id or None
+    proxy_id = args.pip_proxy_credential_id or None
+    proxy_required = args.pip_proxy_required == "true"
+
+    if bootstrap_id is not None:
+        bootstrap = db.session.get(Credential, bootstrap_id)
+        if bootstrap is None or bootstrap.credential_type != "machine":
+            raise RunnerRemovalError(
+                "Bootstrap management credential is missing or is not a Machine (Linux/UNIX) credential."
+            )
+    if proxy_id is not None:
+        proxy = db.session.get(Credential, proxy_id)
+        if proxy is None or proxy.credential_type != "url":
+            raise RunnerRemovalError(
+                "pip proxy management credential is missing or is not a URL / API credential."
+            )
+    if proxy_required and proxy_id is None:
+        raise RunnerRemovalError(
+            "A pip proxy credential is required when pip proxy use is enabled."
+        )
+    if not proxy_required:
+        proxy_id = None
+
+    return bootstrap_id, proxy_required, proxy_id
+
+
+def _apply_management_selections(runner, args):
+    bootstrap_id, proxy_required, proxy_id = _management_selection_values(args)
+    runner.management_bootstrap_credential_id = bootstrap_id
+    runner.management_pip_proxy_required = proxy_required
+    runner.management_pip_proxy_credential_id = proxy_id
+    return bootstrap_id, proxy_required, proxy_id
+
+
+def main():
+    args = parse_args()
+    app = create_app("app.config.ProductionConfig")
+
+    with app.app_context():
+        try:
+            if args.action == "guard-target":
+                host = ensure_remote_management_target(args.host or args.runner)
+                print(json.dumps({"status": "remote-target-ok", "host": host}))
+                return 0
+
+            if args.action == "prepare-install":
+                host = ensure_remote_management_target(args.host)
+                name = str(args.name or host).strip()
+                if not name:
+                    raise RunnerRemovalError("Runner name is required.")
+                if args.max_concurrent_steps < 1 or args.max_concurrent_steps > 100:
+                    raise RunnerRemovalError(
+                        "Maximum concurrent steps must be between 1 and 100."
+                    )
+                capabilities = {
+                    item.strip().lower()
+                    for item in str(args.capabilities or "").split(",")
+                    if item.strip()
+                }
+                if not capabilities or not capabilities.issubset({"ansible", "shell"}):
+                    raise RunnerRemovalError("Runner capabilities are invalid.")
+
+                runner = Runner.query.filter_by(name=name).one_or_none()
+                # Legacy installs used the host as the Runner name, so retain
+                # hostname lookup only for that layout.  An explicit logical
+                # name must be allowed to create a second Runner record on a
+                # host that already has another development instance.
+                if runner is None and name == host:
+                    try:
+                        runner = find_runner_for_management(host)
+                    except RunnerRemovalError as exc:
+                        if not str(exc).startswith("No registered Journeyman runner matches"):
+                            raise
+                        runner = None
+
+                if runner is not None and runner.is_local:
+                    raise RunnerRemovalError(
+                        "The built-in local runner cannot be replaced or re-registered."
+                    )
+                if runner is not None and runner.is_registered:
+                    raise RunnerRemovalError(
+                        'Runner "{}" is already registered. Unregister it before reinstalling.'.format(
+                            runner.name
+                        )
+                    )
+                if runner is None:
+                    runner = Runner(name=name)
+                    db.session.add(runner)
+                elif runner.name != name:
+                    other = Runner.query.filter_by(name=name).one_or_none()
+                    if other is not None and other.id != runner.id:
+                        raise RunnerRemovalError(
+                            'Runner name "{}" already exists.'.format(name)
+                        )
+                    runner.name = name
+
+                runner.hostname = host
+                runner.site = str(args.site or "").strip()
+                runner.max_concurrent_steps = args.max_concurrent_steps
+                runner.enabled = True
+                runner.status_message = "Awaiting registration"
+                runner.set_capabilities(capabilities)
+                bootstrap_id, proxy_required, proxy_id = _apply_management_selections(
+                    runner, args
+                )
+                token = issue_registration_token(runner)
+                db.session.commit()
+                record_audit_event(
+                    "runner.prepare_install.builtin",
+                    object_type="runner",
+                    object_id=runner.id,
+                    object_name=runner.name,
+                    actor_username="__journeyman_builtin__",
+                    authenticated_via="builtin-project",
+                    details={
+                        "host": host,
+                        "site": runner.site,
+                        "bootstrap_credential_id": bootstrap_id,
+                        "pip_proxy_required": proxy_required,
+                        "pip_proxy_credential_id": proxy_id,
+                    },
+                )
+                print(
+                    json.dumps(
+                        {
+                            "status": "prepared",
+                            "runner_id": runner.id,
+                            "name": runner.name,
+                            "registration_token": token,
+                        }
+                    )
+                )
+                return 0
+
+            if args.action == "prepare-update":
+                runner_reference = args.runner or args.host
+                ensure_remote_management_target(runner_reference)
+                runner = find_runner_for_management(runner_reference)
+                bootstrap_id, proxy_required, proxy_id = _apply_management_selections(
+                    runner, args
+                )
+                db.session.commit()
+                record_audit_event(
+                    "runner.prepare_update.builtin",
+                    object_type="runner",
+                    object_id=runner.id,
+                    object_name=runner.name,
+                    actor_username="__journeyman_builtin__",
+                    authenticated_via="builtin-project",
+                    details={
+                        "bootstrap_credential_id": bootstrap_id,
+                        "pip_proxy_required": proxy_required,
+                        "pip_proxy_credential_id": proxy_id,
+                    },
+                )
+                print(json.dumps({
+                    "status": "prepared-update",
+                    "runner_id": runner.id,
+                    "runner_uuid": runner.runner_uuid,
+                    "name": runner.name,
+                }))
+                return 0
+
+            if args.action == "prepare-recovery":
+                runner_reference = args.runner or args.host
+                runner = find_runner_for_management(runner_reference)
+                if runner.is_local:
+                    raise RunnerRemovalError(
+                        "The built-in local runner cannot be re-registered."
+                    )
+                ensure_remote_management_target(runner.hostname or runner_reference)
+                token = issue_registration_token(runner)
+                db.session.commit()
+                record_audit_event(
+                    "runner.prepare_recovery.builtin",
+                    object_type="runner",
+                    object_id=runner.id,
+                    object_name=runner.name,
+                    actor_username="__journeyman_builtin__",
+                    authenticated_via="builtin-project",
+                    details={
+                        "host": runner.hostname,
+                        "credential_rotation_pending": True,
+                    },
+                )
+                print(json.dumps({
+                    "status": "prepared-recovery",
+                    "runner_id": runner.id,
+                    "name": runner.name,
+                    "registration_token": token,
+                }))
+                return 0
+
+            if args.action == "runtime-dependencies":
+                dependencies = canonical_runner_runtime_dependencies()
+                print(json.dumps({
+                    "roots": list(RUNNER_RUNTIME_ROOT_PACKAGES),
+                    "dependencies": dependencies,
+                    "requirements": canonical_runner_runtime_requirements(),
+                }, sort_keys=True))
+                return 0
+
+            runner_reference = args.runner or args.host
+            ensure_remote_management_target(runner_reference)
+            runner = find_runner_for_management(runner_reference)
+            runner_id = runner.id
+            runner_name = runner.name
+            runner_uuid = runner.runner_uuid
+
+            if args.action == "set-management-defaults":
+                bootstrap_id, proxy_required, proxy_id = _apply_management_selections(
+                    runner, args
+                )
+                db.session.commit()
+                record_audit_event(
+                    "runner.management_defaults.update",
+                    object_type="runner",
+                    object_id=runner.id,
+                    object_name=runner.name,
+                    actor_username="__journeyman_builtin__",
+                    authenticated_via="builtin-project",
+                    details={
+                        "bootstrap_credential_id": bootstrap_id,
+                        "pip_proxy_required": proxy_required,
+                        "pip_proxy_credential_id": proxy_id,
+                    },
+                )
+                print(json.dumps({
+                    "status": "management-defaults-saved",
+                    "name": runner.name,
+                }))
+                return 0
+
+            if args.action == "capability-packages":
+                print(json.dumps({
+                    "runner_id": runner.id,
+                    "name": runner.name,
+                    "packages": required_runner_packages(runner),
+                }))
+                return 0
+
+            if args.action == "environment-packages":
+                print(json.dumps({
+                    "runner_id": runner.id,
+                    "name": runner.name,
+                    "packages": required_runner_environment_system_packages(),
+                }))
+                return 0
+
+            if args.action == "receiver-config":
+                print(json.dumps({
+                    "runner_id": runner.id,
+                    "name": runner.name,
+                    "snmp_sources": snmp_source_configuration(runner),
+                    "host_snmp_sources": snmp_host_configuration(runner),
+                }, sort_keys=True))
+                return 0
+
+            if args.action == "verify-capabilities":
+                rows = runner_capability_rows(runner)
+                not_ready = [row for row in rows if row["state"] != "healthy"]
+                if not_ready:
+                    raise RunnerRemovalError(
+                        'Runner "{}" has required capabilities that are not ready: {}.'.format(
+                            runner.name,
+                            ", ".join(row["label"] for row in not_ready),
+                        )
+                    )
+                print(json.dumps({
+                    "status": "capabilities-ready",
+                    "name": runner.name,
+                    "capabilities": [row["key"] for row in rows],
+                }))
+                return 0
+
+            if args.action == "verify-registered":
+                if not runner.is_registered or runner.last_heartbeat_at is None:
+                    raise RunnerRemovalError(
+                        'Runner "{}" has not registered and reported a heartbeat yet.'.format(
+                            runner_name
+                        )
+                    )
+                expected_version = str(args.expected_version or "").strip()
+                if expected_version and str(runner.version or "").strip() != expected_version:
+                    raise RunnerRemovalError(
+                        'Runner "{}" has reported version {} instead of expected version {}.'.format(
+                            runner_name, runner.version or "unknown", expected_version
+                        )
+                    )
+                print(
+                    json.dumps(
+                        {
+                            "status": "registered",
+                            "name": runner_name,
+                            "version": runner.version,
+                        }
+                    )
+                )
+                return 0
+
+            if args.action == "preflight-delete":
+                if runner.is_local:
+                    raise RunnerRemovalError("The built-in local runner cannot be deleted.")
+                references = runner_removal_references(runner)
+                if references["projects"] or references["jobs"]:
+                    parts = []
+                    if references["projects"]:
+                        parts.append(
+                            "{} Project{}".format(
+                                references["projects"],
+                                "" if references["projects"] == 1 else "s",
+                            )
+                        )
+                    if references["jobs"]:
+                        parts.append(
+                            "{} Job{}".format(
+                                references["jobs"],
+                                "" if references["jobs"] == 1 else "s",
+                            )
+                        )
+                    raise RunnerRemovalError(
+                        "Runner is still referenced by {} and cannot be deleted.".format(
+                            " and ".join(parts)
+                        )
+                    )
+                print(json.dumps({"status": "delete-ok", "name": runner_name}))
+                return 0
+
+            if args.action == "preflight-unregister":
+                if runner.is_local:
+                    raise RunnerRemovalError("The built-in local runner cannot be unregistered.")
+                print(json.dumps({"status": "unregister-ok", "name": runner_name}))
+                return 0
+
+            if args.action == "delete":
+                delete_runner(runner)
+                event = "runner.delete.builtin"
+                status = "deleted"
+            else:
+                unregister_runner(runner)
+                event = "runner.unregister.builtin"
+                status = "unregistered"
+
+            record_audit_event(
+                event,
+                object_type="runner",
+                object_id=runner_id,
+                object_name=runner_name,
+                actor_username="__journeyman_builtin__",
+                authenticated_via="builtin-project",
+                details={"runner_uuid": runner_uuid, "requested_reference": runner_reference},
+            )
+            print(json.dumps({"status": status, "name": runner_name}))
+            return 0
+        except (RunnerRemovalError, RunnerRuntimeDependencyError) as exc:
+            print(json.dumps({"error": str(exc)}), file=sys.stderr)
+            return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

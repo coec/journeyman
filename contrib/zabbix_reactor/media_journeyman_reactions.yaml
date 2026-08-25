@@ -1,0 +1,175 @@
+zabbix_export:
+  version: '7.4'
+  media_types:
+  - name: Journeyman Reactions
+    type: WEBHOOK
+    parameters:
+    - name: journeyman_url
+      value: '{$JOURNEYMAN.URL}'
+    - name: source_uuid
+      value: '{$JOURNEYMAN.SOURCE.UUID}'
+    - name: hmac_secret
+      value: '{$JOURNEYMAN.HMAC.SECRET}'
+    - name: event_id
+      value: '{EVENT.ID}'
+    - name: event_timestamp
+      value: '{EVENT.TIMESTAMP}'
+    - name: event_value
+      value: '{EVENT.VALUE}'
+    - name: event_status
+      value: '{EVENT.STATUS}'
+    - name: event_name
+      value: '{EVENT.NAME}'
+    - name: event_severity
+      value: '{EVENT.SEVERITY}'
+    - name: event_nseverity
+      value: '{EVENT.NSEVERITY}'
+    - name: event_opdata
+      value: '{EVENT.OPDATA}'
+    - name: event_tags
+      value: '{EVENT.TAGSJSON}'
+    - name: host_host
+      value: '{HOST.HOST}'
+    - name: host_name
+      value: '{HOST.NAME}'
+    - name: host_id
+      value: '{HOST.ID}'
+    - name: trigger_id
+      value: '{TRIGGER.ID}'
+    status: DISABLED
+    script: |
+      var params,
+          request,
+          payload,
+          body,
+          requestTimestamp,
+          signature,
+          signedData,
+          response,
+          status,
+          tagsArray,
+          tags,
+          i,
+          baseUrl,
+          eventValue;
+
+      try {
+          params = JSON.parse(value);
+
+          if (!params.journeyman_url || params.journeyman_url.indexOf('https://') !== 0) {
+              throw 'journeyman_url must begin with https://';
+          }
+          if (!params.source_uuid || params.source_uuid.indexOf('{$') === 0) {
+              throw 'source_uuid is not configured';
+          }
+          if (!params.hmac_secret || params.hmac_secret.indexOf('{$') === 0) {
+              throw 'hmac_secret is not configured';
+          }
+          if (!params.event_id || params.event_id.indexOf('{EVENT.') === 0) {
+              throw 'EVENT.ID did not resolve';
+          }
+
+          eventValue = String(params.event_value || '');
+          if (eventValue === '1') {
+              params.signal_type = 'problem';
+          }
+          else if (eventValue === '0') {
+              params.signal_type = 'recovery';
+          }
+          else {
+              params.signal_type = String(params.event_status || 'signal').toLowerCase();
+          }
+
+          tags = {};
+          try {
+              tagsArray = JSON.parse(params.event_tags || '[]');
+              if (Array.isArray(tagsArray)) {
+                  for (i = 0; i < tagsArray.length; i++) {
+                      if (tagsArray[i] && typeof tagsArray[i].tag !== 'undefined') {
+                          tags[String(tagsArray[i].tag)] =
+                              (typeof tagsArray[i].value === 'undefined') ? '' : String(tagsArray[i].value);
+                      }
+                  }
+              }
+          }
+          catch (tagError) {
+              throw 'Unable to parse EVENT.TAGSJSON: ' + tagError;
+          }
+
+          /*
+           * Include EVENT.VALUE in the external ID so problem/recovery notifications
+           * cannot collide even if a Zabbix configuration reuses an event identifier.
+           */
+          payload = {
+              schema_version: 1,
+              signal_id: String(params.event_id) + ':' + eventValue,
+              signal_type: params.signal_type,
+              timestamp: new Date(parseInt(params.event_timestamp, 10) * 1000).toISOString(),
+              host: String(params.host_host || ''),
+              severity: String(params.event_severity || ''),
+              description: String(params.event_name || ''),
+              fields: {
+                  tags: tags,
+                  zabbix: {
+                      event_id: String(params.event_id || ''),
+                      event_value: eventValue,
+                      event_status: String(params.event_status || ''),
+                      event_nseverity: String(params.event_nseverity || ''),
+                      event_opdata: String(params.event_opdata || ''),
+                      host_id: String(params.host_id || ''),
+                      host_name: String(params.host_name || ''),
+                      trigger_id: String(params.trigger_id || '')
+                  }
+              }
+          };
+
+          body = JSON.stringify(payload);
+
+          /*
+           * This timestamp authenticates the HTTP request. It is intentionally
+           * separate from the Zabbix Signal timestamp above.
+           */
+          requestTimestamp = String(Math.floor(Date.now() / 1000));
+
+          signedData = String(params.source_uuid) + '\n' +
+              requestTimestamp + '\n' +
+              body;
+
+          signature = hmac('sha256', String(params.hmac_secret), signedData);
+
+          baseUrl = String(params.journeyman_url);
+          while (baseUrl.length > 0 && baseUrl.charAt(baseUrl.length - 1) === '/') {
+              baseUrl = baseUrl.substring(0, baseUrl.length - 1);
+          }
+
+          request = new HttpRequest();
+          request.addHeader('Content-Type: application/json');
+          request.addHeader('X-Journeyman-Source: ' + String(params.source_uuid));
+          request.addHeader('X-Journeyman-Timestamp: ' + requestTimestamp);
+          request.addHeader('X-Journeyman-Signature: ' + signature);
+
+          Zabbix.log(4,
+              '[Journeyman Reaction] Sending Signal ' + payload.signal_id +
+              ' for host ' + payload.host + ' to ' + baseUrl);
+
+          response = request.post(baseUrl + '/api/signals/zabbix', body);
+          status = request.getStatus();
+
+          if (status !== 200 && status !== 202) {
+              throw 'Journeyman returned HTTP ' + status + ': ' + response;
+          }
+
+          Zabbix.log(4,
+              '[Journeyman Reaction] Journeyman accepted Signal ' +
+              payload.signal_id + ' (HTTP ' + status + ')');
+
+          return response;
+      }
+      catch (error) {
+          Zabbix.log(3, '[Journeyman Reaction] ' + error);
+          throw 'Journeyman Reaction webhook failed: ' + error;
+      }
+    timeout: 15s
+    process_tags: 'NO'
+    description: Journeyman Source → Signal integration. Signs normalized Zabbix trigger notifications with the per-Source HMAC-SHA256 secret and sends them to /api/signals/zabbix. Configure the three {$JOURNEYMAN.*} global macros before enabling.
+

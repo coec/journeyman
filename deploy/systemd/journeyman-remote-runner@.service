@@ -1,0 +1,20 @@
+[Unit]
+Description=Journeyman Remote Job Runner (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=journeyman
+Group=journeyman
+EnvironmentFile=/etc/journeyman/remote-runner-%i.env
+Environment=PATH=/opt/journeyman/venv314/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/opt/journeyman/venv314/bin/python3 /opt/journeyman/bin/journeyman-remote-runner
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,77 @@
+{% extends "base.html" %}{% block title %}Signals · Journeyman{% endblock %}{% block content %}
+<div class="page-heading"><div><h1>Signals</h1><p>Accepted notifications from configured Sources. Signals are immutable after acceptance.</p></div></div>
+
+<section class="panel signal-filter-panel">
+  <form class="signal-filters" method="get">
+    <label>
+      Search
+      <input name="q" value="{{ query_text }}" placeholder="Signal ID, source, host, severity or description">
+    </label>
+    <label>
+      Source
+      <select name="source">
+        <option value="">All sources</option>
+        {% for source in sources %}
+          <option value="{{ source.id }}" {% if source.id == selected_source_id %}selected{% endif %}>{{ source.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Severity
+      <select name="severity">
+        <option value="">All severities</option>
+        {% for severity in severities %}
+          <option value="{{ severity }}" {% if severity == selected_severity %}selected{% endif %}>{{ severity }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="signal-filter-actions">
+      <button class="button primary" type="submit">Filter</button>
+      <a class="button secondary" href="{{ url_for('main.signals') }}">Clear</a>
+    </div>
+  </form>
+</section>
+
+<section class="panel table-panel">
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead><tr><th>Received</th><th>Source</th><th>Host</th><th>Severity</th><th>Description</th><th>Reactions</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for signal in signals %}
+          <tr>
+            <td><a href="{{ url_for('main.signal_detail', signal_id=signal.id) }}">#{{ signal.id }}</a><br><small><span class="utc-datetime" data-utc="{{ signal.received_at.isoformat() }}">{{ signal.received_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span></small></td>
+            <td>{{ signal.source.name }}</td>
+            <td>{{ signal.host or '—' }}</td>
+            <td>{{ signal.severity or '—' }}</td>
+            <td>{{ signal.description }}</td>
+            <td>{{ signal.reactions|length }}</td>
+            <td><a class="button" href="{{ url_for('main.signal_detail', signal_id=signal.id) }}">Inspect</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty-state">No Signals match the selected filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% include "_pagination.html" %}
+</section>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+    if (!window.EventSource) {
+        return;
+    }
+
+    const source = new EventSource(
+        {{ url_for('main.signals_events') | tojson }}
+    );
+
+    source.addEventListener("signals-update", function () {
+        source.close();
+        window.location.reload();
+    });
+})();
+</script>
+
+{% endblock %}

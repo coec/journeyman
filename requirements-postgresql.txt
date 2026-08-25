@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Direct PostgreSQL driver dependency for SQLAlchemy.
+psycopg[binary]==3.3.4

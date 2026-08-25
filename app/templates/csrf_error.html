@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Request Expired — Journeyman{% endblock %}
+
+{% block content %}
+<section class="page-header">
+  <div>
+    <h1>Request could not be verified</h1>
+    <p>
+      This form may have expired or may belong to another browser
+      session.
+    </p>
+  </div>
+</section>
+
+<section class="panel">
+  <p>
+    Reload the page and submit the form again.
+  </p>
+
+  {% if reason %}
+    <p class="muted">
+      {{ reason }}
+    </p>
+  {% endif %}
+</section>
+{% endblock %}

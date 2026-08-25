@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Release Testing · Journeyman{% endblock %}
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .release-settings-page { max-width: 1180px; }
+  .settings-tabs { display:flex; gap:8px; margin:18px 0; flex-wrap:wrap; }
+  .settings-tabs a { padding:9px 13px; border:1px solid var(--border); border-radius:6px; background:#fff; }
+  .settings-tabs a.active { color:#fff; background:var(--blue); border-color:var(--blue); }
+  .settings-card { background:#fff; border:1px solid var(--border); border-radius:8px; padding:20px; margin-bottom:16px; }
+  .field { margin-bottom:16px; }
+  .field label { display:block; font-weight:700; margin-bottom:6px; }
+  .field input, .field textarea, .field select { width:100%; }
+  .field small { display:block; color:var(--muted); margin-top:5px; }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .summary { display:grid; grid-template-columns:180px 1fr; gap:8px 16px; margin:0; }
+  .summary dt { font-weight:700; }
+  .summary dd { margin:0; }
+  .validation-result { margin-top:16px; padding:12px 14px; border:1px solid var(--border); border-radius:6px; }
+  .validation-result strong { margin-right:8px; }
+  .validation-result.pass { border-left:5px solid #238636; }
+  .validation-result.fail { border-left:5px solid #b42318; }
+  .validation-result.running { border-left:5px solid #9a6700; }
+</style>
+<div class="release-settings-page">
+  <header>
+    <h1>System Settings</h1>
+    <p>Configure non-production Linux targets used to validate an installed Journeyman release through the normal execution path.</p>
+  </header>
+  <nav class="settings-tabs" aria-label="Settings sections">
+    <a href="{{ url_for('main.system_settings') }}">Web and TLS</a>
+    <a href="{{ url_for('main.directory_settings') }}">Directory and Authentication</a>
+    <a href="{{ url_for('main.environment_build_settings') }}">Environment Builds</a>
+    <a href="{{ url_for('main.data_retention_settings') }}">Data Retention</a>
+    <a class="active" href="{{ url_for('main.release_testing_settings') }}">Release Testing</a>
+  </nav>
+
+  {% if errors %}
+  <section class="settings-card">
+    <h2>Settings were not saved</h2>
+    <ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <section class="settings-card">
+    <h2>Linux validation target</h2>
+    <p>The validation suite is intentionally Linux-only. It uses existing Journeyman Inventory, Machine credential and Runner Crew objects; secrets are not duplicated in System Settings.</p>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="field">
+        <label for="inventory_id">Test inventory</label>
+        <select id="inventory_id" name="inventory_id" required>
+          <option value="">Select an enabled inventory</option>
+          {% for inventory in inventories %}
+            <option value="{{ inventory.id }}" {% if form_data.inventory_id == inventory.id %}selected{% endif %}>{{ inventory.name }}</option>
+          {% endfor %}
+        </select>
+        <small>The suite resolves hosts from this inventory exactly as normal Projects do.</small>
+      </div>
+
+      <div class="field">
+        <label for="host_pattern">Test hosts</label>
+        <input id="host_pattern" name="host_pattern" required maxlength="500" value="{{ form_data.host_pattern }}" placeholder="rhel01,rhel02,debian01">
+        <small>An Ansible host pattern. Use disposable or non-production Linux nodes. The value is also shown for review at launch.</small>
+      </div>
+
+      <div class="field">
+        <label for="credential_id">Machine credential</label>
+        <select id="credential_id" name="credential_id" required>
+          <option value="">Select a Linux/UNIX Machine credential</option>
+          {% for credential in credentials %}
+            <option value="{{ credential.id }}" {% if form_data.credential_id == credential.id %}selected{% endif %}>{{ credential.name }}{% if credential.username %} — {{ credential.username }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <small>The selected credential is attached to the built-in validation Project. Passwords, keys and become secrets remain in the Credential store.</small>
+      </div>
+
+      <div class="field">
+        <label for="alternate_become_users">Alternate become users</label>
+        <textarea id="alternate_become_users" name="alternate_become_users" rows="4" placeholder="joe&#10;fred">{{ form_data.alternate_become_users }}</textarea>
+        <small>Optional; one account per line. The suite always tests the Machine credential login identity and its default become user, then tests each account listed here.</small>
+      </div>
+
+      <div class="field">
+        <label for="runner_crew_id">Runner Crew</label>
+        <select id="runner_crew_id" name="runner_crew_id">
+          <option value="">Built-in local runner</option>
+          {% for crew in runner_crews %}
+            <option value="{{ crew.id }}" {% if form_data.runner_crew_id == crew.id %}selected{% endif %}>{{ crew.name }}</option>
+          {% endfor %}
+        </select>
+        <small>Select a remote Runner Crew to validate remote execution. Leave blank for the built-in local runner.</small>
+      </div>
+
+      <div class="actions"><button type="submit">Save Release Testing Settings</button></div>
+    </form>
+  </section>
+
+  <section class="settings-card">
+    <h2>Validation suite</h2>
+    {% if validation_package %}
+      <dl class="summary">
+        <dt>Inventory</dt><dd>{{ settings.inventory.name }}</dd>
+        <dt>Hosts</dt><dd><code>{{ settings.host_pattern }}</code></dd>
+        <dt>Credential</dt><dd>{{ settings.credential.name }}{% if settings.credential.username %} ({{ settings.credential.username }}){% endif %}</dd>
+        <dt>Runner</dt><dd>{{ settings.runner_crew.name if settings.runner_crew else 'Built-in local runner' }}</dd>
+      </dl>
+      <p>The built-in Package creates ordinary Journeyman Jobs. Review the target hosts on the launch page before dispatch.</p>
+      <div class="actions">
+        <a class="button primary" href="{{ url_for('main.project_package_launch', package_id=validation_package.id) }}">Run Validation Suite</a>
+      </div>
+      {% if validation_result %}
+        <div class="validation-result {{ validation_result.state }}">
+          <strong>Latest result:</strong>{{ validation_result.message }}
+          {% if validation_result.job %}<a href="{{ url_for('main.job_detail', job_id=validation_result.job.id) }}">Job #{{ validation_result.job.id }}</a>{% endif %}
+          {% if validation_result.max_slice_hosts is defined and validation_result.max_slice_hosts %}
+            <br>Largest execution slice: {{ validation_result.max_slice_hosts }} host{{ '' if validation_result.max_slice_hosts == 1 else 's' }}.
+            {% if validation_result.multi_host_slice %}Multi-host slice validation: PASS.{% else %}Use at least two selected hosts to validate a multi-host slice.{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    {% else %}
+      <p>Save a valid inventory, host pattern and Machine credential to enable the validation suite.</p>
+      <button type="button" disabled>Run Validation Suite</button>
+    {% endif %}
+  </section>
+
+  <section class="settings-card">
+    <h2>Expected partial failure</h2>
+    <p>This deliberately fails one selected host after proving that all targets are reachable. Other hosts continue. The resulting Job is expected to be <strong>Failed</strong>; this test passes only when that failure propagates through Job, Step and execution Slice state.</p>
+    <p>With only the built-in local runner, all locally routed hosts are one multi-host slice. Journeyman creates multiple slices only when hosts in a step are routed to different runners.</p>
+    {% if failure_validation_package %}
+      <div class="actions">
+        <a class="button" href="{{ url_for('main.project_package_launch', package_id=failure_validation_package.id) }}">Run Expected Failure Test</a>
+      </div>
+      {% if failure_validation_result %}
+        <div class="validation-result {{ failure_validation_result.state }}">
+          <strong>Latest result:</strong>{{ failure_validation_result.message }}
+          {% if failure_validation_result.job %}<a href="{{ url_for('main.job_detail', job_id=failure_validation_result.job.id) }}">Job #{{ failure_validation_result.job.id }}</a>{% endif %}
+          {% if failure_validation_result.max_slice_hosts is defined and failure_validation_result.max_slice_hosts %}
+            <br>Largest execution slice: {{ failure_validation_result.max_slice_hosts }} host{{ '' if failure_validation_result.max_slice_hosts == 1 else 's' }}.
+            {% if failure_validation_result.multi_host_slice %}Multi-host slice exercised.{% else %}Select at least two hosts for this test.{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    {% else %}
+      <button type="button" disabled>Run Expected Failure Test</button>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

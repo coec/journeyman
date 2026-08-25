@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if repository else 'Add' }} Repository · Journeyman{% endblock %}
+
+{% block content %}
+{% set repository_type = repository.repository_type if repository and repository.repository_type else 'git' %}
+<div class="page-heading">
+  <div>
+    <h1>{{ 'Edit Repository' if repository else 'Add Repository' }}</h1>
+    <p id="repository-form-help">
+      {% if repository_type == 'directory' %}
+        Configure a local directory containing automation content.
+      {% else %}
+        Configure a Git repository and branch.
+      {% endif %}
+    </p>
+  </div>
+</div>
+
+<section class="panel form-panel">
+  <form method="post" id="repository-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>
+      Name
+      <input
+        name="name"
+        required
+        value="{{ repository.name if repository else '' }}"
+      >
+    </label>
+
+    <label>
+      Description
+      <textarea name="description">{{ repository.description if repository else '' }}</textarea>
+    </label>
+
+    <label>
+      Repository type
+      <select name="repository_type" id="repository-type">
+        <option value="git" {% if repository_type == 'git' %}selected{% endif %}>Git</option>
+        <option value="directory" {% if repository_type == 'directory' %}selected{% endif %}>Directory</option>
+      </select>
+    </label>
+
+    <div id="git-repository-fields">
+      <label>
+        Repository URL
+        <input
+          name="url"
+          value="{{ repository.url if repository else '' }}"
+          placeholder="ssh://git@gitlab.example/automation/rhel-automation.git"
+        >
+      </label>
+
+      <label>
+        Source Control credential
+        <select name="credential_id">
+          <option value="">— None —</option>
+          {% for credential in source_control_credentials %}
+            <option
+              value="{{ credential.id }}"
+              {% if repository and repository.credential_id == credential.id %}selected{% endif %}
+            >{{ credential.name }} — {{ credential.username }}</option>
+          {% endfor %}
+        </select>
+        <small>
+          Required for HTTPS repositories. Credentials are supplied to Git without
+          embedding the username or password in the repository URL. SSH repositories
+          continue to use the host SSH configuration.
+        </small>
+      </label>
+
+      <label>
+        Default branch
+        <input
+          name="default_branch"
+          value="{{ repository.default_branch if repository else 'main' }}"
+        >
+      </label>
+    </div>
+
+    <div id="directory-repository-fields" hidden>
+      <label>
+        Directory path
+        <input
+          name="directory_path"
+          value="{{ repository.directory_path if repository else '' }}"
+          placeholder="/opt/journeyman/repositories/network-automation"
+        >
+        <small>
+          Must be an existing directory below <code>/opt/journeyman/repositories</code>.
+          Directory repositories cannot contain or be contained by another Directory repository.
+        </small>
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button class="button primary" type="submit">
+        {{ 'Save Repository' if repository else 'Add Repository' }}
+      </button>
+
+      <a class="button" href="{{ url_for('main.repositories') }}">
+        Cancel
+      </a>
+    </div>
+  </form>
+</section>
+
+<script nonce="{{ csp_nonce }}">
+(() => {
+  const type = document.getElementById('repository-type');
+  const gitFields = document.getElementById('git-repository-fields');
+  const directoryFields = document.getElementById('directory-repository-fields');
+  const help = document.getElementById('repository-form-help');
+  const url = document.querySelector('input[name="url"]');
+  const branch = document.querySelector('input[name="default_branch"]');
+  const directoryPath = document.querySelector('input[name="directory_path"]');
+
+  function updateRepositoryType() {
+    const isDirectory = type.value === 'directory';
+    gitFields.hidden = isDirectory;
+    directoryFields.hidden = !isDirectory;
+    url.required = !isDirectory;
+    branch.required = !isDirectory;
+    directoryPath.required = isDirectory;
+    help.textContent = isDirectory
+      ? 'Configure a local directory containing automation content.'
+      : 'Configure a Git repository and branch.';
+  }
+
+  type.addEventListener('change', updateRepositoryType);
+  updateRepositoryType();
+})();
+</script>
+{% endblock %}

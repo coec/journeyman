@@ -1,0 +1,50 @@
+#!/opt/journeyman/venv/bin/python3
+import logging
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("JOURNEYMAN_ROOT", "/opt/journeyman"))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from journeyman_configuration import load_journeyman_configuration
+
+load_journeyman_configuration()
+
+from app import create_app, db  # noqa: E402
+from app.models.environment import Environment  # noqa: E402
+from app.services.audit import record_audit_event  # noqa: E402
+from app.services.environments import process_next_environment_build  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("journeyman-environment-builder")
+stopping = False
+
+def stop(*_args):
+    global stopping
+    stopping = True
+
+def reload_configuration(*_args):
+    log.info("Reload requested; no environment-builder session material requires reload.")
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGHUP, reload_configuration)
+app = create_app()
+with app.app_context():
+    while not stopping:
+        env = Environment.query.filter_by(is_managed=True, build_status="queued").order_by(Environment.updated_at.asc(), Environment.id.asc()).first()
+        if env is None:
+            db.session.remove()
+            time.sleep(2)
+            continue
+        env_id, env_name = env.id, env.name
+        log.info("Building environment %s (%s)", env_name, env_id)
+        process_next_environment_build()
+        env = db.session.get(Environment, env_id)
+        result = "success" if env and env.build_status == "passed" else "failure"
+        record_audit_event("environment.build_completed", result=result, object_type="environment", object_id=env_id, object_name=env_name, details={"status": env.build_status if env else "missing"})
+        db.session.remove()

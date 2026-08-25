@@ -1,0 +1,16 @@
+[Unit]
+Description=Journeyman Application
+After=network-online.target
+Wants=network-online.target
+Wants=journeyman-web.service journeyman-scheduler.service journeyman-runner.service journeyman-environment-builder.service
+Before=journeyman-web.service journeyman-scheduler.service journeyman-runner.service journeyman-environment-builder.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/journeyman
+Environment=JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+ExecStart=/opt/journeyman/bin/journeyman-service-coordinator prepare
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

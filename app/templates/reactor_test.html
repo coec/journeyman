@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}Test Reactor · Journeyman{% endblock %}{% block content %}
+<div class="page-heading"><div><h1>Test Reactor</h1><p>{{ reactor.name }} against Signal #{{ signal.id }}</p></div></div>
+<section class="panel">
+{% if error %}<div class="flash error">{{ error }}</div>{% elif matched %}<div class="flash success"><strong>MATCH</strong> — this Signal would produce a Reaction.</div>{% else %}<div class="flash warning"><strong>NO MATCH</strong> — this Signal would not produce a Reaction.</div>{% endif %}
+<dl><dt>Source</dt><dd>{{ signal.source.name }}</dd><dt>Host</dt><dd>{{ signal.host or '—' }}</dd><dt>Description</dt><dd>{{ signal.description }}</dd><dt>Reaction Package</dt><dd>{{ reactor.package.name }}</dd><dt>Saved mode</dt><dd>{{ reactor.mode|title }}</dd></dl>
+<h2>Resolved Reaction inputs</h2>{% if resolved %}<table class="data-table"><thead><tr><th>Package input</th><th>Resolved value</th></tr></thead><tbody>{% for name, value in resolved.items() %}<tr><td>{{ name }}</td><td><code>{{ value }}</code></td></tr>{% endfor %}</tbody></table>{% else %}<p>No inputs resolved.</p>{% endif %}
+<p><a class="button" href="{{ url_for('main.reactor_edit', reactor_id=reactor.id) }}">Back to Reactor</a></p>
+</section>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}New Environment · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><h1>New Environment</h1><p>Create a Journeyman-managed execution environment or register an existing virtual environment.</p></div>
+  <a class="button" href="{{ url_for('main.environments') }}">Back to Environments</a>
+</div>
+
+<div class="two-column-layout">
+<section class="panel form-panel">
+  <h2>Create managed environment</h2>
+  <p>Journeyman creates the virtualenv below its managed environment root and installs only validated package and collection specifications.</p>
+  {% set form_action = url_for('main.environment_create_managed') %}
+  {% set environment = none %}
+  {% set submit_label = 'Create and validate' %}
+  {% include "_environment_managed_form.html" %}
+</section>
+
+<section class="panel form-panel">
+  <h2>Register existing virtual environment</h2>
+  <p>Register an existing virtual environment. Journeyman will not recreate or remove it, but can install declared Python packages and Ansible collections in-place.</p>
+  {% set form_action = url_for('main.environments') %}
+  {% set environment = none %}
+  {% set submit_label = 'Register and validate' %}
+  {% include "_environment_external_form.html" %}
+</section>
+</div>
+{% endblock %}

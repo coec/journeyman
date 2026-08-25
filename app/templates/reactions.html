@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% block title %}Reactions · Journeyman{% endblock %}{% block content %}
+<div class="page-heading"><div><h1>Reactions</h1><p>Observed, queued, suppressed and failed Reactor outcomes.</p></div></div>
+<section class="panel"><table class="data-table"><thead><tr><th>Time</th><th>Reactor</th><th>Signal</th><th>Package</th><th>Status</th><th>Job</th><th>Message</th><th>Actions</th></tr></thead><tbody>{% for reaction in reactions %}<tr><td><span class="utc-datetime" data-utc="{{ reaction.created_at.isoformat() }}">{{ reaction.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span></td><td>{{ reaction.reactor_display_name }}</td><td><a href="{{ url_for('main.signal_detail', signal_id=reaction.signal_id) }}">#{{ reaction.signal_id }}</a></td><td>{{ reaction.package_display_name }}</td><td>{{ reaction.status|title }}</td><td>{% if reaction.job_id %}<a href="{{ url_for('main.job_detail', job_id=reaction.job_id) }}">#{{ reaction.job_id }}</a>{% else %}—{% endif %}</td><td>{{ reaction.message }}</td><td><a class="button" href="{{ url_for('main.reaction_detail', reaction_id=reaction.id) }}">Inspect</a></td></tr>{% else %}<tr><td colspan="8">No Reactions recorded.</td></tr>{% endfor %}</tbody></table>{% include "_pagination.html" %}</section>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+    if (!window.EventSource) {
+        return;
+    }
+
+    const source = new EventSource(
+        {{ url_for('main.reactions_events') | tojson }}
+    );
+
+    source.addEventListener("reactions-update", function () {
+        source.close();
+        window.location.reload();
+    });
+})();
+</script>
+
+{% endblock %}

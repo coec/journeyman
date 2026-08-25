@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if target else 'Add' }} Notification Target · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>{{ 'Edit' if target else 'Add' }} Notification Target</h1><p>Configure a reusable notification destination.</p></div></div>
+<section class="panel form-panel"><form method="post" id="notification-target-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>Name<input name="name" maxlength="120" required value="{{ form_data.name }}"></label>
+<label>Description<textarea name="description" rows="2" maxlength="500">{{ form_data.description }}</textarea></label>
+<label>Channel<select name="channel" id="notification-channel"><option value="email" {% if form_data.channel=='email' %}selected{% endif %}>Email</option><option value="webhook" {% if form_data.channel=='webhook' %}selected{% endif %}>Webhook</option><option value="syslog" {% if form_data.channel=='syslog' %}selected{% endif %}>Syslog</option></select></label>
+<div data-channel="email">
+<label>SMTP host<input name="host" value="{{ form_data.host }}"></label>
+<label>SMTP port<input name="port" type="number" min="0" max="65535" value="{{ form_data.port }}"><small>0 uses the channel default.</small></label>
+<label>TLS<select name="tls_mode"><option value="starttls" {% if form_data.tls_mode=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if form_data.tls_mode=='ssl' %}selected{% endif %}>Implicit TLS</option><option value="none" {% if form_data.tls_mode=='none' %}selected{% endif %}>None</option></select><small>None is supported for trusted internal SMTP relays where transport encryption is not required.</small></label>
+<label>SMTP username<input name="username" autocomplete="off" value="{{ form_data.username }}"></label>
+<label>SMTP password<input name="secret" type="password" autocomplete="new-password"><small>{% if target %}Leave blank to keep the existing secret.{% else %}Optional unless the SMTP server requires authentication.{% endif %}</small></label>
+<label>From address<input name="sender" value="{{ form_data.sender }}"></label>
+<label>Recipients<textarea name="recipients" rows="2" placeholder="users@example.com, operations@example.com">{{ form_data.recipients }}</textarea><small>Comma-separated addresses.</small></label>
+</div>
+<div data-channel="webhook">
+<label>Webhook URL<input name="url" type="url" value="{{ form_data.url }}" placeholder="https://..."></label>
+<label>Bearer token<input name="secret" type="password" autocomplete="new-password"><small>Optional. Leave blank on edit to retain the existing token.</small></label>
+</div>
+<div data-channel="syslog">
+<label>Syslog host<input name="host" value="{{ form_data.host }}"></label>
+<label>Syslog port<input name="port" type="number" min="0" max="65535" value="{{ form_data.port }}"><small>0 uses 514.</small></label>
+<label>Protocol<select name="syslog_protocol"><option value="udp" {% if form_data.syslog_protocol=='udp' %}selected{% endif %}>UDP</option><option value="tcp" {% if form_data.syslog_protocol=='tcp' %}selected{% endif %}>TCP</option></select></label>
+</div>
+<label class="checkbox-label"><input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}> Enabled</label>
+<div class="form-actions"><button class="button primary" type="submit">{{ 'Save Target' if target else 'Add Target' }}</button><a class="button" href="{{ url_for('main.notification_targets') }}">Cancel</a></div>
+</form></section>
+<script nonce="{{ csp_nonce }}">
+(function(){
+ const select=document.getElementById('notification-channel');
+ function update(){document.querySelectorAll('[data-channel]').forEach(el=>{const active=el.dataset.channel===select.value;el.hidden=!active;el.querySelectorAll('input,select,textarea').forEach(control=>control.disabled=!active);});}
+ select.addEventListener('change',update); update();
+})();
+</script>
+{% endblock %}

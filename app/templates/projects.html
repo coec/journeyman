@@ -1,0 +1,1068 @@
+{% extends "base.html" %}
+{% block title %}Projects · Journeyman{% if disabled_projects_hidden %}<p class="muted-list-note">Disabled projects hidden</p>{% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>Projects</h1>
+    <p>Automation projects.</p>
+  </div>
+
+  <a class="button primary"
+     href="{{ url_for('main.project_new') }}">
+    ＋ Add Project
+  </a>
+</div>
+
+<section class="panel repository-list">
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Enabled</th>
+      <th>Routing</th>
+      <th>Workflow steps</th>
+      <th></th>
+    </tr>
+  </thead>
+
+  <tbody>
+    {% for project in projects %}
+      {%
+        set run_state = namespace(
+          can_run=(project.enabled and not project_dispatch_block_reasons.get(project.id)),
+          enabled_steps=0,
+          reason=(
+            "Project is disabled."
+            if not project.enabled
+            else project_dispatch_block_reasons.get(project.id, "")
+          )
+        )
+      %}
+
+      {% for step in project.steps %}
+        {% if step.enabled %}
+          {%
+            set run_state.enabled_steps =
+              run_state.enabled_steps + 1
+          %}
+
+          {% if not (step.inventory or project.inventory) %}
+            {% set run_state.can_run = false %}
+
+            {% if not run_state.reason %}
+              {%
+                set run_state.reason =
+                  "Step {} has no effective inventory."
+                  .format(step.position)
+              %}
+            {% endif %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+
+      {% if run_state.enabled_steps == 0 %}
+        {% set run_state.can_run = false %}
+
+        {% if not run_state.reason %}
+          {%
+            set run_state.reason =
+              "Project has no enabled workflow steps."
+          %}
+        {% endif %}
+      {% endif %}
+
+      <tr id="project-{{ project.id }}">
+        <td>
+          {{ project.name }}
+
+          {% if project.description %}
+            <small>{{ project.description }}</small>
+          {% endif %}
+        </td>
+
+        <td>
+          {% if project.enabled %}
+            Yes
+          {% else %}
+            No
+          {% endif %}
+        </td>
+
+        <td>
+          {% if project.runner_routing == "remote_any" %}
+            Any remote runner
+          {% elif project.runner_routing == "remote_site" %}
+            Site: <strong>{{ project.runner_site }}</strong>
+          {% elif project.runner_routing == "remote_runner" %}
+            {% if project.runner %}
+              <strong>{{ project.runner.name }}</strong>
+            {% else %}
+              <strong>Missing runner</strong>
+            {% endif %}
+          {% elif project.runner_routing == "remote_crew" %}
+            {% if project.default_runner_crew %}
+              Crew: <strong>{{ project.default_runner_crew.name }}</strong>
+            {% else %}
+              <strong>Missing Runner Crew</strong>
+            {% endif %}
+          {% elif project.runner_routing == "inventory" %}
+            Inventory host variables
+          {% else %}
+            Built-in local
+          {% endif %}
+        </td>
+
+        <td class="project-steps-cell">
+          {% if project.steps %}
+            {% for step in project.steps | sort(attribute="position") %}
+              {% set effective_inventory =
+                  step.inventory or project.inventory
+              %}
+
+              <div
+                class="project-step-summary
+                       {% if not step.enabled %}
+                       project-step-disabled
+                       {% endif %}"
+                {% if not loop.first %}hidden{% endif %}
+                {% if not loop.first %}data-project-extra-step{% endif %}
+              >
+                <div class="project-step-summary-heading">
+                  <strong>
+                    {{ step.position }}.
+                    {{ step.name }}
+                    {% set dependency_positions = step.get_dependency_positions() %}
+                    <small>Depends on: {% if dependency_positions %}{{ dependency_positions|join(', ') }}{% else %}none{% endif %}</small>
+                  </strong>
+
+                  {% if not step.enabled %}
+                    <span class="project-step-state">
+                      Disabled
+                    </span>
+                  {% endif %}
+                </div>
+
+                <code class="project-step-playbook">
+                  {{ step.playbook }}
+                </code>
+                <small>{{ "Script" if project.execution_type == "shell" else ("Remote Script" if project.execution_type == "remote_shell" else "Ansible") }}</small>
+
+                <div class="project-step-metadata">
+                  <span>
+                    Repository:
+                    {% if step.repository %}
+                      <strong>{{ step.repository.name }}</strong>
+                    {% else %}
+                      <strong>None</strong>
+                    {% endif %}
+                  </span>
+
+                  <span>
+                    Inventory:
+                    {% if effective_inventory %}
+                      <strong>{{ effective_inventory.name }}</strong>
+
+                      {% if step.inventory_id %}
+                        <span
+                          class="project-step-inventory-source"
+                          title="This step overrides the project default inventory"
+                        >
+                          override
+                        </span>
+                      {% else %}
+                        <span
+                          class="project-step-inventory-source"
+                          title="Inherited from the project default inventory"
+                        >
+                          project default
+                        </span>
+                      {% endif %}
+                    {% else %}
+                      <strong
+                        class="project-step-missing-inventory"
+                        title="This enabled step cannot run without an inventory"
+                      >
+                        None — cannot run
+                      </strong>
+                    {% endif %}
+                  </span>
+
+                  {% if step.limit %}
+                    <span>
+                      Limit:
+                      <code>{{ step.limit }}</code>
+                    </span>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+
+            {% if project.steps|length > 1 %}
+              <button
+                class="project-steps-toggle"
+                type="button"
+                aria-expanded="false"
+                data-project-steps-toggle
+                data-project-step-count="{{ project.steps|length - 1 }}"
+              >
+                Show {{ project.steps|length - 1 }} more step{% if project.steps|length != 2 %}s{% endif %}
+              </button>
+            {% endif %}
+          {% else %}
+            No workflow steps
+          {% endif %}
+        </td>
+
+        <td>
+          <details class="action-menu">
+            <summary class="button action-menu-trigger">
+              Actions <span aria-hidden="true">▾</span>
+            </summary>
+            <div class="action-menu-items">
+              <form
+                method="get"
+                action="{{ url_for('main.project_run_preview', project_id=project.id) }}"
+                data-dispatch-progress
+              >
+                <button
+                  class="action-menu-item"
+                  type="submit"
+                  {% if not run_state.can_run %}
+                    disabled
+                    title="{{ run_state.reason }}"
+                  {% endif %}
+                >Dispatch</button>
+              </form>
+
+              <a class="action-menu-item" href="{{ url_for('main.schedule_new', project_id=project.id) }}">Schedule</a>
+
+              {% if project.steps|length > 1 %}
+                <button
+                  class="action-menu-item project-flowchart-open"
+                  type="button"
+                  data-project-id="{{ project.id }}"
+                >Flowchart</button>
+                <script nonce="{{ csp_nonce }}"
+                  type="application/json"
+                  id="project-flowchart-data-{{ project.id }}"
+                >{{ project_flowcharts[project.id]|tojson }}</script>
+              {% endif %}
+
+              <form method="post" action="{{ url_for('main.project_clone', project_id=project.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="action-menu-item" type="submit">Clone</button>
+              </form>
+
+              <a class="action-menu-item" href="{{ url_for('main.project_edit', project_id=project.id) }}">Edit</a>
+
+              <form
+                method="post"
+                action="{{ url_for('main.project_delete', project_id=project.id) }}"
+                data-confirm="Delete this Project and all associated Job history/output? This cannot be undone."
+              >
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="action-menu-item danger" type="submit">Delete</button>
+              </form>
+            </div>
+          </details>
+        </td>
+
+      </tr>
+    {% else %}
+      <tr>
+        <td colspan="4" class="empty">
+          No projects defined.
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% include "_pagination.html" %}
+</section>
+
+<div
+  class="project-flowchart-modal"
+  id="project-flowchart-modal"
+  hidden
+>
+  <div
+    class="project-flowchart-backdrop"
+    data-flowchart-close
+  ></div>
+
+  <section
+    class="project-flowchart-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="project-flowchart-title"
+  >
+    <header class="project-flowchart-header">
+      <div>
+        <h2 id="project-flowchart-title">
+          Project Flowchart
+        </h2>
+        <p id="project-flowchart-subtitle"></p>
+      </div>
+
+      <div class="project-flowchart-header-actions">
+        <button
+          class="button"
+          id="project-flowchart-save"
+          type="button"
+        >
+          Save image
+        </button>
+        <button
+          class="button"
+          id="project-flowchart-close"
+          type="button"
+          aria-label="Close project flowchart"
+        >
+          Close
+        </button>
+      </div>
+    </header>
+
+    <div class="project-flowchart-legend">
+      <span>
+        <i class="flowchart-key success"></i>
+        Success path
+      </span>
+      <span>
+        <i class="flowchart-key failure"></i>
+        Failure path
+      </span>
+      <span>
+        ◇ Result decision
+      </span>
+    </div>
+
+    <div class="project-flowchart-viewport">
+      <div
+        class="project-flowchart-canvas"
+        id="project-flowchart-canvas"
+      ></div>
+    </div>
+  </section>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+document.addEventListener("click", (event) => {
+  const toggle = event.target.closest("[data-project-steps-toggle]");
+  if (!toggle) {
+    return;
+  }
+
+  const cell = toggle.closest(".project-steps-cell");
+  const extraSteps = cell.querySelectorAll("[data-project-extra-step]");
+  const expanded = toggle.getAttribute("aria-expanded") === "true";
+
+  extraSteps.forEach((step) => {
+    step.hidden = expanded;
+  });
+
+  toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+
+  if (expanded) {
+    const count = Number(toggle.dataset.projectStepCount || extraSteps.length);
+    toggle.textContent = `Show ${count} more step${count === 1 ? "" : "s"}`;
+  } else {
+    toggle.textContent = "Collapse";
+  }
+});
+</script>
+
+<script nonce="{{ csp_nonce }}">
+(() => {
+  const modal = document.getElementById(
+    "project-flowchart-modal"
+  );
+  const canvas = document.getElementById(
+    "project-flowchart-canvas"
+  );
+  const title = document.getElementById(
+    "project-flowchart-title"
+  );
+  const subtitle = document.getElementById(
+    "project-flowchart-subtitle"
+  );
+  const closeButton = document.getElementById(
+    "project-flowchart-close"
+  );
+  const saveButton = document.getElementById(
+    "project-flowchart-save"
+  );
+
+  if (!modal || !canvas) {
+    return;
+  }
+
+  const escapeHtml = (value) => {
+    const span = document.createElement("span");
+    span.textContent = value == null ? "" : String(value);
+    return span.innerHTML;
+  };
+
+  const nodeWidth = 220;
+  // Leave enough room for optional badges such as Refresh inventory.
+  // The old 108px height allowed badge-bearing nodes to overflow and
+  // visually corrupt the first row of the flowchart.
+  const nodeHeight = 132;
+  const decisionSize = 62;
+  const horizontalGap = 88;
+  const verticalGap = 104;
+  const margin = 50;
+
+  function closeFlowchart() {
+    modal.hidden = true;
+    canvas.replaceChildren();
+  }
+
+  function safeFilename(value) {
+    const cleaned = String(value || "project")
+      .trim()
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return cleaned || "project";
+  }
+
+  function saveFlowchartImage() {
+    if (!canvas.children.length) {
+      return;
+    }
+
+    const width = Math.ceil(canvas.getBoundingClientRect().width);
+    const height = Math.ceil(canvas.getBoundingClientRect().height);
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    const xhtmlNamespace = "http://www.w3.org/1999/xhtml";
+    const exportSvg = document.createElementNS(svgNamespace, "svg");
+    exportSvg.setAttribute("xmlns", svgNamespace);
+    exportSvg.setAttribute("width", width);
+    exportSvg.setAttribute("height", height);
+    exportSvg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+    const foreignObject = document.createElementNS(
+      svgNamespace,
+      "foreignObject"
+    );
+    foreignObject.setAttribute("x", "0");
+    foreignObject.setAttribute("y", "0");
+    foreignObject.setAttribute("width", "100%");
+    foreignObject.setAttribute("height", "100%");
+
+    const wrapper = document.createElementNS(xhtmlNamespace, "div");
+    wrapper.setAttribute(
+      "style",
+      `width:${width}px;height:${height}px;background:#fff;color:#1f2328;`
+    );
+
+    const style = document.createElementNS(xhtmlNamespace, "style");
+    style.textContent = `
+      * { box-sizing: border-box; }
+      .project-flowchart-canvas {
+        position: relative; margin: 0; min-width: 0; min-height: 0;
+        background: #fff; color: #1f2328;
+      }
+      .project-flowchart-edges {
+        inset: 0; overflow: visible; pointer-events: none; position: absolute;
+      }
+      .flowchart-edge { fill: none; stroke-width: 2.4; }
+      .flowchart-edge.success { stroke: #238636; }
+      .flowchart-edge.failure { stroke: #cf222e; }
+      .flowchart-edge.neutral { stroke: #6e7781; }
+      #flowchart-arrow-success path { fill: #238636; }
+      #flowchart-arrow-failure path { fill: #cf222e; }
+      #flowchart-arrow-neutral path { fill: #6e7781; }
+      .flowchart-edge-label {
+        font: 700 12px sans-serif; paint-order: stroke; stroke: #fff;
+        stroke-width: 5px; stroke-linejoin: round;
+      }
+      .flowchart-edge-label.success { fill: #238636; }
+      .flowchart-edge-label.failure { fill: #cf222e; }
+      .project-flowchart-node {
+        background: #fff; border: 2px solid #d0d7de; border-radius: 0.45rem;
+        display: flex; flex-direction: column; gap: 0.22rem;
+        justify-content: flex-start; padding: 0.72rem 0.8rem;
+        position: absolute; text-align: center; z-index: 2;
+        font-family: sans-serif;
+      }
+      .project-flowchart-node.failure-only { border-color: #cf222e; }
+      .project-flowchart-node.disabled { opacity: 0.5; }
+      .project-flowchart-node code {
+        font: 0.76rem monospace; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .project-flowchart-node strong {
+        line-height: 1.2; min-height: 2.4em; font-family: sans-serif;
+      }
+      .project-flowchart-node small {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-family: sans-serif;
+      }
+      .flowchart-node-badges {
+        display: flex; flex-wrap: wrap; gap: 0.25rem; justify-content: center;
+      }
+      .flowchart-node-badge {
+        border: 1px solid currentColor; border-radius: 999px;
+        font: 0.62rem sans-serif; padding: 0.12rem 0.32rem;
+        text-transform: uppercase;
+      }
+      .project-flowchart-decision {
+        align-items: center; background: #fff; border: 2px solid #6e7781;
+        display: flex; justify-content: center; position: absolute;
+        transform: rotate(45deg); z-index: 2;
+      }
+      .project-flowchart-decision span {
+        font: 700 0.7rem sans-serif; transform: rotate(-45deg);
+      }
+    `;
+
+    const clone = canvas.cloneNode(true);
+    clone.style.width = `${width}px`;
+    clone.style.height = `${height}px`;
+    clone.style.margin = "0";
+    wrapper.appendChild(style);
+    wrapper.appendChild(clone);
+    foreignObject.appendChild(wrapper);
+    exportSvg.appendChild(foreignObject);
+
+    const source = new XMLSerializer().serializeToString(exportSvg);
+    const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${safeFilename(subtitle.textContent)}-workflow.svg`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function dependencyDepths(nodes, edges) {
+    const incoming = new Map();
+    const depth = new Map();
+
+    nodes.forEach((node) => {
+      incoming.set(node.position, []);
+      depth.set(node.position, 0);
+    });
+
+    edges.forEach((edge) => {
+      if (incoming.has(edge.to)) {
+        incoming.get(edge.to).push(edge.from);
+      }
+    });
+
+    let changed = true;
+    let passes = 0;
+
+    while (changed && passes < nodes.length + 2) {
+      changed = false;
+      passes += 1;
+
+      nodes.forEach((node) => {
+        const parents = incoming.get(node.position) || [];
+        if (!parents.length) {
+          return;
+        }
+
+        const nextDepth = Math.max(
+          ...parents.map((position) => (
+            depth.get(position) || 0
+          ))
+        ) + 1;
+
+        if (nextDepth > depth.get(node.position)) {
+          depth.set(node.position, nextDepth);
+          changed = true;
+        }
+      });
+    }
+
+    return depth;
+  }
+
+  function renderFlowchart(spec) {
+    canvas.replaceChildren();
+
+    const nodes = spec.nodes || [];
+    const edges = spec.edges || [];
+
+    title.textContent = "Project Flowchart";
+    subtitle.textContent = spec.project_name || "";
+
+    if (!nodes.length) {
+      canvas.innerHTML =
+        '<p class="empty">This Project has no workflow steps.</p>';
+      return;
+    }
+
+    const outgoing = new Map();
+
+    nodes.forEach((node) => {
+      outgoing.set(
+        node.position,
+        { success: [], failure: [] }
+      );
+    });
+
+    edges.forEach((edge) => {
+      const entry = outgoing.get(edge.from);
+      if (entry && entry[edge.condition]) {
+        entry[edge.condition].push(edge);
+      }
+    });
+
+    const decisionSources = new Set();
+
+    outgoing.forEach((entry, position) => {
+      if (entry.failure.length) {
+        decisionSources.add(position);
+      }
+    });
+
+    const baseDepth = dependencyDepths(nodes, edges);
+    const ranks = new Map();
+
+    nodes.forEach((node) => {
+      ranks.set(
+        `step-${node.position}`,
+        (baseDepth.get(node.position) || 0) * 2
+      );
+
+      if (decisionSources.has(node.position)) {
+        ranks.set(
+          `decision-${node.position}`,
+          (baseDepth.get(node.position) || 0) * 2 + 1
+        );
+      }
+    });
+
+    const renderNodes = [];
+
+    nodes.forEach((node) => {
+      renderNodes.push({
+        key: `step-${node.position}`,
+        kind: "step",
+        step: node,
+      });
+
+      if (decisionSources.has(node.position)) {
+        renderNodes.push({
+          key: `decision-${node.position}`,
+          kind: "decision",
+          step: node,
+        });
+      }
+    });
+
+    const byRank = new Map();
+
+    renderNodes.forEach((item) => {
+      const rank = ranks.get(item.key) || 0;
+      if (!byRank.has(rank)) {
+        byRank.set(rank, []);
+      }
+      byRank.get(rank).push(item);
+    });
+
+    byRank.forEach((items) => {
+      items.sort((a, b) => (
+        a.step.position - b.step.position
+      ));
+    });
+
+    const maxItems = Math.max(
+      ...Array.from(byRank.values()).map(
+        (items) => items.length
+      )
+    );
+    const maxRank = Math.max(
+      ...Array.from(byRank.keys())
+    );
+
+    const width = Math.max(
+      900,
+      margin * 2
+        + maxItems * nodeWidth
+        + Math.max(0, maxItems - 1) * horizontalGap
+    );
+    const rowHeight = nodeHeight + verticalGap;
+    const height = (
+      margin * 2
+      + (maxRank + 1) * rowHeight
+    );
+
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const positions = new Map();
+
+    byRank.forEach((items, rank) => {
+      const rowWidth = (
+        items.length * nodeWidth
+        + Math.max(0, items.length - 1) * horizontalGap
+      );
+      const rowStart = (width - rowWidth) / 2;
+
+      items.forEach((item, index) => {
+        const isDecision = item.kind === "decision";
+        const itemWidth = (
+          isDecision
+          ? decisionSize
+          : nodeWidth
+        );
+        const x = (
+          rowStart
+          + index * (nodeWidth + horizontalGap)
+          + (nodeWidth - itemWidth) / 2
+        );
+        const y = margin + rank * rowHeight;
+
+        positions.set(item.key, {
+          x,
+          y,
+          width: itemWidth,
+          height: (
+            isDecision
+            ? decisionSize
+            : nodeHeight
+          ),
+        });
+      });
+    });
+
+    const svg = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "svg"
+    );
+    svg.setAttribute("class", "project-flowchart-edges");
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
+    svg.setAttribute(
+      "viewBox",
+      `0 0 ${width} ${height}`
+    );
+
+    svg.innerHTML = `
+      <defs>
+        <marker
+          id="flowchart-arrow-success"
+          markerWidth="8"
+          markerHeight="8"
+          refX="7"
+          refY="4"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M0,0 L8,4 L0,8 z"></path>
+        </marker>
+        <marker
+          id="flowchart-arrow-failure"
+          markerWidth="8"
+          markerHeight="8"
+          refX="7"
+          refY="4"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M0,0 L8,4 L0,8 z"></path>
+        </marker>
+        <marker
+          id="flowchart-arrow-neutral"
+          markerWidth="8"
+          markerHeight="8"
+          refX="7"
+          refY="4"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M0,0 L8,4 L0,8 z"></path>
+        </marker>
+      </defs>
+    `;
+
+    function drawEdge(
+      fromKey,
+      toKey,
+      condition,
+      label,
+      branchSide = null
+    ) {
+      const from = positions.get(fromKey);
+      const to = positions.get(toKey);
+
+      if (!from || !to) {
+        return;
+      }
+
+      let x1 = from.x + from.width / 2;
+      let y1 = from.y + from.height;
+
+      if (branchSide === "left") {
+        x1 = from.x + 5;
+        y1 = from.y + from.height / 2 + 5;
+      } else if (branchSide === "right") {
+        x1 = from.x + from.width - 5;
+        y1 = from.y + from.height / 2 + 5;
+      }
+
+      const x2 = to.x + to.width / 2;
+      const y2 = to.y;
+      const midY = y1 + (y2 - y1) * 0.48;
+
+      const path = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path"
+      );
+
+      path.setAttribute(
+        "d",
+        `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`
+      );
+      path.setAttribute(
+        "class",
+        `flowchart-edge ${condition}`
+      );
+      path.setAttribute(
+        "marker-end",
+        `url(#flowchart-arrow-${condition})`
+      );
+      svg.appendChild(path);
+
+      if (label) {
+        const text = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "text"
+        );
+
+        const labelX = (
+          branchSide === "left"
+          ? x1 - 12
+          : branchSide === "right"
+            ? x1 + 12
+            : (x1 + x2) / 2 + 8
+        );
+        const labelY = (
+          branchSide
+          ? y1 + 25
+          : midY - 7
+        );
+
+        text.setAttribute("x", labelX);
+        text.setAttribute("y", labelY);
+        text.setAttribute(
+          "text-anchor",
+          branchSide === "left" ? "end" : "start"
+        );
+        text.setAttribute(
+          "class",
+          `flowchart-edge-label ${condition}`
+        );
+
+        if (
+          condition === "failure"
+          && label === "Failure"
+        ) {
+          const firstLine = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "tspan"
+          );
+          firstLine.setAttribute("x", labelX);
+          firstLine.setAttribute("dy", "0");
+          firstLine.textContent = "Failure";
+
+          const secondLine = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "tspan"
+          );
+          secondLine.setAttribute("x", labelX);
+          secondLine.setAttribute("dy", "1.15em");
+          secondLine.textContent = "Only";
+
+          text.appendChild(firstLine);
+          text.appendChild(secondLine);
+        } else {
+          text.textContent = label;
+        }
+
+        svg.appendChild(text);
+      }
+    }
+
+    decisionSources.forEach((position) => {
+      drawEdge(
+        `step-${position}`,
+        `decision-${position}`,
+        "neutral",
+        ""
+      );
+    });
+
+    const labelledDecisionBranches = new Set();
+
+    edges.forEach((edge) => {
+      const usesDecision = decisionSources.has(
+        edge.from
+      );
+      const branchKey = (
+        `${edge.from}-${edge.condition}`
+      );
+      const showBranchLabel = (
+        usesDecision
+        && !labelledDecisionBranches.has(
+          branchKey
+        )
+      );
+
+      if (showBranchLabel) {
+        labelledDecisionBranches.add(
+          branchKey
+        );
+      }
+
+      drawEdge(
+        usesDecision
+          ? `decision-${edge.from}`
+          : `step-${edge.from}`,
+        `step-${edge.to}`,
+        edge.condition,
+        showBranchLabel
+          ? (
+              edge.condition === "failure"
+              ? "Failure"
+              : "Success"
+            )
+          : "",
+        usesDecision
+          ? (
+              edge.condition === "failure"
+              ? "left"
+              : "right"
+            )
+          : null
+      );
+    });
+
+    canvas.appendChild(svg);
+
+    renderNodes.forEach((item) => {
+      const position = positions.get(item.key);
+      const element = document.createElement("div");
+
+      if (item.kind === "decision") {
+        element.className =
+          "project-flowchart-decision";
+        element.innerHTML =
+          '<span>Result?</span>';
+      } else {
+        const step = item.step;
+        element.className = (
+          "project-flowchart-node"
+          + (step.enabled ? "" : " disabled")
+          + (step.failure_only ? " failure-only" : "")
+        );
+
+        const badges = [];
+
+        if (step.refresh_inventory_after) {
+          badges.push(
+            '<span class="flowchart-node-badge">Refresh inventory</span>'
+          );
+        }
+
+        element.innerHTML = `
+          <strong>
+            ${step.position}. ${escapeHtml(step.name)}
+          </strong>
+          <code>${escapeHtml(step.artifact)}</code>
+          <small>
+            ${escapeHtml(step.inventory || "No inventory")}
+            ${step.inventory_override ? " · override" : ""}
+          </small>
+          <div class="flowchart-node-badges">
+            ${badges.join("")}
+          </div>
+        `;
+      }
+
+      element.style.left = `${position.x}px`;
+      element.style.top = `${position.y}px`;
+      element.style.width = `${position.width}px`;
+      element.style.height = `${position.height}px`;
+
+      canvas.appendChild(element);
+    });
+  }
+
+  document.querySelectorAll(
+    ".project-flowchart-open"
+  ).forEach((button) => {
+    button.addEventListener("click", () => {
+      const projectId = button.dataset.projectId;
+      const dataElement = document.getElementById(
+        `project-flowchart-data-${projectId}`
+      );
+
+      if (!dataElement) {
+        return;
+      }
+
+      renderFlowchart(
+        JSON.parse(dataElement.textContent)
+      );
+      modal.hidden = false;
+      closeButton.focus();
+    });
+  });
+
+  const requestedFlowchart = new URLSearchParams(
+    window.location.search
+  ).get("flowchart");
+  if (requestedFlowchart) {
+    const requestedButton = document.querySelector(
+      `.project-flowchart-open[data-project-id="${CSS.escape(requestedFlowchart)}"]`
+    );
+    if (requestedButton) {
+      requestedButton.click();
+    }
+  }
+
+  if (saveButton) {
+    saveButton.addEventListener(
+      "click",
+      saveFlowchartImage
+    );
+  }
+
+  closeButton.addEventListener(
+    "click",
+    closeFlowchart
+  );
+
+  modal.querySelectorAll(
+    "[data-flowchart-close]"
+  ).forEach((element) => {
+    element.addEventListener(
+      "click",
+      closeFlowchart
+    );
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (
+      event.key === "Escape"
+      && !modal.hidden
+    ) {
+      closeFlowchart();
+    }
+  });
+})();
+</script>
+
+{% endblock %}

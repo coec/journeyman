@@ -1,0 +1,46 @@
+# Copy to /etc/journeyman/journeyman.yml and protect with mode 0640.
+version: 1
+
+application:
+  config_class: app.config.ProductionConfig
+
+security:
+  # The top-level journeyman.service creates and manages this key. Existing
+  # deployments may retain secret_key temporarily for first-start migration;
+  # the managed key file takes precedence once it exists.
+  session_signing_key_file: /etc/journeyman/session-signing.key
+  session_signing_key_metadata_file: /etc/journeyman/session-signing-key.json
+  credential_key_file: /etc/journeyman/credential.key
+
+authentication:
+  fallback_admin_password_hash_file: /etc/journeyman/fallback-admin-password.hash
+  directory_admin_group_name: Journeyman Admins
+  directory_user_group_name: Journeyman Users
+
+database:
+  # PostgreSQL is recommended for operational installations.
+  uri: sqlite:////opt/journeyman/instance/journeyman.db
+
+paths:
+  repository_root: /var/lib/journeyman/repos
+  log_root: /var/log/journeyman
+  job_root: /var/lib/journeyman/jobs
+
+environments:
+  managed_root: /opt/journeyman/environments
+  # python_interpreters: /usr/bin/python3.14
+
+web:
+  # public_fqdn: journeyman.example.com
+  # tls_certificate_path: /etc/journeyman/tls/journeyman-fullchain.pem
+  # tls_private_key_path: /etc/journeyman/tls/journeyman-key.pem
+  tls_chain_path: ""
+  https_port: 443
+
+outbound:
+  # A YAML list is accepted and converted to the existing internal allowlist.
+  # allowed_hosts:
+  #   - git.example.com
+  #   - satellite.example.com
+  #   - proxy.example.com:8443
+  allowed_hosts: []

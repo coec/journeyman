@@ -1,0 +1,8 @@
+# Journeyman PostgreSQL release dependency lock.
+-r requirements.lock
+
+# Psycopg 3 and its matching binary optimisation package are deliberately pinned
+# together. Production/release installs use this lock rather than resolving
+# "psycopg[binary]" again at install time.
+psycopg==3.3.4
+psycopg-binary==3.3.4

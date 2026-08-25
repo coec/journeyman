@@ -1,0 +1,1454 @@
+{% extends "base.html" %}
+
+{% block title %}
+{{ "Edit" if package else "Add" }} Package · Journeyman
+{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>
+      {{ "Edit Package" if package else "Add Package" }}
+    </h1>
+
+    <p>
+      Package a Project for controlled user execution.
+    </p>
+  </div>
+</div>
+
+<section class="panel form-panel package-form-panel">
+  {% if not projects %}
+    <div class="flash error">
+      No Projects are available. Create a Project before
+      creating a Package.
+    </div>
+  {% endif %}
+
+  <form
+    method="post"
+    id="project-package-form"
+  >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="editor-tabs-shell package-editor-shell">
+      <div class="editor-tabs-scroll" role="tablist" aria-label="Package editor">
+        <button class="package-editor-tab active" type="button" data-package-tab="package" role="tab" aria-selected="true" aria-controls="package-main-panel">Package</button>
+        <button class="package-editor-tab" type="button" data-package-tab="permissions" role="tab" aria-selected="false" aria-controls="package-permissions-panel">Dispatch Permissions</button>
+        {% if package %}<a class="package-editor-tab" href="{{ url_for('main.package_notifications', package_id=package.id) }}">Notifications</a>{% endif %}
+        <div id="package-input-tabs" class="package-input-tabs" role="presentation"></div>
+      </div>
+      <div class="editor-tabs-actions">
+        <button class="package-editor-tab add-package-input-tab" type="button" id="add-package-input">＋ Add Input</button>
+      </div>
+    </div>
+
+    <div id="package-main-panel" class="project-tab-panel active" role="tabpanel">
+    <label>
+      Name
+
+      <input
+        name="name"
+        maxlength="120"
+        required
+        value="{{ form_data.name }}"
+      >
+    </label>
+
+    <label>
+      Description
+
+      <textarea
+        name="description"
+        rows="3"
+        maxlength="500"
+      >{{ form_data.description }}</textarea>
+    </label>
+
+    <label>
+      Project
+
+      <select
+        name="project_id"
+        required
+      >
+        <option value="">
+          Select a Project
+        </option>
+
+        {% for project_option in projects %}
+          <option
+            value="{{ project_option.id }}"
+            {% if
+              form_data.project_id
+              == project_option.id
+            %}
+              selected
+            {% endif %}
+          >
+            {{ project_option.name }}
+
+            {% if not project_option.enabled %}
+              — Disabled
+            {% endif %}
+          </option>
+        {% endfor %}
+      </select>
+
+      <small>
+        The Project supplies repositories, playbooks,
+        credentials and inventories.
+      </small>
+    </label>
+
+    <label class="checkbox-row">
+      <input
+        type="checkbox"
+        name="allow_as_reaction"
+        {% if form_data.allow_as_reaction %}checked{% endif %}
+      >
+      <span>
+        <strong>Allow as Reaction</strong><br>
+        <small>
+          Allows this Package to be invoked automatically by a configured Reactor.
+          Normal Package input validation and execution controls still apply.
+        </small>
+      </span>
+    </label>
+
+    <label>
+      Access mode
+
+      <select name="access_mode">
+        {% for value, label in access_choices %}
+          <option
+            value="{{ value }}"
+            {% if form_data.access_mode == value %}
+              selected
+            {% endif %}
+          >
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+
+      <small>
+        Restricted Packages require explicit User or Team
+        permissions before dispatch is enabled.
+      </small>
+    </label>
+    <label>
+      Fixed variables
+
+      <textarea
+        name="fixed_vars_yaml"
+        rows="7"
+        spellcheck="false"
+        placeholder="maintenance_mode: true"
+      >{{ form_data.fixed_vars_yaml }}</textarea>
+
+      <small>
+        YAML mapping of values users cannot override. Do not
+        place passwords, tokens or other secrets here.
+      </small>
+    </label>
+    <div class="form-section-heading">
+      <div>
+        <h2>Prompted Inputs</h2>
+
+        <p>
+          Typed and validated values requested when this Package is dispatched.
+          Each prompted input is edited on its own tab.
+        </p>
+
+        {% if package and package.project and package.project.execution_type in ["shell", "remote_shell"] %}
+          <p>
+            Script inputs are supplied only as child-process
+            environment variables. For example, <code>device</code>
+            becomes <code>JOURNEYMAN_INPUT_DEVICE</code>. Boolean values
+            are <code>true</code> or <code>false</code>.
+          </p>
+        {% endif %}
+      </div>
+
+    </div>
+    <label>
+      Warning message
+
+      <textarea
+        name="warning_message"
+        rows="3"
+      >{{ form_data.warning_message }}</textarea>
+
+      <small>
+        Displayed prominently before the Package is dispatched.
+      </small>
+    </label>
+
+    <label class="checkbox-label">
+      <input
+        type="checkbox"
+        name="confirmation_required"
+        {% if form_data.confirmation_required %}
+          checked
+        {% endif %}
+      >
+
+      Require confirmation
+    </label>
+
+    <label>
+      Confirmation message
+
+      <textarea
+        name="confirmation_message"
+        rows="3"
+      >{{ form_data.confirmation_message }}</textarea>
+
+      <small>
+        Action-specific confirmation shown immediately before
+        queueing the Job.
+      </small>
+    </label>
+
+    <label class="checkbox-label">
+      <input
+        type="checkbox"
+        name="enabled"
+        {% if form_data.enabled %}
+          checked
+        {% endif %}
+      >
+
+      Enabled
+    </label>
+    </div>
+
+    <div id="package-permissions-panel" class="project-tab-panel" role="tabpanel" hidden>
+    <div class="form-section-heading">
+      <div>
+        <h2>Dispatch Permissions</h2>
+
+        <p>
+          Select eligible Journeyman users or registered AD Teams.
+          Users are read from the configured Journeyman role groups.
+        </p>
+      </div>
+
+      <button
+        class="button"
+        type="button"
+        id="add-package-permission"
+        {% if not permission_choices %}disabled{% endif %}
+      >
+        ＋ Add Permission
+      </button>
+    </div>
+
+    {% if permission_directory_error %}
+      <div class="flash error">
+        Active Directory users could not be loaded:
+        {{ permission_directory_error }}
+        Registered Teams remain available, but direct User grants
+        cannot be added until the directory is reachable.
+      </div>
+    {% elif not permission_choices %}
+      <div class="flash error">
+        No eligible Users or registered Teams are available. Configure
+        LDAP role groups under Settings, then register required AD groups
+        on the Teams page.
+      </div>
+    {% endif %}
+
+    <div id="package-permissions">
+      {% for permission in form_data.permissions %}
+        <section
+          class="package-permission-row panel"
+          data-package-permission-row
+        >
+          <input
+            type="hidden"
+            name="package_permission_row"
+            value="{{ permission.row_key }}"
+          >
+
+          <label>
+            User or Team
+
+            <select
+              name="package_permission_{{ permission.row_key }}_principal_key"
+              required
+            >
+              <option value="">Select a User or Team</option>
+              {% set selected_permission = namespace(found=false) %}
+              <optgroup label="Users">
+                {% for principal in permission_choices if principal.kind == "user" %}
+                  <option
+                    value="{{ principal.key }}"
+                    {% if permission.principal_key == principal.key %}
+                      selected
+                      {% set selected_permission.found = true %}
+                    {% endif %}
+                  >
+                    {{ principal.label }} — {{ principal.description }}
+                  </option>
+                {% endfor %}
+              </optgroup>
+              <optgroup label="Teams">
+                {% for principal in permission_choices if principal.kind == "team" %}
+                  <option
+                    value="{{ principal.key }}"
+                    {% if permission.principal_key == principal.key %}
+                      selected
+                      {% set selected_permission.found = true %}
+                    {% endif %}
+                  >
+                    {{ principal.label }} — {{ principal.description }}
+                  </option>
+                {% endfor %}
+              </optgroup>
+              {% if not selected_permission.found and permission.principal_name %}
+                <option value="{{ permission.principal_key }}" selected>
+                  Unavailable: {{ permission.principal_name }}
+                </option>
+              {% endif %}
+            </select>
+          </label>
+
+          <button
+            class="button danger package-permission-remove"
+            type="button"
+          >
+            Remove
+          </button>
+        </section>
+      {% endfor %}
+    </div>
+
+    <div class="package-permission-help">
+      <small>
+        No explicit permissions means administrators only.
+        Team membership remains authoritative in Active Directory.
+        Submitted permissions are validated server-side; arbitrary
+        usernames and group names are not accepted.
+      </small>
+    </div>
+    </div>
+
+    <div id="package-inputs">
+      {% for input in form_data.inputs %}
+        <section
+          class="package-input-row panel project-tab-panel"
+          data-package-input-row
+          role="tabpanel"
+          hidden
+        >
+          <input
+            type="hidden"
+            name="package_input_row"
+            value="{{ input.row_key }}"
+          >
+
+          <div class="package-input-header">
+            <strong>
+              Input
+              <span class="package-input-number">
+                {{ loop.index }}
+              </span>
+            </strong>
+
+            <div class="package-input-actions">
+              <button
+                class="icon-button package-input-up"
+                type="button"
+                title="Move up"
+              >
+                ↑
+              </button>
+
+              <button
+                class="icon-button package-input-down"
+                type="button"
+                title="Move down"
+              >
+                ↓
+              </button>
+
+              <button
+                class="button danger package-input-remove"
+                type="button"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+
+          <div class="package-input-grid">
+            <label>
+              Variable name
+
+              <input
+                name="package_input_{{ input.row_key }}_variable_name"
+                maxlength="128"
+                required
+                value="{{ input.variable_name }}"
+                placeholder="device"
+              >
+            </label>
+
+            <label>
+              Label
+
+              <input
+                name="package_input_{{ input.row_key }}_label"
+                maxlength="160"
+                required
+                value="{{ input.label }}"
+                placeholder="Device"
+              >
+            </label>
+
+            <label>
+              <span class="field-label-with-help">
+                Input type
+                <span
+                  class="help-tooltip"
+                  tabindex="0"
+                  aria-label="Input type help"
+                >
+                  ?
+                  <span class="help-tooltip-content" role="tooltip">
+                    <strong>Input types</strong>
+                    <span><b>Text:</b> one text value.</span>
+                    <span><b>Integer:</b> a whole number.</span>
+                    <span><b>Boolean:</b> a yes/no checkbox.</span>
+                    <span><b>Choice:</b> one configured choice.</span>
+                    <span><b>Password / secret:</b> masked text that is not shown in dispatch confirmation.</span>
+                    <span><b>Email address(es):</b> one or more comma, semicolon, or newline-separated email addresses; every address is validated.</span><span><b>URL:</b> an http:// or https:// URL without embedded credentials.</span><span><b>File path:</b> a path value; it need not exist on the Journeyman server.</span>
+                  </span>
+                </span>
+              </span>
+
+              <select
+                class="package-input-type"
+                name="package_input_{{ input.row_key }}_input_type"
+              >
+                {% for value, label in (
+                  ("text", "Text"),
+                  ("integer", "Integer"),
+                  ("boolean", "Boolean"),
+                  ("choice", "Choice"),
+                  ("password", "Password / secret"),
+                  ("email_addresses", "Email address(es)"), ("url", "URL"), ("file_path", "File path")
+                ) %}
+                  <option
+                    value="{{ value }}"
+                    {% if input.input_type == value %}
+                      selected
+                    {% endif %}
+                  >
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <label>
+              Display role
+
+              <select
+                name="package_input_{{ input.row_key }}_display_role"
+              >
+                {% for value, label in (
+                  ("normal", "Normal"),
+                  ("operational_target", "Operational target"),
+                  ("confirmation_critical", "Confirmation critical")
+                ) %}
+                  <option
+                    value="{{ value }}"
+                    {% if input.display_role == value %}
+                      selected
+                    {% endif %}
+                  >
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <label>
+              Binding
+
+              <select
+                name="package_input_{{ input.row_key }}_binding_type"
+              >
+                <option
+                  value="extra_var"
+                  {% if input.binding_type == "extra_var" %}
+                    selected
+                  {% endif %}
+                >
+                  Runtime variable
+                </option>
+
+                <option
+                  value="step_limit"
+                  {% if input.binding_type == "step_limit" %}
+                    selected
+                  {% endif %}
+                >
+                  Step limit
+                </option>
+              </select>
+
+              <small>
+                Runtime variables are supplied to the Project at dispatch.
+                Ansible receives them as extra variables; Script execution
+                receives the same declared Package inputs through its
+                JOURNEYMAN_INPUT_* environment variables. Step limit binds
+                this input to an Ansible step limit.
+              </small>
+            </label>
+
+            <label>
+              Inventory binding name
+
+              <input
+                name="package_input_{{ input.row_key }}_inventory_binding_name"
+                value="{{ input.inventory_binding_name or input.variable_name }}"
+                placeholder="{{ input.variable_name }}"
+              >
+
+              <small>
+                When Bind to inventories is enabled, this validated Package
+                value is published as an immutable inventory constant for the
+                whole Job. Filtered inventories may reference it as
+                <code>{{ '{{' }} name {{ '}}' }}</code>.
+              </small>
+            </label>
+
+            <div class="package-input-checkboxes">
+              <label class="checkbox-label">
+                <input
+                  type="checkbox"
+                  name="package_input_{{ input.row_key }}_bind_to_inventory"
+                  {% if input.bind_to_inventory %}
+                    checked
+                  {% endif %}
+                >
+
+                Bind to inventories
+              </label>
+
+              <label class="checkbox-label">
+                <input
+                  type="checkbox"
+                  name="package_input_{{ input.row_key }}_required"
+                  {% if input.required %}
+                    checked
+                  {% endif %}
+                >
+
+                Required
+              </label>
+
+              <label class="checkbox-label">
+                <input
+                  class="package-input-secret"
+                  type="checkbox"
+                  name="package_input_{{ input.row_key }}_is_secret"
+                  {% if input.is_secret %}
+                    checked
+                  {% endif %}
+                >
+
+                Secret
+              </label>
+            </div>
+
+            <label class="package-input-full">
+              Help text
+
+              <textarea
+                name="package_input_{{ input.row_key }}_help_text"
+                rows="2"
+              >{{ input.help_text }}</textarea>
+            </label>
+
+            <label>
+              Default value
+
+              <textarea
+                name="package_input_{{ input.row_key }}_default_value_yaml"
+                rows="4"
+                spellcheck="false"
+                placeholder="10"
+              >{{ input.default_value_yaml }}</textarea>
+
+              <small>
+                YAML scalar. Use quotes when a value such as
+                "yes" must remain text.
+              </small>
+            </label>
+
+            <label
+              class="package-input-choices"
+              {% if input.input_type != "choice" %}
+                hidden
+              {% endif %}
+            >
+              Choices
+
+              <textarea
+                name="package_input_{{ input.row_key }}_choices_yaml"
+                rows="8"
+                spellcheck="false"
+                placeholder="- value: shut&#10;  label: Shut"
+              >{{ input.choices_yaml }}</textarea>
+
+              <small>
+                YAML list of values, or value/label mappings.
+              </small>
+            </label>
+
+            <label>
+              <span class="field-label-with-help">
+                Validation
+                <span
+                  class="help-tooltip"
+                  tabindex="0"
+                  aria-label="Validation help"
+                >
+                  ?
+                  <span class="help-tooltip-content" role="tooltip">
+                    <strong>Validation examples</strong>
+                    <span><b>Text:</b> minimum_length, maximum_length and pattern.</span>
+                    <span><b>Integer:</b> minimum and maximum.</span>
+                    <span><b>Choice:</b> static Choices, or choices_from_hostvar for a dependent inventory-host field.</span>
+                    <span><b>Email address(es):</b> every supplied address is validated automatically.</span>
+                    <code>minimum_length: 3
+maximum_length: 40
+pattern: '^[A-Za-z0-9._-]+$'</code>
+                    <code>minimum: 1
+maximum: 300</code>
+                    <code>choices_from_hostvar:
+  host_input: device
+  path: zabbix.network_interfaces
+  value_key: name
+  label_keys: [name, alias]</code>
+                  </span>
+                </span>
+              </span>
+
+              <textarea
+                name="package_input_{{ input.row_key }}_validation_yaml"
+                rows="6"
+                spellcheck="false"
+                placeholder="minimum: 1&#10;maximum: 300"
+              >{{ input.validation_yaml }}</textarea>
+
+              <small>
+                Text: minimum_length, maximum_length, pattern.
+                Integer: minimum, maximum.
+              </small>
+            </label>
+
+            <label>
+              <span class="field-label-with-help">
+                Conditions
+                <span
+                  class="help-tooltip"
+                  tabindex="0"
+                  aria-label="Conditions help"
+                >
+                  ?
+                  <span class="help-tooltip-content" role="tooltip">
+                    <strong>Condition options</strong>
+                    <span><b>visible_when:</b> show this input only when its condition matches.</span>
+                    <span><b>required_when:</b> require this input only when its condition matches.</span>
+                    <span>A normal YAML mapping is an implicit <b>AND</b>. A YAML list used as a variable value means that variable may equal any value in the list.</span>
+                    <span><b>all:</b> every nested condition must match.</span>
+                    <span><b>any:</b> at least one nested condition must match.</span>
+                    <span><b>not:</b> the nested condition must not match.</span>
+                    <span>Conditions may be nested and may reference only inputs appearing above this one.</span>
+                    <code>required_when:
+  any:
+    - desc: true
+    - var_action: shutnoshut
+
+visible_when:
+  not:
+    var_action: shutnoshut</code>
+                  </span>
+                </span>
+              </span>
+
+              <textarea
+                name="package_input_{{ input.row_key }}_conditions_yaml"
+                rows="9"
+                spellcheck="false"
+                placeholder="required_when:&#10;  any:&#10;    - desc: true&#10;    - var_action: shutnoshut"
+              >{{ input.conditions_yaml }}</textarea>
+
+              <small>
+                Supports visible_when and required_when. A
+                condition may reference an earlier input.
+              </small>
+            </label>
+          </div>
+        </section>
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button
+        class="button primary"
+        type="submit"
+        {% if not projects %}
+          disabled
+        {% endif %}
+      >
+        {{ "Save Package" if package else "Add Package" }}
+      </button>
+
+      <a
+        class="button"
+        href="{{ url_for('main.packages') }}"
+      >
+        Cancel
+      </a>
+    </div>
+  </form>
+</section>
+
+<template id="package-permission-template">
+  <section
+    class="package-permission-row panel"
+    data-package-permission-row
+  >
+    <input
+      type="hidden"
+      name="package_permission_row"
+      value="__PERMISSION_KEY__"
+    >
+
+    <label>
+      User or Team
+
+      <select
+        name="package_permission___PERMISSION_KEY___principal_key"
+        required
+      >
+        <option value="">Select a User or Team</option>
+        <optgroup label="Users">
+          {% for principal in permission_choices if principal.kind == "user" %}
+            <option value="{{ principal.key }}">
+              {{ principal.label }} — {{ principal.description }}
+            </option>
+          {% endfor %}
+        </optgroup>
+        <optgroup label="Teams">
+          {% for principal in permission_choices if principal.kind == "team" %}
+            <option value="{{ principal.key }}">
+              {{ principal.label }} — {{ principal.description }}
+            </option>
+          {% endfor %}
+        </optgroup>
+      </select>
+    </label>
+
+    <button
+      class="button danger package-permission-remove"
+      type="button"
+    >
+      Remove
+    </button>
+  </section>
+</template>
+
+<template id="package-input-template">
+  <section
+    class="package-input-row panel project-tab-panel"
+    data-package-input-row
+    role="tabpanel"
+    hidden
+  >
+    <input
+      type="hidden"
+      name="package_input_row"
+      value="__ROW_KEY__"
+    >
+
+    <div class="package-input-header">
+      <strong>
+        Input
+        <span class="package-input-number"></span>
+      </strong>
+
+      <div class="package-input-actions">
+        <button
+          class="icon-button package-input-up"
+          type="button"
+          title="Move up"
+        >
+          ↑
+        </button>
+
+        <button
+          class="icon-button package-input-down"
+          type="button"
+          title="Move down"
+        >
+          ↓
+        </button>
+
+        <button
+          class="button danger package-input-remove"
+          type="button"
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+
+    <div class="package-input-grid">
+      <label>
+        Variable name
+        <input
+          name="package_input___ROW_KEY___variable_name"
+          maxlength="128"
+          required
+          placeholder="device"
+        >
+      </label>
+
+      <label>
+        Label
+        <input
+          name="package_input___ROW_KEY___label"
+          maxlength="160"
+          required
+          placeholder="Device"
+        >
+      </label>
+
+      <label>
+        <span class="field-label-with-help">
+          Input type
+          <span class="help-tooltip" tabindex="0" aria-label="Input type help">
+            ?
+            <span class="help-tooltip-content" role="tooltip">
+              <strong>Input types</strong>
+              <span><b>Text:</b> one text value.</span>
+              <span><b>Integer:</b> a whole number.</span>
+              <span><b>Boolean:</b> a yes/no checkbox.</span>
+              <span><b>Choice:</b> one configured choice.</span>
+              <span><b>Password / secret:</b> masked text omitted from confirmation.</span>
+              <span><b>Email address(es):</b> one or more comma, semicolon, or newline-separated validated addresses.</span><span><b>URL:</b> an http:// or https:// URL without embedded credentials.</span><span><b>File path:</b> a path value that need not exist on the Journeyman server.</span>
+            </span>
+          </span>
+        </span>
+        <select
+          class="package-input-type"
+          name="package_input___ROW_KEY___input_type"
+        >
+          <option value="text">Text</option>
+          <option value="integer">Integer</option>
+          <option value="boolean">Boolean</option>
+          <option value="choice">Choice</option>
+          <option value="password">
+            Password / secret
+          </option>
+          <option value="email_addresses">Email address(es)</option>
+          <option value="url">URL</option>
+          <option value="file_path">File path</option>
+        </select>
+      </label>
+
+      <label>
+        Display role
+        <select
+          name="package_input___ROW_KEY___display_role"
+        >
+          <option value="normal">Normal</option>
+          <option value="operational_target">
+            Operational target
+          </option>
+          <option value="confirmation_critical">
+            Confirmation critical
+          </option>
+        </select>
+      </label>
+
+      <label>
+        Binding
+        <select
+          name="package_input___ROW_KEY___binding_type"
+        >
+          <option value="extra_var">
+            Runtime variable
+          </option>
+          <option value="step_limit">
+            Step limit
+          </option>
+        </select>
+        <small>
+          Runtime variables are supplied to the Project at dispatch.
+          Step limit binds this input to an Ansible step limit.
+        </small>
+      </label>
+
+      <label>
+        Inventory binding name
+        <input
+          name="package_input___ROW_KEY___inventory_binding_name"
+          placeholder="Defaults to variable name"
+        >
+        <small>
+          Used by filtered inventories as an immutable Job constant when
+          Bind to inventories is enabled.
+        </small>
+      </label>
+
+      <div class="package-input-checkboxes">
+        <label class="checkbox-label">
+          <input
+            type="checkbox"
+            name="package_input___ROW_KEY___bind_to_inventory"
+          >
+          Bind to inventories
+        </label>
+
+        <label class="checkbox-label">
+          <input
+            type="checkbox"
+            name="package_input___ROW_KEY___required"
+          >
+          Required
+        </label>
+
+        <label class="checkbox-label">
+          <input
+            class="package-input-secret"
+            type="checkbox"
+            name="package_input___ROW_KEY___is_secret"
+          >
+          Secret
+        </label>
+      </div>
+
+      <label class="package-input-full">
+        Help text
+        <textarea
+          name="package_input___ROW_KEY___help_text"
+          rows="2"
+        ></textarea>
+      </label>
+
+      <label>
+        Default value
+        <textarea
+          name="package_input___ROW_KEY___default_value_yaml"
+          rows="4"
+          spellcheck="false"
+          placeholder="10"
+        ></textarea>
+        <small>
+          YAML scalar. Quote text such as "yes".
+        </small>
+      </label>
+
+      <label
+        class="package-input-choices"
+        hidden
+      >
+        Choices
+        <textarea
+          name="package_input___ROW_KEY___choices_yaml"
+          rows="8"
+          spellcheck="false"
+          placeholder="- value: shut&#10;  label: Shut"
+        ></textarea>
+        <small>
+          YAML list of values, or value/label mappings.
+        </small>
+      </label>
+
+      <label>
+        <span class="field-label-with-help">
+          Validation
+          <span class="help-tooltip" tabindex="0" aria-label="Validation help">
+            ?
+            <span class="help-tooltip-content" role="tooltip">
+              <strong>Validation examples</strong>
+              <span><b>Text:</b> minimum_length, maximum_length and pattern.</span>
+              <span><b>Integer:</b> minimum and maximum.</span>
+              <span><b>Choice:</b> static Choices, or choices_from_hostvar for a dependent inventory-host field.</span>
+              <code>minimum: 1
+maximum: 300</code>
+              <code>choices_from_hostvar:
+  host_input: device
+  path: zabbix.network_interfaces
+  value_key: name
+  label_keys: [name, alias]</code>
+            </span>
+          </span>
+        </span>
+        <textarea
+          name="package_input___ROW_KEY___validation_yaml"
+          rows="6"
+          spellcheck="false"
+          placeholder="minimum: 1&#10;maximum: 300"
+        ></textarea>
+      </label>
+
+      <label>
+        <span class="field-label-with-help">
+          Conditions
+          <span class="help-tooltip" tabindex="0" aria-label="Conditions help">
+            ?
+            <span class="help-tooltip-content" role="tooltip">
+              <strong>Condition options</strong>
+              <span><b>visible_when:</b> visible when its condition matches.</span>
+              <span><b>required_when:</b> required when its condition matches.</span>
+              <span>A normal mapping means <b>AND</b>; a list used as a variable value means any listed value may match.</span>
+              <span><b>all:</b> all nested conditions must match. <b>any:</b> one or more must match. <b>not:</b> the nested condition must not match.</span>
+              <span>Conditions may be nested and may reference only earlier inputs.</span>
+              <code>required_when:
+  any:
+    - desc: true
+    - var_action: shutnoshut
+
+visible_when:
+  not:
+    var_action: shutnoshut</code>
+            </span>
+          </span>
+        </span>
+        <textarea
+          name="package_input___ROW_KEY___conditions_yaml"
+          rows="9"
+          spellcheck="false"
+          placeholder="required_when:&#10;  any:&#10;    - desc: true&#10;    - var_action: shutnoshut"
+        ></textarea>
+      </label>
+    </div>
+  </section>
+</template>
+
+<script nonce="{{ csp_nonce }}">
+  const packageForm =
+    document.getElementById("project-package-form");
+
+  const packageMainPanel =
+    document.getElementById("package-main-panel");
+
+  const packagePermissionsPanel =
+    document.getElementById("package-permissions-panel");
+
+  const packageStaticTabs = {
+    package:
+      document.querySelector(
+        '[data-package-tab="package"]'
+      ),
+    permissions:
+      document.querySelector(
+        '[data-package-tab="permissions"]'
+      ),
+  };
+
+  const packagePermissions =
+    document.getElementById(
+      "package-permissions"
+    );
+
+  const packagePermissionTemplate =
+    document.getElementById(
+      "package-permission-template"
+    );
+
+  const packageInputs =
+    document.getElementById("package-inputs");
+
+  const packageInputTabs =
+    document.getElementById("package-input-tabs");
+
+  const packageInputTemplate =
+    document.getElementById("package-input-template");
+
+  let packagePermissionCounter = 0;
+  let packageInputCounter = 0;
+  let activePackageStaticTab = "package";
+  let activePackageInput = null;
+
+  function packageInputRows() {
+    return Array.from(
+      packageInputs.querySelectorAll(
+        "[data-package-input-row]"
+      )
+    );
+  }
+
+  function packageInputTabLabel(row, index) {
+    const labelField = row.querySelector(
+      'input[name$="_label"]'
+    );
+
+    const variableField = row.querySelector(
+      'input[name$="_variable_name"]'
+    );
+
+    const label =
+      labelField && labelField.value.trim()
+        ? labelField.value.trim()
+        : variableField && variableField.value.trim()
+          ? variableField.value.trim()
+          : `Input ${index + 1}`;
+
+    return `${index + 1}. ${label}`;
+  }
+
+  function activatePackageStaticTab(name) {
+    activePackageStaticTab = name;
+    activePackageInput = null;
+
+    Object.entries(packageStaticTabs).forEach(([key, button]) => {
+      const active = key === name;
+      button.classList.toggle("active", active);
+      button.setAttribute(
+        "aria-selected",
+        active ? "true" : "false"
+      );
+    });
+
+    packageMainPanel.hidden = name !== "package";
+    packageMainPanel.classList.toggle(
+      "active",
+      name === "package"
+    );
+    packagePermissionsPanel.hidden =
+      name !== "permissions";
+    packagePermissionsPanel.classList.toggle(
+      "active",
+      name === "permissions"
+    );
+
+    packageInputRows().forEach((row) => {
+      row.hidden = true;
+      row.classList.remove("active");
+    });
+
+    packageInputTabs.querySelectorAll(
+      ".package-editor-tab"
+    ).forEach((button) => {
+      button.classList.remove("active");
+      button.setAttribute("aria-selected", "false");
+    });
+  }
+
+  function activatePackageInputTab(row) {
+    if (!row) {
+      return;
+    }
+
+    activePackageInput = row;
+
+    Object.values(packageStaticTabs).forEach((button) => {
+      button.classList.remove("active");
+      button.setAttribute("aria-selected", "false");
+    });
+
+    packageMainPanel.hidden = true;
+    packageMainPanel.classList.remove("active");
+    packagePermissionsPanel.hidden = true;
+    packagePermissionsPanel.classList.remove("active");
+
+    const rows = packageInputRows();
+    rows.forEach((candidate) => {
+      const active = candidate === row;
+      candidate.hidden = !active;
+      candidate.classList.toggle("active", active);
+    });
+
+    packageInputTabs.querySelectorAll(
+      ".package-editor-tab"
+    ).forEach((button, index) => {
+      const active = rows[index] === row;
+      button.classList.toggle("active", active);
+      button.setAttribute(
+        "aria-selected",
+        active ? "true" : "false"
+      );
+    });
+  }
+
+  function updatePackageInputTabs() {
+    const rows = packageInputRows();
+    packageInputTabs.innerHTML = "";
+
+    rows.forEach((row, index) => {
+      const panelId =
+        `package-input-panel-${index + 1}`;
+
+      row.id = panelId;
+
+      const tab =
+        document.createElement("button");
+
+      tab.type = "button";
+      tab.className = "package-editor-tab";
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panelId);
+      tab.textContent = packageInputTabLabel(
+        row,
+        index
+      );
+      tab.title = tab.textContent;
+      tab.addEventListener("click", () => {
+        activatePackageInputTab(row);
+      });
+      packageInputTabs.appendChild(tab);
+    });
+
+    if (activePackageInput && rows.includes(activePackageInput)) {
+      activatePackageInputTab(activePackageInput);
+    } else {
+      activatePackageStaticTab(activePackageStaticTab);
+    }
+  }
+
+  function bindPackagePermissionRow(row) {
+    row.querySelector(
+      ".package-permission-remove"
+    ).addEventListener("click", () => {
+      row.remove();
+    });
+  }
+
+  function addPackagePermission() {
+    packagePermissionCounter += 1;
+
+    const rowKey =
+      `new_${Date.now()}_${packagePermissionCounter}`;
+
+    const wrapper =
+      document.createElement("div");
+
+    wrapper.innerHTML =
+      packagePermissionTemplate.innerHTML
+        .split("__PERMISSION_KEY__")
+        .join(rowKey)
+        .trim();
+
+    const row =
+      wrapper.firstElementChild;
+
+    packagePermissions.appendChild(row);
+    bindPackagePermissionRow(row);
+
+    row.querySelector(
+      'select[name$="_principal_key"]'
+    ).focus();
+  }
+
+  function updatePackageInputNumbers() {
+    const rows = packageInputRows();
+
+    rows.forEach((row, index) => {
+      row.querySelector(
+        ".package-input-number"
+      ).textContent = index + 1;
+
+      row.querySelector(
+        ".package-input-up"
+      ).disabled = index === 0;
+
+      row.querySelector(
+        ".package-input-down"
+      ).disabled = index === rows.length - 1;
+    });
+
+    updatePackageInputTabs();
+  }
+
+  function updatePackageInputType(row) {
+    const typeSelect = row.querySelector(
+      ".package-input-type"
+    );
+
+    const choices = row.querySelector(
+      ".package-input-choices"
+    );
+
+    const secret = row.querySelector(
+      ".package-input-secret"
+    );
+
+    choices.hidden =
+      typeSelect.value !== "choice";
+
+    if (typeSelect.value === "password") {
+      secret.checked = true;
+    }
+  }
+
+  function bindPackageInputRow(row) {
+    row.querySelector(
+      ".package-input-up"
+    ).addEventListener("click", () => {
+      const previous =
+        row.previousElementSibling;
+
+      if (previous) {
+        packageInputs.insertBefore(
+          row,
+          previous
+        );
+
+        updatePackageInputNumbers();
+      }
+    });
+
+    row.querySelector(
+      ".package-input-down"
+    ).addEventListener("click", () => {
+      const next =
+        row.nextElementSibling;
+
+      if (next) {
+        packageInputs.insertBefore(
+          next,
+          row
+        );
+
+        updatePackageInputNumbers();
+      }
+    });
+
+    row.querySelector(
+      ".package-input-remove"
+    ).addEventListener("click", () => {
+      const rows = packageInputRows();
+      const index = rows.indexOf(row);
+      const fallback =
+        rows[index + 1] || rows[index - 1] || null;
+      const wasActive =
+        row === activePackageInput;
+
+      row.remove();
+
+      if (wasActive) {
+        activePackageInput = fallback;
+      }
+
+      updatePackageInputNumbers();
+    });
+
+    row.querySelector(
+      ".package-input-type"
+    ).addEventListener("change", () => {
+      updatePackageInputType(row);
+    });
+
+    [
+      'input[name$="_label"]',
+      'input[name$="_variable_name"]',
+    ].forEach((selector) => {
+      row.querySelector(selector).addEventListener(
+        "input",
+        updatePackageInputTabs
+      );
+    });
+
+    updatePackageInputType(row);
+  }
+
+  function addPackageInput() {
+    packageInputCounter += 1;
+
+    const rowKey =
+      `new_${Date.now()}_${packageInputCounter}`;
+
+    const wrapper =
+      document.createElement("div");
+
+    wrapper.innerHTML =
+      packageInputTemplate.innerHTML
+        .split("__ROW_KEY__")
+        .join(rowKey)
+        .trim();
+
+    const row =
+      wrapper.firstElementChild;
+
+    packageInputs.appendChild(row);
+    bindPackageInputRow(row);
+    updatePackageInputNumbers();
+    activatePackageInputTab(row);
+
+    row.querySelector(
+      'input[name$="_variable_name"]'
+    ).focus();
+  }
+
+  Object.entries(packageStaticTabs).forEach(
+    ([name, button]) => {
+      button.addEventListener("click", () => {
+        activatePackageStaticTab(name);
+      });
+    }
+  );
+
+  document
+    .querySelectorAll(
+      "[data-package-permission-row]"
+    )
+    .forEach(bindPackagePermissionRow);
+
+  document
+    .getElementById(
+      "add-package-permission"
+    )
+    .addEventListener(
+      "click",
+      addPackagePermission
+    );
+
+  document
+    .querySelectorAll(
+      "[data-package-input-row]"
+    )
+    .forEach(bindPackageInputRow);
+
+  document
+    .getElementById("add-package-input")
+    .addEventListener(
+      "click",
+      addPackageInput
+    );
+
+  packageForm.addEventListener("invalid", (event) => {
+    const panel = event.target.closest(
+      "#package-main-panel, #package-permissions-panel, [data-package-input-row]"
+    );
+
+    if (!panel || !panel.hidden) {
+      return;
+    }
+
+    if (panel.id === "package-permissions-panel") {
+      activatePackageStaticTab("permissions");
+      return;
+    }
+
+    if (panel.matches("[data-package-input-row]")) {
+      activatePackageInputTab(panel);
+      return;
+    }
+
+    activatePackageStaticTab("package");
+  }, true);
+
+  updatePackageInputNumbers();
+</script>
+
+{% endblock %}

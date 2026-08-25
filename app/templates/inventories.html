@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+
+{% block title %}
+Inventories · Journeyman
+{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+    <div>
+        <h1>Inventories</h1>
+
+        <p>
+            Configure inventory providers used by Journeyman projects.
+        </p>
+    </div>
+
+    <a
+        class="button primary"
+        href="{{ url_for('main.inventory_new') }}"
+    >
+        ＋ Add Inventory
+    </a>
+</div>
+
+{% if inventories %}
+<section class="panel">
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Credential</th>
+                    <th>Status</th>
+                    <th>Last Refresh</th>
+                    <th>Projects</th>
+                    <th>Used By Inventories</th>
+                    <th>Enabled</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for inventory in inventories %}
+                {% set credential =
+                    credentials_by_id.get(
+                        inventory.credential_id
+                    )
+                %}
+
+                <tr>
+                    <td>
+                        <strong>{{ inventory.name }}</strong>
+                    </td>
+
+                    <td>
+                        {{ inventory.inventory_type
+                            |replace('_', ' ')
+                            |title }}
+                    </td>
+
+                    <td>
+                        {% if inventory.inventory_type == 'static' %}
+                            <span class="muted">
+                                Not required
+                            </span>
+                        {% elif credential %}
+                            {{ credential.name }}
+                        {% else %}
+                            <span class="muted">
+                                Not available
+                            </span>
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        {{ inventory.status
+                            |replace('_', ' ')
+                            |title }}
+                    </td>
+
+                    <td>
+                        {% if inventory.last_sync_at %}
+                            <span
+                                class="utc-datetime"
+                                data-utc="{{ inventory.last_sync_at.isoformat() }}"
+                            >
+                                {{ inventory.last_sync_at.strftime(
+                                    '%Y-%m-%d %H:%M:%S'
+                                ) }} UTC
+                            </span>
+                        {% else %}
+                            <span class="muted">Never</span>
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        {{ project_counts.get(inventory.id, 0) }}
+                    </td>
+
+                    <td>
+                        {{ dependency_counts.get(
+                            inventory.id,
+                            0
+                        ) }}
+                    </td>
+
+                    <td>
+                        {{ 'Yes' if inventory.enabled else 'No' }}
+                    </td>
+
+                    <td>
+                        {% set project_count =
+                            project_counts.get(inventory.id, 0)
+                        %}
+                        {% set dependency_count =
+                            dependency_counts.get(inventory.id, 0)
+                        %}
+                        {% set delete_disabled =
+                            project_count or dependency_count
+                        %}
+
+                        <details class="action-menu">
+                            <summary class="button action-menu-trigger">
+                                Actions <span aria-hidden="true">▾</span>
+                            </summary>
+
+                            <div class="action-menu-items">
+                                {% if inventory.inventory_type != 'static' %}
+                                <form
+                                    method="post"
+                                    action="{{ url_for(
+                                        'main.inventory_refresh',
+                                        inventory_id=inventory.id
+                                    ) }}"
+                                    data-operation-progress
+                                    data-progress-title="Refreshing inventory"
+                                    data-progress-start-message="Starting inventory refresh"
+                                    data-progress-error-title="Inventory refresh failed"
+                                    data-progress-complete-delay="650"
+                                >
+                                    <input
+                                        type="hidden"
+                                        name="csrf_token"
+                                        value="{{ csrf_token() }}"
+                                    >
+                                    <button
+                                        class="action-menu-item"
+                                        type="submit"
+                                        {% if not inventory.enabled %}
+                                        disabled
+                                        title="Inventory is disabled"
+                                        {% endif %}
+                                    >
+                                        Refresh
+                                    </button>
+                                </form>
+                                {% endif %}
+
+                                <a
+                                    class="action-menu-item"
+                                    href="{{ url_for(
+                                        'main.inventory_preview',
+                                        inventory_id=inventory.id
+                                    ) }}"
+                                >
+                                    Inspect
+                                </a>
+
+                                <a
+                                    class="action-menu-item"
+                                    href="{{ url_for(
+                                        'main.inventory_edit',
+                                        inventory_id=inventory.id
+                                    ) }}"
+                                >
+                                    Edit
+                                </a>
+
+                                <a
+                                    class="action-menu-item"
+                                    href="{{ url_for(
+                                        'main.inventory_new',
+                                        clone=inventory.id
+                                    ) }}"
+                                >
+                                    Clone
+                                </a>
+
+                                <form
+                                    method="post"
+                                    action="{{ url_for(
+                                        'main.inventory_delete',
+                                        inventory_id=inventory.id
+                                    ) }}"
+                                    data-confirm="Delete inventory &quot;{{ inventory.name|e }}&quot;?"
+                                >
+                                    <input
+                                        type="hidden"
+                                        name="csrf_token"
+                                        value="{{ csrf_token() }}"
+                                    >
+
+                                    <button
+                                        class="action-menu-item danger"
+                                        type="submit"
+                                        {% if delete_disabled %}
+                                        disabled
+                                        {% if project_count and dependency_count %}
+                                        title="Inventory is assigned to a project and used by another inventory"
+                                        {% elif project_count %}
+                                        title="Inventory is assigned to a project"
+                                        {% else %}
+                                        title="Inventory is used by another inventory"
+                                        {% endif %}
+                                        {% endif %}
+                                    >
+                                        Delete
+                                    </button>
+                                </form>
+                            </div>
+                        </details>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "_pagination.html" %}
+</section>
+
+{% else %}
+<section class="panel placeholder">
+    <h2>No inventories configured</h2>
+
+    <p>
+        Add an inventory to begin selecting hosts for
+        Journeyman projects.
+    </p>
+
+    <a
+        class="button primary"
+        href="{{ url_for('main.inventory_new') }}"
+    >
+        ＋ Add Inventory
+    </a>
+</section>
+{% endif %}
+{% endblock %}

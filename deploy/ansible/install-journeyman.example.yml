@@ -1,0 +1,23 @@
+---
+# Required values for deploy/ansible/install-journeyman.yml.
+# Keep the database password in Ansible Vault or another approved secret store.
+
+journeyman_fqdn: journeyman.example.com
+journeyman_database_password: CHANGE_ME
+
+# These paths are read from the Ansible control host. Supply the complete
+# certificate chain in the full-chain file and the matching private key.
+journeyman_tls_fullchain_src: /secure/path/journeyman-fullchain.pem
+journeyman_tls_key_src: /secure/path/journeyman-key.pem
+
+# Optional proxy used only for the Python dependency installation step.
+# If the proxy URL contains credentials, protect this file with Ansible Vault.
+# journeyman_pip_proxy: http://proxy.example.com:8080
+
+# Optional initial directory-role defaults shown during LDAP bootstrap.
+journeyman_directory_admin_group_name: Journeyman Admins
+journeyman_directory_user_group_name: Journeyman Users
+
+# Production outbound allowlist used by Git, Satellite, Zabbix and proxies.
+# Example: git.example.com,satellite.example.com,zabbix.example.com
+journeyman_outbound_allowed_hosts: ""

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Journeyman PostgreSQL upgrade guardrail utility.
+
+This utility does not perform the operating-system PostgreSQL major-version
+upgrade. It creates/validates a logical rollback dump and verifies that the
+upgraded database is usable before Journeyman services are returned to use.
+"""
+
+import argparse
+import datetime as dt
+import os
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from sqlalchemy import text
+
+from app import create_app, db
+
+
+def _database():
+    app = create_app()
+    uri = str(app.config.get("SQLALCHEMY_DATABASE_URI") or "")
+    if not uri.startswith(("postgresql://", "postgresql+psycopg://")):
+        raise RuntimeError("Journeyman is not configured for PostgreSQL.")
+    parsed = urlsplit(uri.replace("postgresql+psycopg://", "postgresql://", 1))
+    return app, parsed
+
+
+def _pg_env(parsed):
+    env = os.environ.copy()
+    if parsed.password:
+        env["PGPASSWORD"] = unquote(parsed.password)
+    return env
+
+
+def _connection_args(parsed):
+    args = []
+    if parsed.hostname:
+        args += ["--host", parsed.hostname]
+    if parsed.port:
+        args += ["--port", str(parsed.port)]
+    if parsed.username:
+        args += ["--username", unquote(parsed.username)]
+    return args
+
+
+def preflight():
+    app, parsed = _database()
+    with app.app_context():
+        version = db.session.execute(text("show server_version")).scalar_one()
+        database = db.session.execute(text("select current_database()" )).scalar_one()
+        revision = subprocess.run(
+            [sys.executable, "-m", "flask", "db", "current"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+            env={**os.environ, "FLASK_APP": "run.py"},
+        )
+    print("Database: {}".format(database))
+    print("PostgreSQL server: {}".format(version))
+    print("Alembic: {}".format(revision.stdout.strip() or "unknown"))
+    if revision.returncode:
+        raise RuntimeError("Unable to read the current Alembic revision.")
+
+
+def backup(output):
+    _app, parsed = _database()
+    output = Path(output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["pg_dump", "--format=custom", "--no-owner", "--no-privileges", *_connection_args(parsed), "--file", str(output), parsed.path.lstrip("/")]
+    result = subprocess.run(cmd, env=_pg_env(parsed), check=False)
+    if result.returncode:
+        raise RuntimeError("pg_dump failed with exit status {}.".format(result.returncode))
+    verify = subprocess.run(["pg_restore", "--list", str(output)], stdout=subprocess.DEVNULL, check=False)
+    if verify.returncode:
+        output.unlink(missing_ok=True)
+        raise RuntimeError("pg_restore could not read the generated dump.")
+    os.chmod(output, 0o600)
+    print("Validated rollback dump: {}".format(output))
+
+
+def verify(run_schema_upgrade=False):
+    app, _parsed = _database()
+    root = Path(__file__).resolve().parents[1]
+    if run_schema_upgrade:
+        result = subprocess.run(
+            [sys.executable, "-m", "flask", "db", "upgrade"],
+            cwd=root, env={**os.environ, "FLASK_APP": "run.py"}, check=False,
+        )
+        if result.returncode:
+            raise RuntimeError("Journeyman schema upgrade failed.")
+    with app.app_context():
+        db.session.execute(text("select 1")).scalar_one()
+        version = db.session.execute(text("show server_version")).scalar_one()
+    print("PostgreSQL connectivity verified; server {}.".format(version))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("preflight")
+    backup_parser = sub.add_parser("backup")
+    backup_parser.add_argument("--output", default="/var/backups/journeyman/journeyman-postgresql-{}.dump".format(dt.datetime.now().strftime("%Y%m%d-%H%M%S")))
+    verify_parser = sub.add_parser("verify")
+    verify_parser.add_argument("--upgrade-schema", action="store_true")
+    args = parser.parse_args()
+    try:
+        if args.command == "preflight":
+            preflight()
+        elif args.command == "backup":
+            backup(args.output)
+        else:
+            verify(args.upgrade_schema)
+    except (RuntimeError, OSError) as exc:
+        print("ERROR: {}".format(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,751 @@
+---
+- name: Install Journeyman application server
+  hosts: journeyman_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    journeyman_user: journeyman
+    journeyman_group: journeyman
+    journeyman_root: /opt/journeyman
+    journeyman_venv: /opt/journeyman/venv
+    journeyman_python: /usr/bin/python3.14
+    journeyman_pip_proxy: ""
+    journeyman_packages:
+      - postgresql-server
+      - nginx
+      - python3.14
+      - python3-pip
+      - git
+    journeyman_database_name: journeyman
+    journeyman_database_user: journeyman
+    journeyman_database_host: 127.0.0.1
+    journeyman_database_port: 5432
+    journeyman_https_port: 443
+    journeyman_http_port: 80
+    journeyman_tls_dir: /etc/journeyman/tls
+    journeyman_tls_fullchain_dest: /etc/journeyman/tls/journeyman-fullchain.pem
+    journeyman_tls_key_dest: /etc/journeyman/tls/journeyman-key.pem
+    journeyman_configure_firewalld: true
+    journeyman_configure_selinux_nginx_proxy: true
+    journeyman_generate_fallback_admin: true
+    journeyman_outbound_allowed_hosts: ""
+    journeyman_directory_admin_group_name: Journeyman Admins
+    journeyman_directory_user_group_name: Journeyman Users
+
+  pre_tasks:
+    - name: Validate required installer variables
+      ansible.builtin.assert:
+        that:
+          - journeyman_fqdn is defined
+          - journeyman_fqdn | length > 0
+          - journeyman_database_password is defined
+          - journeyman_database_password | length > 0
+          - journeyman_tls_fullchain_src is defined
+          - journeyman_tls_fullchain_src | length > 0
+          - journeyman_tls_key_src is defined
+          - journeyman_tls_key_src | length > 0
+        fail_msg: >-
+          journeyman_fqdn, journeyman_database_password,
+          journeyman_tls_fullchain_src and journeyman_tls_key_src are required.
+
+    - name: Check TLS full-chain source file on controller
+      ansible.builtin.stat:
+        path: "{{ journeyman_tls_fullchain_src }}"
+      delegate_to: localhost
+      become: false
+      register: journeyman_tls_fullchain_source
+
+    - name: Check TLS private-key source file on controller
+      ansible.builtin.stat:
+        path: "{{ journeyman_tls_key_src }}"
+      delegate_to: localhost
+      become: false
+      register: journeyman_tls_key_source
+
+    - name: Require supplied TLS files to exist
+      ansible.builtin.assert:
+        that:
+          - journeyman_tls_fullchain_source.stat.isreg | default(false)
+          - journeyman_tls_key_source.stat.isreg | default(false)
+        fail_msg: >-
+          The supplied TLS full-chain and private-key paths must be regular
+          files on the Ansible control host.
+
+  tasks:
+    - name: Install operating-system prerequisites
+      ansible.builtin.package:
+        name: "{{ journeyman_packages }}"
+        state: present
+
+    - name: Create Journeyman service group
+      ansible.builtin.group:
+        name: "{{ journeyman_group }}"
+        system: true
+
+    - name: Create Journeyman service account
+      ansible.builtin.user:
+        name: "{{ journeyman_user }}"
+        system: true
+        home: "{{ journeyman_root }}"
+        shell: /sbin/nologin
+        group: "{{ journeyman_group }}"
+        create_home: false
+
+    - name: Create Journeyman system directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: /opt/journeyman, owner: journeyman, group: journeyman, mode: '0755' }
+        - { path: /etc/journeyman, owner: root, group: journeyman, mode: '0750' }
+        - { path: /etc/journeyman/tls, owner: root, group: root, mode: '0750' }
+        - { path: /var/lib/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/lib/journeyman/repos, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/lib/journeyman/jobs, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/lib/journeyman/runner-artifacts, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/log/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/spool/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/spool/journeyman/signals, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /opt/journeyman/environments, owner: journeyman, group: journeyman, mode: '0750' }
+
+    - name: Ensure main helper scripts are executable
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+        mode: '0755'
+      loop:
+        - /opt/journeyman/bin/journeyman-environment-builder
+        - /opt/journeyman/bin/journeyman-runner
+        - /opt/journeyman/bin/journeyman-runner-admin
+        - /opt/journeyman/scripts/journeyman-apply-web-settings
+
+    - name: Create canonical application virtual environment
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_python }}"
+          - -m
+          - venv
+          - "{{ journeyman_venv }}"
+        creates: "{{ journeyman_venv }}/bin/python3"
+      become_user: "{{ journeyman_user }}"
+
+    - name: Install Journeyman administrative shell profile
+      ansible.builtin.copy:
+        src: "{{ journeyman_root }}/deploy/journeyman.bashrc"
+        dest: "{{ journeyman_root }}/.bashrc"
+        remote_src: true
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+        mode: '0640'
+
+    - name: Install Journeyman Python dependencies through proxy
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_venv }}/bin/python"
+          - -m
+          - pip
+          - install
+          - --timeout
+          - "30"
+          - --proxy
+          - "{{ journeyman_pip_proxy }}"
+          - -r
+          - /opt/journeyman/requirements-postgresql.txt
+      become_user: "{{ journeyman_user }}"
+      register: journeyman_pip_install
+      changed_when: >-
+        'Successfully installed' in journeyman_pip_install.stdout or
+        'Successfully installed' in journeyman_pip_install.stderr
+      when: journeyman_pip_proxy | default('') | length > 0
+
+    - name: Install Journeyman Python dependencies without proxy
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_venv }}/bin/python"
+          - -m
+          - pip
+          - install
+          - --timeout
+          - "30"
+          - -r
+          - /opt/journeyman/requirements-postgresql.txt
+      become_user: "{{ journeyman_user }}"
+      register: journeyman_pip_install
+      changed_when: >-
+        'Successfully installed' in journeyman_pip_install.stdout or
+        'Successfully installed' in journeyman_pip_install.stderr
+      when: journeyman_pip_proxy | default('') | length == 0
+
+    - name: Install privileged Nginx apply helper
+      ansible.builtin.copy:
+        src: "{{ journeyman_root }}/scripts/journeyman-apply-web-settings"
+        dest: /usr/local/sbin/journeyman-apply-web-settings
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Permit only the Nginx apply helper through sudo
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/journeyman-nginx
+        owner: root
+        group: root
+        mode: '0440'
+        content: |
+          journeyman ALL=(root) NOPASSWD: /usr/local/sbin/journeyman-apply-web-settings
+        validate: /usr/sbin/visudo -cf %s
+
+    - name: Install TLS full chain
+      ansible.builtin.copy:
+        src: "{{ journeyman_tls_fullchain_src }}"
+        dest: "{{ journeyman_tls_fullchain_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload Nginx
+
+    - name: Install TLS private key
+      ansible.builtin.copy:
+        src: "{{ journeyman_tls_key_src }}"
+        dest: "{{ journeyman_tls_key_dest }}"
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+      notify: Reload Nginx
+
+    - name: Initialise PostgreSQL database cluster
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/postgresql-setup
+          - --initdb
+        creates: /var/lib/pgsql/data/PG_VERSION
+
+    - name: Configure PostgreSQL to generate SCRAM password verifiers
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/data/postgresql.conf
+        regexp: '^\s*#?\s*password_encryption\s*='
+        line: "password_encryption = 'scram-sha-256'"
+      notify: Restart PostgreSQL
+
+    - name: Remove default localhost ident rules that shadow Journeyman SCRAM rules
+      ansible.builtin.lineinfile:
+        path: /var/lib/pgsql/data/pg_hba.conf
+        regexp: "{{ item }}"
+        state: absent
+      loop:
+        - '^\s*host\s+all\s+all\s+127\.0\.0\.1/32\s+ident\s*$'
+        - '^\s*host\s+all\s+all\s+::1/128\s+ident\s*$'
+      notify: Reload PostgreSQL
+
+    - name: Configure local Journeyman PostgreSQL authentication
+      ansible.builtin.blockinfile:
+        path: /var/lib/pgsql/data/pg_hba.conf
+        marker: '# {mark} JOURNEYMAN LOCAL DATABASE ACCESS'
+        insertbefore: '^host\s+replication'
+        block: |
+          host    {{ journeyman_database_name }}    {{ journeyman_database_user }}    127.0.0.1/32    scram-sha-256
+          host    {{ journeyman_database_name }}    {{ journeyman_database_user }}    ::1/128         scram-sha-256
+      notify: Reload PostgreSQL
+
+    - name: Enable and start PostgreSQL
+      ansible.builtin.systemd:
+        name: postgresql
+        enabled: true
+        state: started
+
+    - name: Apply PostgreSQL configuration before role creation
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check for Journeyman PostgreSQL role
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -tAc
+          - "SELECT 1 FROM pg_roles WHERE rolname='{{ journeyman_database_user }}'"
+      become_user: postgres
+      register: journeyman_db_role_exists
+      changed_when: false
+
+    - name: Create Journeyman PostgreSQL role
+      ansible.builtin.shell: |
+        set -euo pipefail
+        psql -v ON_ERROR_STOP=1 -v "jm_password={{ journeyman_database_password }}" <<'SQL'
+        CREATE ROLE {{ journeyman_database_user }} LOGIN PASSWORD :'jm_password';
+        SQL
+      args:
+        executable: /bin/bash
+      become_user: postgres
+      register: journeyman_db_role_create
+      changed_when: journeyman_db_role_create.rc == 0
+      failed_when: false
+      no_log: true
+      when: journeyman_db_role_exists.stdout | trim != '1'
+
+    - name: Report Journeyman PostgreSQL role creation failure
+      ansible.builtin.fail:
+        msg: >-
+          Failed to create PostgreSQL role {{ journeyman_database_user }} (rc={{ journeyman_db_role_create.rc }}):
+          {{ (journeyman_db_role_create.stderr | default('')
+              | replace(journeyman_database_password, '<redacted>') | trim)
+             or 'psql returned no diagnostic text' }}
+      when:
+        - journeyman_db_role_create is defined
+        - journeyman_db_role_create.rc | default(0) != 0
+
+    - name: Reset Journeyman PostgreSQL role password using SCRAM
+      ansible.builtin.shell: |
+        set -euo pipefail
+        psql -v ON_ERROR_STOP=1 -v "jm_password={{ journeyman_database_password }}" <<'SQL'
+        ALTER ROLE {{ journeyman_database_user }} WITH PASSWORD :'jm_password';
+        SQL
+      args:
+        executable: /bin/bash
+      become_user: postgres
+      register: journeyman_db_role_password
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Report Journeyman PostgreSQL password reset failure
+      ansible.builtin.fail:
+        msg: >-
+          Failed to set the PostgreSQL password for role {{ journeyman_database_user }}
+          (rc={{ journeyman_db_role_password.rc }}):
+          {{ (journeyman_db_role_password.stderr | default('')
+              | replace(journeyman_database_password, '<redacted>') | trim)
+             or 'psql returned no diagnostic text' }}
+      when: journeyman_db_role_password.rc | default(0) != 0
+
+    - name: Check for Journeyman PostgreSQL database
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -tAc
+          - "SELECT 1 FROM pg_database WHERE datname='{{ journeyman_database_name }}'"
+      become_user: postgres
+      register: journeyman_database_exists
+      changed_when: false
+
+    - name: Create Journeyman PostgreSQL database
+      ansible.builtin.command:
+        argv:
+          - createdb
+          - --owner
+          - "{{ journeyman_database_user }}"
+          - --encoding
+          - UTF8
+          - --template
+          - template0
+          - "{{ journeyman_database_name }}"
+      become_user: postgres
+      when: journeyman_database_exists.stdout | trim != '1'
+
+    - name: Restrict database and public schema privileges
+      ansible.builtin.shell: |
+        set -euo pipefail
+        psql -v ON_ERROR_STOP=1 -d {{ journeyman_database_name | quote }} <<'SQL'
+        REVOKE ALL ON DATABASE {{ journeyman_database_name }} FROM PUBLIC;
+        GRANT CONNECT, TEMPORARY ON DATABASE {{ journeyman_database_name }} TO {{ journeyman_database_user }};
+        REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+        GRANT USAGE, CREATE ON SCHEMA public TO {{ journeyman_database_user }};
+        SQL
+      args:
+        executable: /bin/bash
+      become_user: postgres
+      changed_when: false
+
+    - name: Check for existing Journeyman YAML configuration
+      ansible.builtin.stat:
+        path: /etc/journeyman/journeyman.yml
+      register: journeyman_config_file
+
+    - name: Read existing Journeyman secret key
+      ansible.builtin.shell: |
+        set -euo pipefail
+        JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml {{ journeyman_venv }}/bin/python - <<'PY'
+        import yaml
+        from pathlib import Path
+        data = yaml.safe_load(Path('/etc/journeyman/journeyman.yml').read_text(encoding='utf-8')) or {}
+        print(str((data.get('security') or {}).get('secret_key') or ''))
+        PY
+      args:
+        executable: /bin/bash
+      register: journeyman_existing_secret
+      changed_when: false
+      no_log: true
+      when: journeyman_config_file.stat.exists
+
+    - name: Generate Journeyman secret key for first install
+      ansible.builtin.command:
+        argv:
+          - "{{ journeyman_python }}"
+          - -c
+          - "import secrets; print(secrets.token_hex(32))"
+      register: journeyman_generated_secret
+      changed_when: false
+      no_log: true
+      when: >-
+        not journeyman_config_file.stat.exists or
+        (journeyman_existing_secret.stdout | default('') | trim | length == 0) or
+        (journeyman_existing_secret.stdout | default('') | trim == 'CHANGE_ME')
+
+    - name: Select persistent Journeyman secret key
+      ansible.builtin.set_fact:
+        journeyman_secret_key_effective: >-
+          {{ (journeyman_generated_secret.stdout | default('') | trim)
+             if (journeyman_generated_secret.stdout | default('') | trim | length > 0)
+             else (journeyman_existing_secret.stdout | default('') | trim) }}
+      no_log: true
+
+    - name: Write Journeyman production configuration
+      ansible.builtin.copy:
+        dest: /etc/journeyman/journeyman.yml
+        owner: root
+        group: journeyman
+        mode: '0640'
+        content: |
+          version: 1
+          application:
+            config_class: app.config.ProductionConfig
+          security:
+            secret_key: {{ journeyman_secret_key_effective | to_json }}
+            credential_key_file: /etc/journeyman/credential.key
+          authentication:
+            fallback_admin_password_hash_file: /etc/journeyman/fallback-admin-password.hash
+            directory_admin_group_name: {{ journeyman_directory_admin_group_name | to_json }}
+            directory_user_group_name: {{ journeyman_directory_user_group_name | to_json }}
+          database:
+            uri: {{ ('postgresql+psycopg://' ~ journeyman_database_user ~ ':' ~ (journeyman_database_password | urlencode) ~ '@' ~ journeyman_database_host ~ ':' ~ journeyman_database_port ~ '/' ~ journeyman_database_name) | to_json }}
+          paths:
+            repository_root: /var/lib/journeyman/repos
+            log_root: /var/log/journeyman
+            job_root: /var/lib/journeyman/jobs
+          environments:
+            managed_root: /opt/journeyman/environments
+          web:
+            public_fqdn: {{ journeyman_fqdn | to_json }}
+            tls_certificate_path: {{ journeyman_tls_fullchain_dest | to_json }}
+            tls_private_key_path: {{ journeyman_tls_key_dest | to_json }}
+            tls_chain_path: ""
+            https_port: {{ journeyman_https_port }}
+          outbound:
+            allowed_hosts: {{ journeyman_outbound_allowed_hosts | to_json }}
+      no_log: true
+      notify: Restart Journeyman services
+
+    - name: Validate Journeyman YAML configuration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml {{ journeyman_venv }}/bin/python - <<'PY'
+        from journeyman_configuration import load_journeyman_configuration
+        load_journeyman_configuration(required=True)
+        print('Journeyman configuration is valid')
+        PY
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      changed_when: false
+
+    - name: Generate persistent credential encryption key
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+        {{ journeyman_venv }}/bin/python - <<'PY'
+        from cryptography.fernet import Fernet
+        from pathlib import Path
+        path = Path('/etc/journeyman/credential.key')
+        path.write_bytes(Fernet.generate_key() + b'\n')
+        PY
+        chown {{ journeyman_user }}:{{ journeyman_group }} /etc/journeyman/credential.key
+        chmod 0600 /etc/journeyman/credential.key
+      args:
+        executable: /bin/bash
+        creates: /etc/journeyman/credential.key
+      no_log: true
+
+    - name: Test configured PostgreSQL connection through SQLAlchemy
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/python - <<'PY'
+        from sqlalchemy import create_engine, text
+        from app.config import Config
+        engine = create_engine(Config.SQLALCHEMY_DATABASE_URI)
+        with engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+        PY
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      changed_when: false
+
+    - name: Apply Journeyman database migrations
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py db upgrade
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      register: journeyman_db_upgrade
+      changed_when: "'Running upgrade' in journeyman_db_upgrade.stdout or 'Running upgrade' in journeyman_db_upgrade.stderr"
+
+    - name: Install Journeyman systemd units
+      ansible.builtin.copy:
+        src: "{{ journeyman_root }}/deploy/systemd/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - journeyman.service
+        - journeyman-runner.service
+        - journeyman-scheduler.service
+        - journeyman-environment-builder.service
+      notify:
+        - Reload systemd
+        - Restart Journeyman services
+
+    - name: Install bootstrap HTTPS Nginx configuration
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/journeyman.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Bootstrap configuration. Once logged in, Settings -> Web and TLS
+          # may replace this file using Journeyman's privileged apply helper.
+          server {
+              listen {{ journeyman_http_port }};
+              server_name {{ journeyman_fqdn }};
+              return 301 https://$host$request_uri;
+          }
+
+          server {
+              listen {{ journeyman_https_port }} ssl;
+              server_name {{ journeyman_fqdn }};
+
+              ssl_certificate {{ journeyman_tls_fullchain_dest }};
+              ssl_certificate_key {{ journeyman_tls_key_dest }};
+
+              location / {
+                  proxy_pass http://127.0.0.1:5000;
+                  proxy_http_version 1.1;
+                  proxy_buffering off;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto https;
+              }
+          }
+      notify: Reload Nginx
+
+    - name: Validate Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/nginx
+          - -t
+      changed_when: false
+
+    - name: Enable and start Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Check whether firewalld is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - firewalld
+      register: journeyman_firewalld_active
+      changed_when: false
+      failed_when: false
+      when: journeyman_configure_firewalld | bool
+
+    - name: Open HTTP and HTTPS in firewalld
+      ansible.builtin.shell: |
+        set -euo pipefail
+        changed=0
+        for service in http https; do
+          if ! firewall-cmd --permanent --query-service="$service" >/dev/null; then
+            firewall-cmd --permanent --add-service="$service" >/dev/null
+            changed=1
+          fi
+        done
+        if [ "$changed" -eq 1 ]; then
+          firewall-cmd --reload >/dev/null
+          echo changed
+        fi
+      args:
+        executable: /bin/bash
+      register: journeyman_firewalld_change
+      changed_when: "'changed' in journeyman_firewalld_change.stdout"
+      when:
+        - journeyman_configure_firewalld | bool
+        - journeyman_firewalld_active.rc == 0
+
+    - name: Check SELinux Nginx network-connect boolean
+      ansible.builtin.command:
+        argv:
+          - getsebool
+          - httpd_can_network_connect
+      register: journeyman_selinux_httpd_connect
+      changed_when: false
+      failed_when: false
+      when: journeyman_configure_selinux_nginx_proxy | bool
+
+    - name: Permit Nginx to proxy to the local Gunicorn TCP listener under SELinux
+      ansible.builtin.command:
+        argv:
+          - setsebool
+          - -P
+          - httpd_can_network_connect
+          - '1'
+      when:
+        - journeyman_configure_selinux_nginx_proxy | bool
+        - journeyman_selinux_httpd_connect.rc == 0
+        - "' off' in journeyman_selinux_httpd_connect.stdout"
+
+    - name: Reload systemd before starting Journeyman
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start Journeyman services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - journeyman.service
+        - journeyman-runner.service
+        - journeyman-scheduler.service
+        - journeyman-environment-builder.service
+
+    - name: Check whether fallback administrator already exists
+      ansible.builtin.stat:
+        path: /etc/journeyman/fallback-admin-password.hash
+      register: journeyman_fallback_admin_hash
+
+    - name: Generate first-use break-glass administrator password
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py fallback-admin generate
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      register: journeyman_fallback_admin
+      when:
+        - journeyman_generate_fallback_admin | bool
+        - not journeyman_fallback_admin_hash.stat.exists
+
+    - name: Display first-use break-glass administrator username
+      ansible.builtin.debug:
+        msg: "{{ journeyman_fallback_admin.stdout_lines[0] }}"
+      when:
+        - journeyman_fallback_admin is defined
+        - journeyman_fallback_admin.stdout_lines is defined
+        - journeyman_fallback_admin.stdout_lines | length >= 2
+
+    - name: Display first-use break-glass administrator password
+      ansible.builtin.debug:
+        msg: "{{ journeyman_fallback_admin.stdout_lines[1] }}"
+      when:
+        - journeyman_fallback_admin is defined
+        - journeyman_fallback_admin.stdout_lines is defined
+        - journeyman_fallback_admin.stdout_lines | length >= 2
+
+    - name: Remind operator to store break-glass credential
+      ansible.builtin.debug:
+        msg: "Store the fallback administrator credential securely; it will not be displayed again."
+      when:
+        - journeyman_fallback_admin is defined
+        - journeyman_fallback_admin.stdout_lines is defined
+        - journeyman_fallback_admin.stdout_lines | length >= 2
+
+    - name: Apply pending Nginx configuration before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify local Gunicorn listener
+      ansible.builtin.uri:
+        url: http://127.0.0.1:5000/login
+        status_code:
+          - 200
+          - 302
+        validate_certs: false
+        use_proxy: false
+      register: journeyman_local_web
+
+    - name: Verify HTTPS through Nginx
+      ansible.builtin.uri:
+        url: "https://{{ journeyman_fqdn }}:{{ journeyman_https_port }}/login"
+        status_code:
+          - 200
+          - 302
+        validate_certs: true
+        use_proxy: false
+      register: journeyman_https_web
+
+    - name: Show fresh-install completion details
+      ansible.builtin.debug:
+        msg: |-
+          Journeyman installation checks passed.
+          URL: https://{{ journeyman_fqdn }}{% if journeyman_https_port | int != 443 %}:{{ journeyman_https_port }}{% endif %}/
+          PostgreSQL: configured and migrations applied
+          Web backend: reachable on 127.0.0.1:5000
+          Nginx HTTPS: reachable
+          Runner, scheduler and environment builder: started
+          {% if journeyman_fallback_admin is defined and journeyman_fallback_admin.stdout is defined %}
+
+          The first-use fallback administrator credential was displayed above.
+          Store it securely; it will not be displayed again.
+
+          Sign in with the fallback administrator, then configure and test
+          Settings -> Directory and Authentication before relying on AD login.
+          {% else %}
+
+          A fallback-administrator hash already exists; its password was not changed.
+          {% endif %}
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart PostgreSQL
+      ansible.builtin.systemd:
+        name: postgresql
+        state: restarted
+
+    - name: Reload PostgreSQL
+      ansible.builtin.systemd:
+        name: postgresql
+        state: reloaded
+
+    - name: Reload Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Journeyman services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - journeyman.service
+        - journeyman-runner.service
+        - journeyman-scheduler.service
+        - journeyman-environment-builder.service
+      failed_when: false

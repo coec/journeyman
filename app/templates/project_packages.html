@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}
+Packages · Journeyman
+{% if disabled_packages_hidden %}<p class="muted-list-note">Disabled packages hidden</p>{% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+  <div>
+    <h1>Packages</h1>
+    <p>
+      Controlled ways to dispatch automation Projects.
+    </p>
+  </div>
+
+  {% if is_admin %}
+    <a
+      class="button primary"
+      href="{{ url_for(
+        'main.project_package_new'
+      ) }}"
+    >
+      ＋ Add Package
+    </a>
+  {% endif %}
+</div>
+
+<section class="panel repository-list">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Project</th>
+
+        {% if is_admin %}
+          <th>Access</th>
+          <th>Enabled</th>
+          <th>Inputs</th>
+          <th>Owner</th>
+        {% endif %}
+
+        <th></th>
+      </tr>
+    </thead>
+
+    <tbody>
+      {% for package in packages %}
+        <tr>
+          <td>
+            <strong>{{ package.name }}</strong>
+
+            {% if package.description %}
+              <small>
+                {{ package.description }}
+              </small>
+            {% endif %}
+
+            {% if package.warning_message %}
+              <small>
+                Warning displayed before dispatch
+              </small>
+            {% endif %}
+          </td>
+
+          <td>
+            {{ package.project.name
+               if package.project
+               else "Missing Project" }}
+          </td>
+
+          {% if is_admin %}
+            <td>
+              {{ package.access_mode
+                 |replace('_', ' ')
+                 |title }}
+
+              {% if package.access_mode == "restricted" %}
+                <small>
+                  {{ package.permissions | length }}
+                  explicit permission{% if package.permissions | length != 1 %}s{% endif %}
+                </small>
+              {% endif %}
+            </td>
+
+            <td>
+              {{ "Yes" if package.enabled else "No" }}
+            </td>
+
+            <td>
+              {{ package.inputs | length }}
+            </td>
+
+            <td>
+              {{ package.owner }}
+            </td>
+          {% endif %}
+
+          <td>
+            {% if is_admin %}
+              <details class="action-menu">
+                <summary class="button action-menu-trigger">
+                  Actions <span aria-hidden="true">▾</span>
+                </summary>
+                <div class="action-menu-items">
+                  {% if package.id in launchable_package_ids %}
+                    <a
+                      class="action-menu-item"
+                      href="{{ url_for('main.project_package_launch', package_id=package.id) }}"
+                    >Dispatch</a>
+                  {% else %}
+                    <button
+                      class="action-menu-item"
+                      type="button"
+                      disabled
+                      title="This Package or its Project is disabled"
+                    >Dispatch</button>
+                  {% endif %}
+
+                  <a
+                    class="action-menu-item"
+                    href="{{ url_for('main.project_package_edit', package_id=package.id) }}"
+                  >Edit</a>
+
+                  <form
+                    method="post"
+                    action="{{ url_for('main.project_package_delete', package_id=package.id) }}"
+                    data-confirm="Delete this Package and all Jobs launched through it, including their output? This cannot be undone."
+                  >
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="action-menu-item danger" type="submit">Delete</button>
+                  </form>
+                </div>
+              </details>
+            {% elif package.id in launchable_package_ids %}
+              <a
+                class="button primary"
+                href="{{ url_for('main.project_package_launch', package_id=package.id) }}"
+              >Dispatch</a>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr>
+          <td
+            colspan="{{ 7 if is_admin else 3 }}"
+            class="empty"
+          >
+            No Packages are available.
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% include "_pagination.html" %}
+</section>
+
+{% endblock %}

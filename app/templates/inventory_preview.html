@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+
+{% block title %}
+Inspect {{ inventory.name }} · Journeyman
+{% endblock %}
+
+{% block content %}
+{% set is_satellite = inventory.inventory_type == 'satellite' %}
+{% set can_refresh = inventory.inventory_type != 'static' %}
+
+<div class="page-heading">
+    <div>
+        <h1>Inspect Inventory</h1>
+        <p>{{ inventory.name }}</p>
+    </div>
+
+    <div class="page-actions">
+        {% if can_refresh %}
+        <form
+            method="post"
+            action="{{ url_for(
+                'main.inventory_refresh',
+                inventory_id=inventory.id
+            ) }}"
+        >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button
+                class="button"
+                type="submit"
+                {% if not inventory.enabled %}
+                disabled
+                title="Inventory is disabled"
+                {% endif %}
+            >
+                Refresh Inventory
+            </button>
+        </form>
+        {% endif %}
+
+        <a
+            class="button"
+            href="{{ url_for(
+                'main.inventory_edit',
+                inventory_id=inventory.id
+            ) }}"
+        >
+            Edit Inventory
+        </a>
+
+        <a class="button" href="{{ url_for('main.inventories') }}">
+            Back to Inventories
+        </a>
+    </div>
+</div>
+
+<section class="panel job-summary">
+    <dl class="detail-grid">
+        <div>
+            <dt>Inventory Type</dt>
+            <dd>
+                {% if is_satellite %}
+                    Red Hat Satellite
+                {% elif inventory.inventory_type == 'static' %}
+                    Static Ansible Inventory
+                {% else %}
+                    {{ inventory.inventory_type|replace('_', ' ')|title }}
+                {% endif %}
+            </dd>
+        </div>
+
+        <div>
+            <dt>Credential</dt>
+            <dd>
+                {% if credential %}
+                    {{ credential.name }}
+                {% elif inventory.inventory_type == 'static' %}
+                    Not required
+                {% else %}
+                    Not configured
+                {% endif %}
+            </dd>
+        </div>
+
+        <div>
+            <dt>Resolved Hosts</dt>
+            <dd>{{ preview.total }}</dd>
+        </div>
+
+        {% if provider_diagnostics %}
+        <div>
+            <dt>Source Records</dt>
+            <dd>{{ provider_diagnostics.get('source_records', preview.total) }}</dd>
+        </div>
+
+        <div>
+            <dt>Duplicate Source Records</dt>
+            <dd>{{ provider_diagnostics.get('duplicate_source_records', 0) }}</dd>
+        </div>
+        {% endif %}
+
+        {% if is_satellite %}
+        <div>
+            <dt>TLS Verification</dt>
+            <dd>{{ 'Enabled' if inventory.verify_tls else 'Disabled' }}</dd>
+        </div>
+
+        <div>
+            <dt>Organization</dt>
+            <dd>{{ organization or '—' }}</dd>
+        </div>
+        {% endif %}
+    </dl>
+</section>
+
+{% set duplicate_identities =
+    provider_diagnostics.get('duplicate_identities', {})
+    if provider_diagnostics else {}
+%}
+{% if duplicate_identities %}
+<div class="flash warning">
+    <strong>Duplicate source host identities detected.</strong>
+    Journeyman resolved
+    {{ provider_diagnostics.get('source_records', preview.total) }}
+    provider records to {{ preview.total }} unique inventory hosts.
+    Duplicate records are not silently overwritten; the first record is used
+    for the canonical host and all records for the duplicated identity are
+    preserved in that host's variables for inspection.
+    <ul>
+        {% for hostname, details in duplicate_identities|dictsort %}
+        <li>
+            <strong>{{ hostname }}</strong>:
+            {{ details.get('source_records', 0) }} source records
+            ({{ details.get('duplicate_source_records', 0) }} duplicate{{ '' if details.get('duplicate_source_records', 0) == 1 else 's' }})
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if hostnames %}
+<section class="panel">
+    <div class="form-section-heading">
+        <div>
+            <h2>Host Variables</h2>
+            <p>
+                Inspect the canonical variables Journeyman resolved for a host.
+                Composite inventories also show each direct source alongside the
+                merged result.
+            </p>
+        </div>
+    </div>
+
+    <form method="{{ 'post' if inspect_binding_package else 'get' }}" class="inventory-host-selector">
+        {% if inspect_binding_package %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="package_id" value="{{ inspect_binding_package.id }}">
+        {% for name, value in inspect_binding_form_values.items() %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        {% endif %}
+        <label>
+            Host
+            <select name="host" data-submit-on-change>
+                {% for hostname in hostnames %}
+                <option
+                    value="{{ hostname }}"
+                    {% if hostname == selected_hostname %}selected{% endif %}
+                >
+                    {{ hostname }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <noscript><button class="button" type="submit">Inspect Host</button></noscript>
+    </form>
+
+    {% if selected_sources %}
+    <div class="inventory-source-grid">
+        {% for source in selected_sources %}
+        <div class="inventory-source-card">
+            <h3>{{ source.inventory.name }}</h3>
+            <p class="muted">
+                {{ source.inventory.inventory_type|replace('_', ' ')|title }}
+                · {{ 'Host present' if source.present else 'Host not present' }}
+            </p>
+            {% if source.present %}
+            <pre class="inventory-json">{{ source.variables_json }}</pre>
+            {% else %}
+            <div class="empty-state compact">No variables for this host.</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="inventory-source-card merged inventory-copy-container">
+        <div class="inventory-copy-heading">
+            <h3>Merged Result</h3>
+            <button
+                class="inventory-copy-button"
+                type="button"
+                data-copy-target="merged-result-content"
+                title="Copy contents"
+                aria-label="Copy merged result"
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="9" y="9" width="10" height="10" rx="2"></rect>
+                    <path d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"></path>
+                </svg>
+                <span class="inventory-copy-status" aria-live="polite"></span>
+            </button>
+        </div>
+        <p class="muted">
+            This is the hostvars dictionary Journeyman will pass forward after
+            inventory resolution.
+        </p>
+        <pre id="merged-result-content" class="inventory-json">{{ selected_host_json }}</pre>
+    </div>
+</section>
+{% endif %}
+
+<section class="panel">
+    <details class="inventory-raw-details inventory-copy-container">
+        <summary>Raw Resolved Inventory</summary>
+        <button
+            class="inventory-copy-button inventory-copy-button-raw"
+            type="button"
+            data-copy-target="raw-resolved-inventory-content"
+            title="Copy contents"
+            aria-label="Copy raw resolved inventory"
+        >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="9" y="9" width="10" height="10" rx="2"></rect>
+                <path d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"></path>
+            </svg>
+            <span class="inventory-copy-status" aria-live="polite"></span>
+        </button>
+        <p class="muted">
+            Complete canonical inventory after provider resolution, filtering,
+            and composition. This is intended for inspection and debugging.
+        </p>
+        <pre id="raw-resolved-inventory-content" class="inventory-json inventory-json-full">{{ raw_inventory }}</pre>
+    </details>
+</section>
+
+{% endblock %}

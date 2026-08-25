@@ -1,0 +1,116 @@
+---
+- name: Configure Cisco switch port control automation
+  hosts: localhost
+  gather_facts: false
+
+# This playbook assumes:
+#- 'My Gitlab' repo exists and contains the playbook 'pb_cisco_port_control.yml'
+#- 'pb_cisco_port_control.yml' accepts:
+#  - 'var_switchname'
+#  - 'var_switchport'
+#  - 'var_action'
+#- 'Cisco' credential exists and is correct
+
+  tasks:
+    - name: Create filtered inventory containing reachable Cisco switches
+      journeyman.configuration.inventory:
+        name: Cisco Switches
+        inventory_type: filtered
+        source_inventory: Zabbix
+
+        include_groups:
+          - match: all
+            rules:
+
+              - field: host_name
+                operator: contains
+                value: "swi"
+
+              - field: variable
+                parameter: zabbix.icmp.reachable
+                operator: equals
+                value: "true"
+
+        state: present
+
+    - name: Create Cisco port control Project
+      journeyman.configuration.project:
+        name: Cisco Port Control
+        description: >
+          Enable, disable, or bounce a selected interface on a Cisco switch.
+          The target switch and interface are selected from Zabbix inventory
+          data at Package dispatch time.
+
+        execution_type: ansible
+
+        inventory: Cisco Switches
+        repository: My GitLab
+
+        credentials:
+          - Cisco
+
+        steps:
+          - name: Manage Cisco switch port
+            playbook: pb_cisco_port_control.yml
+
+        state: present
+
+    - name: Create Cisco port control Package
+      journeyman.configuration.package:
+        name: Cisco Port Control
+        description: >
+          Select a reachable Cisco switch and one of the interfaces discovered
+          by Zabbix, then enable, disable, or bounce that interface.
+
+        project: Cisco Port Control
+
+        inputs:
+          - name: var_switchname
+            label: Cisco switch
+            type: text
+            required: true
+            binding_type: step_limit
+            help_text: >
+              Select the Cisco switch to operate on. Available hosts come from
+              the Cisco Switches Project inventory.
+
+          - name: var_switchport
+            label: Switchport to operate on
+            type: choice
+            required: true
+            binding_type: extra_var
+            choices: []
+            validation:
+              choices_from_hostvar:
+                host_input: var_switchname
+                path: zabbix.network_interfaces
+                value_key: name
+                label_keys:
+                  - name
+                  - alias
+            help_text: >
+              Interfaces are populated dynamically from the Zabbix inventory
+              data for the selected switch.
+
+          - name: var_action
+            label: Action
+            type: choice
+            required: true
+            binding_type: extra_var
+            choices:
+              - value: enable
+                label: Enable
+              - value: disable
+                label: Disable
+              - value: disable/enable
+                label: Disable / Enable
+            help_text: >
+              Select whether the interface should be enabled, disabled,
+              or disabled and then re-enabled.
+
+        confirmation_required: true
+        confirmation_message: >
+          Confirm the selected switch, interface and requested action before
+          dispatching this Package.
+
+        state: present

@@ -1,0 +1,923 @@
+{% extends "base.html" %}
+
+{% block title %}
+  Job #{{ job.id }} · Journeyman
+{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Job #{{ job.id }}</h1>
+    <p>{{ job.project_name }}</p>
+  </div>
+
+  <div class="page-heading-actions">
+    {% if job.status == "successful" %}
+      <a class="button" href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}">Rerun</a>
+    {% elif job.status in ["failed", "cancelled"] %}
+      <a class="button" href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}">Rerun - all</a>
+      {% if failed_rerun_hosts %}
+        <a class="button" href="{{ url_for('main.job_rerun', job_id=job.id, scope='failed') }}">Rerun - failed only</a>
+      {% endif %}
+    {% endif %}
+
+    <a
+      class="button"
+      href="{{ url_for('main.job_output_download', job_id=job.id) }}"
+    >
+      Save Output
+    </a>
+
+    <a
+      class="button"
+      href="{{ url_for('main.jobs') }}"
+    >
+      Back to Jobs
+    </a>
+  </div>
+</div>
+
+<div id="job-live-content">
+<div class="job-actions">
+  {% if job.status == "queued" %}
+    <form
+      class="job-cancel-form"
+      method="post"
+      action="{{ url_for('main.job_cancel', job_id=job.id) }}"
+      data-confirm-message="Cancel this queued project execution?"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button
+        class="button danger"
+        type="submit"
+      >
+        Cancel project execution
+      </button>
+    </form>
+
+  {% elif job.status == "waiting_oversight" %}
+    <a class="button" href="{{ url_for('main.job_oversight', job_id=job.id) }}">Review Oversight</a>
+    <form
+      class="job-cancel-form"
+      method="post"
+      action="{{ url_for('main.job_cancel', job_id=job.id) }}"
+      data-confirm-message="Stop this project execution while it is waiting for oversight?"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="button danger" type="submit">Stop project execution</button>
+    </form>
+
+  {% elif job.status == "running" %}
+    <form
+      class="job-cancel-form"
+      method="post"
+      action="{{ url_for('main.job_cancel', job_id=job.id) }}"
+      data-confirm-message="Stop this project execution?"
+    >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button
+        class="button danger"
+        type="submit"
+      >
+        Stop project execution
+      </button>
+    </form>
+
+  {% elif job.status == "cancelling" %}
+    <button
+      class="button"
+      type="button"
+      disabled
+    >
+      Stopping...
+    </button>
+
+  {% endif %}
+</div>
+<section class="panel job-progress">
+  <div class="job-progress-heading">
+    <div>
+      <h2>Progress</h2>
+
+      <p>
+        {{ completed_steps }} of {{ total_steps }}
+        workflow steps completed
+      </p>
+    </div>
+
+    <strong>{{ progress_percent }}%</strong>
+  </div>
+
+  <progress
+    value="{{ completed_steps }}"
+    max="{{ total_steps if total_steps else 1 }}"
+  >
+    {{ progress_percent }}%
+  </progress>
+
+  <dl class="detail-grid job-progress-details">
+    <div>
+      <dt>Current Step</dt>
+      <dd>
+        {% if current_step %}
+          Step {{ current_step.position }}:
+          {{ current_step.name or
+             ("Step " ~ current_step.position) }}
+        {% elif job.status == "queued" %}
+          Waiting for execution to start
+        {% elif job.status == "waiting_oversight" %}
+          Waiting for oversight before the next step(s)
+        {% elif job.status == "successful" %}
+          Project execution completed
+        {% elif job.status == "failed" %}
+          Project execution failed
+        {% elif job.status == "cancelled" %}
+          Project execution cancelled
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+
+    <div>
+      <dt>Elapsed</dt>
+      <dd>{{ elapsed_display }}</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="panel job-summary">
+  <dl class="detail-grid">
+    <div>
+      <dt>Status</dt>
+      <dd>
+        <span class="status status-{{ job.status }}">
+          {{ job.status | replace('_', ' ') | title }}
+        </span>
+      </dd>
+    </div>
+
+    <div>
+      <dt>Project</dt>
+      <dd>{{ job.project_name }}</dd>
+    </div>
+
+    <div>
+      <dt>Repository</dt>
+      <dd>{{ job.repository_name }}</dd>
+    </div>
+
+    <div>
+      <dt>Repository Commit</dt>
+      <dd>
+        {% if job.repository_commit %}
+          <code>{{ job.repository_commit }}</code>
+        {% else %}
+          Not recorded
+        {% endif %}
+      </dd>
+    </div>
+
+    <div>
+      <dt>Requested By</dt>
+      <dd>{{ job.requested_by }}</dd>
+    </div>
+
+    <div>
+      <dt>Queued</dt>
+      <dd>
+        {% if job.queued_at %}
+         <span class="utc-datetime" data-utc="{{ job.queued_at.isoformat() }}">{{ job.queued_at }}</span>
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+
+    <div>
+      <dt>Started</dt>
+      <dd>
+        {% if job.started_at %}
+          <span class="utc-datetime" data-utc="{{ job.started_at.isoformat() }}">{{ job.started_at }}</span>
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+
+    <div>
+      <dt>Finished</dt>
+      <dd>
+        {% if job.finished_at %}
+          <span class="utc-datetime" data-utc="{{ job.finished_at.isoformat() }}">{{ job.finished_at }}</span>
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+
+    <div>
+      <dt>Exit Code</dt>
+      <dd>
+        {% if job.exit_code is not none %}
+          {{ job.exit_code }}
+        {% else %}
+          —
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+
+  {% if job.message %}
+    <div class="job-message">
+      {{ job.message }}
+    </div>
+  {% endif %}
+</section>
+
+{% if job.package_snapshot %}
+  {% set package_values =
+      job.package_snapshot.get_display_values()
+  %}
+  {% set operational_targets =
+      job.package_snapshot.get_operational_targets()
+  %}
+  {% set inventory_bindings =
+      job.package_snapshot.get_inventory_bindings()
+  %}
+
+  <section class="panel job-package-summary">
+    <h2>Package</h2>
+
+    <dl class="detail-grid">
+      <div>
+        <dt>Name</dt>
+        <dd>{{ job.package_snapshot.package_name }}</dd>
+      </div>
+
+      <div>
+        <dt>Definition Digest</dt>
+        <dd>
+          <code>
+            {{ job.package_snapshot.package_definition_sha256[:12] }}
+          </code>
+        </dd>
+      </div>
+
+      {% if job.package_snapshot.step_limit %}
+        <div>
+          <dt>Package Limit</dt>
+          <dd>
+            <code>{{ job.package_snapshot.step_limit }}</code>
+          </dd>
+        </div>
+      {% endif %}
+    </dl>
+
+    {% if operational_targets %}
+      <h3>Operational Targets</h3>
+
+      <div class="target-host-list">
+        {% for target in operational_targets %}
+          <code>{{ target }}</code>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if inventory_bindings %}
+      <h3>Inventory Constants</h3>
+
+      <dl class="detail-grid">
+        {% for name, value in inventory_bindings.items() %}
+          <div>
+            <dt>{{ name }}</dt>
+            <dd>{{ value }}</dd>
+          </div>
+        {% endfor %}
+      </dl>
+    {% endif %}
+
+    {% if package_values %}
+      <h3>Dispatch Values</h3>
+
+      <dl class="detail-grid">
+        {% for value in package_values %}
+          <div>
+            <dt>{{ value.label }}</dt>
+            <dd>{{ value.display_value }}</dd>
+          </div>
+        {% endfor %}
+      </dl>
+    {% endif %}
+  </section>
+{% endif %}
+
+<section>
+    <h2>Workflow</h2>
+
+    {% if job.steps %}
+        {% for step in job.steps %}
+            <article>
+                <h3>
+                    {{ step.position }}.
+                    {{ step.name or ("Step " ~ step.position) }}
+                </h3>
+
+                <dl>
+                    <dt>Status</dt>
+                    <dd>{{ step.status }}</dd>
+
+                    <dt>Repository</dt>
+                    <dd>
+                        {% if step.repository_snapshot %}
+                            {{ step.repository_snapshot.repository_name }}
+
+                            {% if step.repository_snapshot.repository_commit %}
+                                <code>
+                                    {{ step.repository_snapshot.repository_commit[:12] }}
+                                </code>
+                            {% endif %}
+                        {% else %}
+                            Legacy job repository snapshot unavailable
+                        {% endif %}
+                    </dd>
+
+                    <dt>{{ "Script" if job.execution_type in ["shell", "remote_shell"] else "Playbook" }}</dt>
+                    <dd><code>{{ step.playbook }}</code></dd>
+
+                    <dt>Limit</dt>
+                    <dd>{{ step.limit or "None" }}</dd>
+
+                    <dt>Tags</dt>
+                    <dd>{{ step.tags or "None" }}</dd>
+
+                    <dt>Skip tags</dt>
+                    <dd>{{ step.skip_tags or "None" }}</dd>
+
+                    <dt>Step extra variables</dt>
+                    <dd><code>{{ step.get_extra_vars() | tojson }}</code></dd>
+
+                    <dt>Verbosity</dt>
+                    <dd>{{ step.verbosity }}</dd>
+                    <dt>Check mode</dt>
+                    <dd>{{ "Yes" if step.check_mode else "No" }}</dd>
+
+                    <dt>Failure behaviour</dt>
+                    <dd>
+                        {% set dependency_positions = step.get_dependency_positions() %}
+          <div><strong>Depends on:</strong> {% if dependency_positions %}Steps {{ dependency_positions|join(', ') }}{% else %}None (root step){% endif %}</div>
+
+          {% if step.continue_on_failure %}
+                            Continue to the next step
+                        {% else %}
+                            Stop project execution
+                        {% endif %}
+                    </dd>
+                </dl>
+            </article>
+        {% endfor %}
+    {% else %}
+        <p>This job has no workflow steps.</p>
+    {% endif %}
+</section>
+
+<div class="form-section-heading">
+  <div>
+    <h2>Workflow Steps</h2>
+    <p>
+      These values are snapshots taken when the Job was queued.
+    </p>
+  </div>
+</div>
+
+{% for step in job.steps %}
+  <section class="panel job-step">
+    <div class="job-step-header">
+      <div>
+        <h3>
+          Step {{ step.position }}:
+          {{ step.name }}
+        </h3>
+
+        <code>{{ step.playbook }}</code>
+      </div>
+
+      <span class="status status-{{ step.status }}">
+        {{ step.status | replace('_', ' ') | title }}
+      </span>
+    </div>
+
+    <dl class="detail-grid">
+      <div>
+        <dt>Limit</dt>
+        <dd>{{ step.limit or 'None' }}</dd>
+      </div>
+
+      <div>
+        <dt>Tags</dt>
+        <dd>{{ step.tags or 'None' }}</dd>
+      </div>
+
+      <div>
+        <dt>Skip Tags</dt>
+        <dd>{{ step.skip_tags or 'None' }}</dd>
+      </div>
+
+      <div>
+        <dt>Verbosity</dt>
+        <dd>{{ step.verbosity }}</dd>
+        <dt>Check mode</dt>
+        <dd>{{ "Yes" if step.check_mode else "No" }}</dd>
+      </div>
+
+      <div>
+        <dt>On Failure</dt>
+        <dd>
+          {% if step.continue_on_failure %}
+            Continue
+          {% else %}
+            Stop project execution
+          {% endif %}
+        </dd>
+      </div>
+
+      <div>
+        <dt>Exit Code</dt>
+        <dd>
+          {% if step.exit_code is not none %}
+            {{ step.exit_code }}
+          {% else %}
+            —
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    {% if step.execution_slices %}
+      <h4>Execution Slices</h4>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Runner</th>
+              <th>Hosts</th>
+              <th>Status</th>
+              <th>RC</th>
+              <th>Message</th>
+              <th>Output</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for execution_slice in step.execution_slices %}
+              <tr>
+                <td>
+                  {% if execution_slice.dispatch_target == 'local' %}
+                    <strong>{{ execution_slice.runner_hostname or execution_slice.runner_name or 'Local runner' }}</strong><br>
+                    <small>Built-in local runner</small>
+                  {% else %}
+                    <strong>{{ execution_slice.runner_hostname or execution_slice.runner_name or 'Remote runner' }}</strong><br>
+                    <small>Remote runner</small>
+                  {% endif %}
+                </td>
+                <td>
+                  {% for host in execution_slice.get_hosts() %}
+                    <code>{{ host }}</code>{% if not loop.last %}<br>{% endif %}
+                  {% endfor %}
+                </td>
+                <td><span class="status status-{{ execution_slice.status }}">{{ execution_slice.status|replace('_', ' ')|title }}</span></td>
+                <td>{{ execution_slice.exit_code if execution_slice.exit_code is not none else '—' }}</td>
+                <td>
+                  {% if execution_slice.message %}
+                    <small>{{ execution_slice.message }}</small>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>
+                  <button
+                    class="button secondary job-output-button"
+                    type="button"
+                    data-output-url="{{ url_for('main.job_slice_output', job_id=job.id, slice_id=execution_slice.id) }}"
+                    data-runner="{{ execution_slice.runner_hostname or execution_slice.runner_name or ('Local runner' if execution_slice.dispatch_target == 'local' else 'Remote runner') }}"
+                  >
+                    Show job output
+                  </button>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <h4>Job Output</h4>
+      <p>
+        <button
+          class="button secondary job-output-button"
+          type="button"
+          data-output-url="{{ url_for('main.job_step_output', job_id=job.id, step_id=step.id) }}"
+          data-runner="Built-in local runner"
+        >
+          Show job output
+        </button>
+      </p>
+    {% endif %}
+
+    {% set custom_stats = step.get_custom_stats() %}
+    {% if custom_stats %}
+      <h4>Published Statistics</h4>
+      <p>
+        These values are available to subsequent workflow steps under
+        <code>journeyman_stats</code>.
+      </p>
+      <pre class="job-output">{{ custom_stats | tojson(indent=2) }}</pre>
+    {% endif %}
+
+    {% if step.host_results %}
+      <h4>Per-host Results</h4>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Host</th>
+              <th>Status</th>
+              <th>Runner</th>
+              <th>RC</th>
+              <th>Stdout</th>
+              <th>Stderr</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for host_result in step.host_results %}
+              <tr>
+                <td><code>{{ host_result.host }}</code></td>
+                <td><span class="status status-{{ host_result.status }}">{{ host_result.status|replace('_', ' ')|title }}</span></td>
+                <td>
+                  {% if host_result.runner_hostname or host_result.runner_name %}
+                    <code>{{ host_result.runner_hostname or host_result.runner_name }}</code>{% if host_result.runner_local %}<br><small>Local</small>{% endif %}
+                  {% else %}—{% endif %}
+                </td>
+                <td>{{ host_result.exit_code if host_result.exit_code is not none else '—' }}</td>
+                <td>
+                  {% if host_result.stdout %}
+                    <details><summary>View</summary><pre class="job-output">{{ host_result.stdout }}</pre></details>
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  {% if host_result.stderr %}
+                    <details><summary>View</summary><pre class="job-output error-output">{{ host_result.stderr }}</pre></details>
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+
+    {% if step.execution_slices and job.dispatch_target == 'sliced' %}
+      {% set command_slices = step.execution_slices | selectattr('command') | list %}
+      {% if command_slices %}
+        <h4>Command</h4>
+        {% for execution_slice in command_slices %}
+          <pre class="job-output"><strong>Runner:</strong> {{ execution_slice.runner_hostname
+               or execution_slice.runner_name
+               or ('Local runner' if execution_slice.dispatch_target == 'local' else 'Remote runner') }}
+<strong>Command:</strong> {{ execution_slice.command }}</pre>
+        {% endfor %}
+      {% elif step.command %}
+        <h4>Command</h4>
+        <pre class="job-output"><strong>Runner:</strong> Built-in local runner
+<strong>Command:</strong> {{ step.command }}</pre>
+      {% endif %}
+    {% elif step.command %}
+      <h4>Command</h4>
+      <p class="job-command-runner">
+        <strong>Runner:</strong> Built-in local runner
+      </p>
+      <p class="job-command-label"><strong>Command:</strong></p>
+      <pre class="job-output">{{ step.command }}</pre>
+    {% endif %}
+  </section>
+{% endfor %}
+</div>
+
+<div class="job-output-modal" id="job-output-modal" hidden>
+  <div class="job-output-modal-backdrop" data-output-modal-close></div>
+  <section
+    class="job-output-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="job-output-modal-title"
+  >
+    <header class="job-output-modal-header">
+      <div>
+        <h2 id="job-output-modal-title">Job output</h2>
+        <p id="job-output-modal-runner"></p>
+      </div>
+    </header>
+
+    <div class="job-output-modal-toolbar">
+      <span id="job-output-modal-status" class="status">Loading...</span>
+      {% if job.status == "successful" %}
+        <a class="button secondary" href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}">Rerun</a>
+      {% elif job.status in ["failed", "cancelled"] %}
+        <a class="button secondary" href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}">Rerun - all</a>
+        {% if failed_rerun_hosts %}
+          <a class="button secondary" href="{{ url_for('main.job_rerun', job_id=job.id, scope='failed') }}">Rerun - failed only</a>
+        {% endif %}
+      {% endif %}
+      <button class="button secondary" id="job-output-copy" type="button">Copy output</button>
+      <button class="button secondary" id="job-output-latest" type="button" hidden>Jump to latest</button>
+      <button class="button secondary" type="button" data-output-modal-close>Close</button>
+    </div>
+
+    <pre class="job-output-live" id="job-output-live" tabindex="0"></pre>
+  </section>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  const eventsUrl = {{ url_for('main.job_events', job_id=job.id) | tojson }};
+  const pageUrl = {{ url_for('main.job_detail', job_id=job.id) | tojson }};
+  const fallbackIntervalMilliseconds = 5000;
+  const maximumEventSourceErrors = 3;
+
+  let eventSource = null;
+  let fallbackTimer = null;
+  let eventSourceErrors = 0;
+  let refreshInProgress = false;
+
+  const outputModal = document.getElementById("job-output-modal");
+  const outputRunner = document.getElementById("job-output-modal-runner");
+  const outputStatus = document.getElementById("job-output-modal-status");
+  const outputView = document.getElementById("job-output-live");
+  const outputCopy = document.getElementById("job-output-copy");
+  const outputLatest = document.getElementById("job-output-latest");
+  let outputTimer = null;
+  let outputUrl = null;
+  let outputRequestInProgress = false;
+  let outputCombinedText = "";
+
+  function outputIsNearBottom() {
+    return outputView.scrollTop + outputView.clientHeight >= outputView.scrollHeight - 16;
+  }
+
+  function formatSliceOutput(payload) {
+    const sections = [];
+    if (payload.command) {
+      sections.push("$ " + payload.command);
+    }
+    if (payload.stdout) {
+      sections.push(payload.stdout.replace(/\s+$/, ""));
+    }
+    if (payload.stderr) {
+      sections.push("[stderr]\n" + payload.stderr.replace(/\s+$/, ""));
+    }
+    return sections.join("\n\n");
+  }
+
+  async function refreshSliceOutput() {
+    if (!outputUrl || outputRequestInProgress || outputModal.hidden) {
+      return;
+    }
+
+    outputRequestInProgress = true;
+    const follow = outputIsNearBottom();
+    try {
+      const response = await window.fetch(outputUrl, {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!response.ok) {
+        throw new Error("Output request returned HTTP " + response.status);
+      }
+      const payload = await response.json();
+      const nextText = formatSliceOutput(payload);
+      if (nextText !== outputCombinedText) {
+        outputCombinedText = nextText;
+        outputView.textContent = nextText || "No output has been produced yet.";
+      }
+      outputStatus.className = "status status-" + payload.status;
+      outputStatus.textContent = String(payload.status || "unknown")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, function (letter) { return letter.toUpperCase(); });
+      if (follow) {
+        outputView.scrollTop = outputView.scrollHeight;
+        outputLatest.hidden = true;
+      } else {
+        outputLatest.hidden = false;
+      }
+      if (payload.terminal && outputTimer !== null) {
+        window.clearInterval(outputTimer);
+        outputTimer = null;
+      }
+    } catch (error) {
+      outputStatus.className = "status status-failed";
+      outputStatus.textContent = "Output unavailable";
+    } finally {
+      outputRequestInProgress = false;
+    }
+  }
+
+  function closeOutputModal() {
+    if (outputTimer !== null) {
+      window.clearInterval(outputTimer);
+      outputTimer = null;
+    }
+    outputUrl = null;
+    outputModal.hidden = true;
+  }
+
+  function openOutputModal(button) {
+    if (outputTimer !== null) {
+      window.clearInterval(outputTimer);
+    }
+    outputUrl = button.dataset.outputUrl;
+    outputRunner.textContent = button.dataset.runner || "";
+    outputStatus.className = "status";
+    outputStatus.textContent = "Loading...";
+    outputCombinedText = "";
+    outputView.textContent = "Loading...";
+    outputLatest.hidden = true;
+    outputModal.hidden = false;
+    refreshSliceOutput();
+    outputTimer = window.setInterval(refreshSliceOutput, 2000);
+  }
+
+  function bindOutputButtons(root) {
+    root.querySelectorAll(".job-output-button").forEach(function (button) {
+      if (button.dataset.outputBound === "true") {
+        return;
+      }
+      button.dataset.outputBound = "true";
+      button.addEventListener("click", function () {
+        openOutputModal(button);
+      });
+    });
+  }
+
+  function bindCancellationForms(root) {
+    root.querySelectorAll(".job-cancel-form").forEach(function (form) {
+      if (form.dataset.liveBound === "true") {
+        return;
+      }
+
+      form.dataset.liveBound = "true";
+      form.addEventListener("submit", function (event) {
+        const confirmationMessage = (
+          form.dataset.confirmMessage
+          || "Stop this project execution?"
+        );
+
+        if (!window.confirm(confirmationMessage)) {
+          event.preventDefault();
+          return;
+        }
+
+        const button = form.querySelector('button[type="submit"]');
+        if (button) {
+          button.disabled = true;
+          button.textContent = "Stopping...";
+        }
+      });
+    });
+  }
+
+  function outputScrollState(root) {
+    return Array.from(root.querySelectorAll(".job-output")).map(function (element) {
+      return {
+        atBottom: element.scrollTop + element.clientHeight >= element.scrollHeight - 8,
+        scrollTop: element.scrollTop
+      };
+    });
+  }
+
+  async function refreshJobContent() {
+    if (refreshInProgress || document.hidden) {
+      return;
+    }
+
+    refreshInProgress = true;
+
+    try {
+      const current = document.getElementById("job-live-content");
+      const scrollState = current ? outputScrollState(current) : [];
+      const response = await window.fetch(pageUrl, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {"X-Journeyman-Live-Refresh": "1"}
+      });
+
+      if (!response.ok) {
+        throw new Error("Live refresh returned HTTP " + response.status);
+      }
+
+      const documentText = await response.text();
+      const parsed = new window.DOMParser().parseFromString(documentText, "text/html");
+      const replacement = parsed.getElementById("job-live-content");
+
+      if (!current || !replacement) {
+        throw new Error("Live Job content was not present in the response.");
+      }
+
+      current.replaceWith(replacement);
+      bindCancellationForms(replacement);
+      bindOutputButtons(replacement);
+
+      replacement.querySelectorAll(".job-output").forEach(function (element, index) {
+        const state = scrollState[index];
+        if (!state) {
+          return;
+        }
+        element.scrollTop = state.atBottom ? element.scrollHeight : state.scrollTop;
+      });
+
+      if (window.Journeyman) {
+        window.Journeyman.formatUtcDates();
+      }
+    } finally {
+      refreshInProgress = false;
+    }
+  }
+
+  function startFallbackPolling() {
+    if (fallbackTimer !== null) {
+      return;
+    }
+
+    fallbackTimer = window.setInterval(function () {
+      refreshJobContent().catch(function () {});
+    }, fallbackIntervalMilliseconds);
+  }
+
+  function startEventStream() {
+    if (!("EventSource" in window)) {
+      startFallbackPolling();
+      return;
+    }
+
+    eventSource = new window.EventSource(eventsUrl);
+
+    eventSource.addEventListener("job-update", function (event) {
+      eventSourceErrors = 0;
+      refreshJobContent().catch(function () {});
+
+      const payload = JSON.parse(event.data || "{}");
+      if (payload.terminal && eventSource) {
+        eventSource.close();
+      }
+    });
+
+    eventSource.addEventListener("job-removed", function () {
+      window.location.href = {{ url_for('main.jobs') | tojson }};
+    });
+
+    eventSource.onerror = function () {
+      eventSourceErrors += 1;
+      if (eventSourceErrors >= maximumEventSourceErrors) {
+        eventSource.close();
+        startFallbackPolling();
+      }
+    };
+  }
+
+  document.querySelectorAll("[data-output-modal-close]").forEach(function (button) {
+    button.addEventListener("click", closeOutputModal);
+  });
+
+  outputLatest.addEventListener("click", function () {
+    outputView.scrollTop = outputView.scrollHeight;
+    outputLatest.hidden = true;
+  });
+
+  outputView.addEventListener("scroll", function () {
+    outputLatest.hidden = outputIsNearBottom();
+  });
+
+  outputCopy.addEventListener("click", async function () {
+    try {
+      await navigator.clipboard.writeText(outputCombinedText);
+      outputCopy.textContent = "Copied";
+      window.setTimeout(function () {
+        outputCopy.textContent = "Copy output";
+      }, 1200);
+    } catch (error) {
+      outputCopy.textContent = "Copy failed";
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !outputModal.hidden) {
+      closeOutputModal();
+    }
+  });
+
+  bindCancellationForms(document);
+  bindOutputButtons(document);
+  startEventStream();
+}());
+</script>
+
+{% endblock %}

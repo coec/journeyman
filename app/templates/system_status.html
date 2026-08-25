@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}System Status · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>System Status</h1>
+    <p>Current health of the Journeyman application and local execution services.</p>
+  </div>
+  <a class="button secondary" href="{{ url_for('main.system_status') }}">Refresh</a>
+</div>
+
+<div class="status-overview status-{{ status.overall }}">
+  <strong>{{ status.overall|title }}</strong>
+  <span>{{ status.hostname }} · checked {{ status.checked_at.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+</div>
+
+<div class="status-summary-grid">
+  <div class="summary-card"><span>Queued jobs</span><strong>{{ status.job_counts.queued }}</strong></div>
+  <div class="summary-card"><span>Running jobs</span><strong>{{ status.job_counts.running }}</strong></div>
+  <div class="summary-card"><span>Failed jobs</span><strong>{{ status.job_counts.failed }}</strong></div>
+  <div class="summary-card"><span>Cancelled jobs</span><strong>{{ status.job_counts.cancelled }}</strong></div>
+  <div class="summary-card"><span>Repository issues</span><strong>{{ status.repository_issues }}</strong></div>
+  <div class="summary-card"><span>Inventory issues</span><strong>{{ status.inventory_issues }}</strong></div>
+  <div class="summary-card"><span>Environment issues</span><strong>{{ status.environment_issues }}</strong></div>
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h2>Storage</h2></div>
+  <div class="storage-table-wrap">
+    <table class="storage-table">
+      <thead>
+        <tr><th>Path</th><th>Filesystem</th><th>Total</th><th>Used</th><th>Available</th><th>Usage</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+      {% for storage in status.storage %}
+        <tr>
+          <td><strong>{{ storage.path }}</strong><small>{{ storage.name }}</small></td>
+          <td><code>{{ storage.mount_point }}</code></td>
+          {% if storage.error %}
+            <td colspan="4">{{ storage.error }}</td>
+          {% else %}
+            <td>{{ storage.total_display }}</td>
+            <td>{{ storage.used_display }}</td>
+            <td>{{ storage.free_display }}</td>
+            <td>
+              <div class="storage-usage">
+                <progress max="100" value="{{ storage.used_percent }}">{{ '%.1f'|format(storage.used_percent) }}%</progress>
+                <span>{{ '%.1f'|format(storage.used_percent) }}%</span>
+              </div>
+            </td>
+          {% endif %}
+          <td><span class="status-label status-{{ storage.status }}">{{ storage.status|title }}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if status.storage|length > 1 and status.storage[0].mount_point == status.storage[1].mount_point %}
+    <p class="storage-note">Both paths use the same backing filesystem; their capacity figures therefore match.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h2>Registered runners</h2><a class="button secondary" href="{{ url_for('main.runners') }}">Manage runners</a></div>
+  {% if status.runners %}
+  <table>
+    <thead><tr><th>Name</th><th>Site</th><th>Host</th><th>Status</th><th>Last heartbeat</th><th>Capacity</th></tr></thead>
+    <tbody>
+    {% for runner in status.runners %}
+      <tr>
+        <td>{{ runner.name }}</td><td>{{ runner.site or '—' }}</td><td>{{ runner.hostname or '—' }}</td>
+        <td><span class="status-label status-{{ runner.health }}">{{ runner.health|title }}</span></td>
+        <td>{% if runner.last_heartbeat_at %}{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }}{% else %}Never{% endif %}</td>
+        <td>{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>No remote runners have been registered. The local systemd runner remains the active execution service.</p>{% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h2>Health checks</h2></div>
+  <div class="status-check-list">
+    {% for check in status.checks %}
+      <div class="status-check">
+        <span class="status-dot status-{{ check.status }}" aria-label="{{ check.status }}"></span>
+        <div>
+          <strong>{{ check.name }}</strong>
+          <p>{{ check.summary }}</p>
+          {% if check.details %}<small>{{ check.details }}</small>{% endif %}
+        </div>
+        <span class="status-label status-{{ check.status }}">{{ check.status|title }}</span>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

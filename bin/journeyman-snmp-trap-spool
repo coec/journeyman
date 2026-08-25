@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Normalize one Net-SNMP snmptrapd traphandle invocation into a Signal spool record.
+
+The helper intentionally does not retain community strings or SNMPv3 secrets.
+Net-SNMP performs packet decoding; Journeyman preserves numeric OIDs and values.
+"""
+import argparse
+import ipaddress
+import json
+import os
+import re
+import tempfile
+import time
+import uuid
+from pathlib import Path
+import sys
+
+JOURNEYMAN_ROOT = Path(__file__).resolve().parents[1]
+if str(JOURNEYMAN_ROOT) not in sys.path:
+    sys.path.insert(0, str(JOURNEYMAN_ROOT))
+
+from journeyman_configuration import load_journeyman_configuration
+
+load_journeyman_configuration()
+
+TRAP_OID = "1.3.6.1.6.3.1.1.4.1.0"
+SYS_UPTIME = "1.3.6.1.2.1.1.3.0"
+TRAP_ENTERPRISE = "1.3.6.1.6.3.1.1.4.3.0"
+
+
+def _numeric_oid(value):
+    value = str(value or "").strip().strip('"')
+    if value.startswith("iso."):
+        value = "1." + value[4:]
+    value = value.lstrip(".")
+    return value if re.fullmatch(r"\d+(?:\.\d+)+", value) else str(value or "")
+
+
+def _sender_ip(transport):
+    text = str(transport or "")
+    for candidate in re.findall(r"[0-9a-fA-F:.]+", text):
+        token = candidate.strip("[]:")
+        try:
+            return str(ipaddress.ip_address(token))
+        except ValueError:
+            continue
+    return ""
+
+
+def _parse_varbind(line):
+    line = str(line or "").strip()
+    if not line:
+        return None, None
+    match = re.match(r"^(\S+)\s+(.*)$", line)
+    if not match:
+        return None, None
+    oid = _numeric_oid(match.group(1))
+    value = match.group(2).strip()
+    # Net-SNMP may include a TYPE: prefix; retain the decoded value but not
+    # transport/authentication metadata.
+    type_match = re.match(r"^[A-Z][A-Z0-9 -]*:\s*(.*)$", value)
+    if type_match:
+        value = type_match.group(1).strip()
+    return oid, value.strip('"')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source_uuid")
+    parser.add_argument(
+        "--spool-root",
+        default=os.environ.get("JOURNEYMAN_SIGNAL_SPOOL_ROOT", "/var/spool/journeyman/signals"),
+    )
+    args = parser.parse_args()
+    try:
+        source_uuid = str(uuid.UUID(args.source_uuid))
+    except ValueError as exc:
+        raise SystemExit("source_uuid must be a UUID") from exc
+
+    raw_lines = [line.rstrip("\r\n") for line in __import__("sys").stdin]
+    if len(raw_lines) < 2:
+        raise SystemExit("snmptrapd handler input did not contain sender information")
+
+    hostname = raw_lines[0].strip()
+    transport = raw_lines[1].strip()
+    sender_ip = _sender_ip(transport)
+    if not sender_ip:
+        raise SystemExit("unable to determine SNMP trap sender IP")
+
+    varbinds = {}
+    trap_oid = ""
+    sys_uptime = ""
+    enterprise_oid = ""
+    for line in raw_lines[2:]:
+        oid, value = _parse_varbind(line)
+        if not oid:
+            continue
+        varbinds[oid] = value
+        if oid == TRAP_OID:
+            trap_oid = _numeric_oid(value)
+        elif oid == SYS_UPTIME:
+            sys_uptime = value
+        elif oid == TRAP_ENTERPRISE:
+            enterprise_oid = _numeric_oid(value)
+
+    signal = {
+        "schema_version": 1,
+        "signal_id": "snmp-{}-{}-{}".format(source_uuid, time.time_ns(), uuid.uuid4().hex),
+        "signal_type": "snmp_trap",
+        "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "host": hostname if hostname and hostname not in {"<UNKNOWN>", "unknown"} else sender_ip,
+        "severity": "",
+        "description": "SNMP trap {}".format(trap_oid or "received"),
+        "sender_ip": sender_ip,
+        "fields": {
+            "snmp": {
+                "agent_address": sender_ip,
+                "trap_oid": trap_oid,
+                "enterprise_oid": enterprise_oid,
+                "sys_uptime": sys_uptime,
+                "varbinds": varbinds,
+            }
+        },
+    }
+
+    encoded = (json.dumps(signal, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(encoded) > 256 * 1024:
+        raise SystemExit("normalized SNMP Signal exceeds 256 KiB")
+
+    directory = Path(args.spool_root) / source_uuid
+    directory.mkdir(parents=True, exist_ok=True, mode=0o2770)
+    os.chmod(directory, 0o2770)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".signal-", suffix=".tmp", dir=str(directory))
+    try:
+        os.fchmod(descriptor, 0o660)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        destination = directory / ("{}-{}.json".format(time.time_ns(), uuid.uuid4().hex))
+        os.replace(temporary_name, destination)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
+if __name__ == "__main__":
+    main()

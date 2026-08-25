@@ -1,0 +1,19 @@
+[Unit]
+Description=Journeyman Environment Builder
+After=network-online.target journeyman.service
+Wants=network-online.target
+PartOf=journeyman.service
+Requires=journeyman.service
+
+[Service]
+Type=simple
+User=journeyman
+Group=journeyman
+WorkingDirectory=/opt/journeyman
+Environment=JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+ExecStart=/opt/journeyman/bin/journeyman-environment-builder
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true

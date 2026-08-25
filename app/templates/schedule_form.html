@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if schedule else 'Add' }} Schedule · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>{{ 'Edit' if schedule else 'Add' }} Schedule</h1>
+    <p>Schedule a Project using timezone-aware start and end times.</p>
+  </div>
+</div>
+
+<section class="panel form-panel schedule-form-panel">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label>
+      Name
+      <input name="name" maxlength="120" required value="{{ form_data.name }}">
+    </label>
+
+    <label>
+      Project
+      <select name="project_id" required>
+        <option value="">Select a Project</option>
+        {% for project in projects %}
+        <option value="{{ project.id }}" {% if form_data.project_id == project.id %}selected{% endif %}>{{ project.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      Schedule type
+      <select name="schedule_type">
+        <option value="once" {% if form_data.schedule_type == 'once' %}selected{% endif %}>One time</option>
+        <option value="daily" {% if form_data.schedule_type == 'daily' %}selected{% endif %}>Daily</option>
+        <option value="weekly" {% if form_data.schedule_type == 'weekly' %}selected{% endif %}>Weekly</option>
+        <option value="interval" {% if form_data.schedule_type == 'interval' %}selected{% endif %}>Interval</option>
+      </select>
+    </label>
+
+    <label>
+      Timezone
+      <input name="timezone_name" required value="{{ form_data.timezone_name }}" placeholder="Australia/Perth">
+      <small class="field-help">Use an IANA timezone name, such as Australia/Perth.</small>
+    </label>
+
+    <label>
+      Start date and time
+      <input type="datetime-local" name="start_at" required value="{{ form_data.start_at }}">
+    </label>
+
+    <label>
+      End date and time
+      <input type="datetime-local" name="end_at" value="{{ form_data.end_at }}">
+      <small class="field-help">Optional for recurring schedules. Leave blank to continue indefinitely.</small>
+    </label>
+
+    <label>
+      Interval minutes
+      <input type="number" min="1" max="525600" name="interval_minutes" value="{{ form_data.interval_minutes }}">
+      <small class="field-help">Used only when the schedule type is Interval.</small>
+    </label>
+
+    <fieldset class="schedule-weekdays">
+      <legend>Weekly days</legend>
+      <p class="field-help">Used only when the schedule type is Weekly.</p>
+      <div class="schedule-weekday-grid">
+        {% for value, label in [(0,'Monday'),(1,'Tuesday'),(2,'Wednesday'),(3,'Thursday'),(4,'Friday'),(5,'Saturday'),(6,'Sunday')] %}
+        <label class="checkbox-label">
+          <input type="checkbox" name="weekdays" value="{{ value }}" {% if value in form_data.weekdays %}checked{% endif %}>
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    <label class="checkbox-label schedule-enabled">
+      <input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}>
+      Enabled
+    </label>
+
+    <div class="form-actions">
+      <button class="button primary" type="submit">Save Schedule</button>
+      <a class="button" href="{{ url_for('main.schedules') }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

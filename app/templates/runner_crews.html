@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Runner Crews · Journeyman{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Runner Crews</h1>
+    <p>Group interchangeable remote runners for redundant, least-busy dispatch.</p>
+  </div>
+  <div class="page-heading-actions">
+    <a class="button secondary" href="{{ url_for('main.runners') }}">Back to Runners</a>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h2>Create Runner Crew</h2></div>
+  <form method="post" action="{{ url_for('main.runner_crew_create') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-grid two-column">
+      <label>Name<input type="text" name="name" maxlength="120" required></label>
+      <label>Description<input type="text" name="description"></label>
+    </div>
+    <fieldset>
+      <legend>Members</legend>
+      {% if remote_runners %}
+        {% for runner in remote_runners %}
+        <label class="checkbox-row">
+          <input type="checkbox" name="runner_ids" value="{{ runner.id }}">
+          <span><strong>{{ runner.name }}</strong>{% if runner.hostname %} — {{ runner.hostname }}{% endif %}{% if runner.site %} · {{ runner.site }}{% endif %}</span>
+        </label>
+        {% endfor %}
+      {% else %}
+      <p class="muted">No remote runners exist yet.</p>
+      {% endif %}
+    </fieldset>
+    <div class="form-actions"><button class="button primary" type="submit">Create Crew</button></div>
+  </form>
+</div>
+
+{% for crew in crews %}
+<div class="panel">
+  <div class="panel-header"><h2>{{ crew.name }}</h2></div>
+  <form method="post" action="{{ url_for('main.runner_crew_update', crew_id=crew.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-grid two-column">
+      <label>Name<input type="text" name="name" value="{{ crew.name }}" maxlength="120" required></label>
+      <label>Description<input type="text" name="description" value="{{ crew.description }}"></label>
+    </div>
+    <fieldset>
+      <legend>Members</legend>
+      {% for runner in remote_runners %}
+      <label class="checkbox-row">
+        <input type="checkbox" name="runner_ids" value="{{ runner.id }}" {% if runner in crew.runners %}checked{% endif %}>
+        <span>
+          <strong>{{ runner.name }}</strong>
+          {% if runner.hostname %} — {{ runner.hostname }}{% endif %}
+          · {{ runner.running_steps }}/{{ runner.max_concurrent_steps }} active
+          {% if runner.load_average_1m is not none %} · load {{ '%.2f'|format(runner.load_average_1m) }}{% endif %}
+        </span>
+      </label>
+      {% endfor %}
+    </fieldset>
+    <label class="checkbox-row"><input type="checkbox" name="enabled" {% if crew.enabled %}checked{% endif %}><span>Enabled</span></label>
+    <div class="form-actions"><button class="button primary" type="submit">Save Crew</button></div>
+  </form>
+  <form method="post" action="{{ url_for('main.runner_crew_delete', crew_id=crew.id) }}" data-confirm="Delete Runner Crew {{ crew.name|e }}?">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="button danger" type="submit">Delete Crew</button>
+  </form>
+</div>
+{% else %}
+<div class="panel"><p>No Runner Crews have been created.</p></div>
+{% endfor %}
+{% endblock %}

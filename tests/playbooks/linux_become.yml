@@ -1,0 +1,41 @@
+---
+- name: Validate Linux privilege escalation
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Prove default become identity
+      ansible.builtin.raw: id -un
+      become: true
+      register: journeyman_default_become_identity
+      changed_when: false
+
+    - name: Assert default become identity
+      ansible.builtin.assert:
+        that:
+          - journeyman_default_become_identity.stdout | trim == journeyman_release_test_expected_become_user
+        fail_msg: >-
+          Expected default become user {{ journeyman_release_test_expected_become_user }},
+          got {{ journeyman_default_become_identity.stdout | trim }}.
+        success_msg: >-
+          Default become identity is
+          {{ journeyman_default_become_identity.stdout | trim }}.
+
+    - name: Prove configured alternate become identities
+      ansible.builtin.raw: id -un
+      become: true
+      become_user: "{{ item }}"
+      loop: "{{ journeyman_release_test_become_users | default([]) }}"
+      register: journeyman_alternate_become_results
+      changed_when: false
+
+    - name: Assert configured alternate become identities
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == item.item
+        fail_msg: >-
+          Expected become user {{ item.item }}, got {{ item.stdout | trim }}.
+        success_msg: "Successfully became {{ item.item }}."
+      loop: "{{ journeyman_alternate_become_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item | default('unknown') }}"
