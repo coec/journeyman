@@ -5,9 +5,6 @@ attacker with access to credentials, inventories, automation repositories,
 execution runners, and the systems managed by those runners. Security changes
 must therefore be treated as correctness requirements, not optional hardening.
 
-Journeyman is currently pre-1.0 software. The v1.0 release is gated on the
-security-readiness work described in `ROADMAP.md` and `docs/security/`.
-
 ## Security baseline
 
 Journeyman's application-security verification baseline is OWASP Application
@@ -92,8 +89,7 @@ issue.
 
 Until a private vulnerability-reporting channel is published, security issues
 should be reported privately to the project maintainer rather than opened as a
-public issue. A public disclosure process should be established before the v1.0
-release.
+public issue.
 
 ### Browser session signing secret
 
