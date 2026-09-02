@@ -509,6 +509,7 @@
         mode: '0644'
       loop:
         - journeyman.service
+        - journeyman-web.service
         - journeyman-runner.service
         - journeyman-scheduler.service
         - journeyman-environment-builder.service
@@ -621,6 +622,11 @@
     - name: Reload systemd before starting Journeyman
       ansible.builtin.systemd:
         daemon_reload: true
+
+    - name: Set execute bit on /opt/journeyman/bin/journeyman-service-coordinator
+      ansible.builtin.file:
+        path: /opt/journeyman/bin/journeyman-service-coordinator
+        mode: '0755'
 
     - name: Enable and start Journeyman services
       ansible.builtin.systemd:
