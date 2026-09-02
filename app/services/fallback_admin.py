@@ -136,7 +136,7 @@ def fallback_admin_activation_is_non_expiring(activation):
     )
 
 
-def provision_fallback_activation(*, now=None):
+def provision_fallback_activation(*, now=None, lifetime_minutes=None):
     """Create a fresh break-glass activation using the configured lifetime."""
 
     now = _as_utc(now) or _utc_now()
