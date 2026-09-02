@@ -53,29 +53,63 @@ def register_cli_commands(app):
         show_default=True,
         help="Number of random bytes used before URL-safe encoding.",
     )
-    def generate_fallback_admin(length):
+    @click.option(
+        "--lifetime-minutes",
+        type=click.IntRange(min=1),
+        default=None,
+        help="Override the configured break-glass activation lifetime.",
+    )
+    @click.option(
+        "--no-expiry",
+        is_flag=True,
+        help="Disable automatic activation expiry (strongly discouraged).",
+    )
+    def generate_fallback_admin(length, lifetime_minutes, no_expiry):
         """Generate a new fallback password and store only its hash."""
 
-        from app.services.fallback_admin import provision_fallback_activation
+        from app.services.fallback_admin import (
+            fallback_admin_lifetime_minutes,
+            provision_fallback_activation,
+        )
+
+        if no_expiry and lifetime_minutes is not None:
+            raise click.UsageError(
+                "--no-expiry cannot be combined with --lifetime-minutes."
+            )
+        requested_lifetime = 0 if no_expiry else lifetime_minutes
+        try:
+            effective_lifetime = fallback_admin_lifetime_minutes(requested_lifetime)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
 
         password = secrets.token_urlsafe(length)
         path = current_app.config["FALLBACK_ADMIN_PASSWORD_HASH_FILE"]
         _write_hash_file(path, password)
-        activation = provision_fallback_activation()
+        activation = provision_fallback_activation(
+            lifetime_minutes=effective_lifetime
+        )
 
         click.echo("Fallback administrator username: {}".format(
             current_app.config["FALLBACK_ADMIN_USERNAME"]
         ))
         click.echo("Fallback administrator password (shown once): {}".format(password))
         click.echo("Password hash written to: {}".format(path))
-        expires_at = activation.expires_at
-        if expires_at.tzinfo is None:
-            from datetime import timezone
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        click.echo("Break-glass access expires at: {}".format(
-            expires_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
-        ))
-        click.echo("Maximum lifetime: 60 minutes")
+        if effective_lifetime == 0:
+            click.echo("Break-glass access expiry: none")
+            click.echo("Maximum lifetime: no automatic expiry")
+            click.echo(
+                "WARNING: Non-expiring break-glass access is strongly discouraged "
+                "for production deployments."
+            )
+        else:
+            expires_at = activation.expires_at
+            if expires_at.tzinfo is None:
+                from datetime import timezone
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            click.echo("Break-glass access expires at: {}".format(
+                expires_at.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+            ))
+            click.echo("Maximum lifetime: {} minutes".format(effective_lifetime))
         click.echo("Signing out expires this activation immediately.")
 
 # Scheduler commands are registered separately to keep the existing

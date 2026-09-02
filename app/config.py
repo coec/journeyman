@@ -74,6 +74,10 @@ class Config:
         "/etc/journeyman/fallback-admin-password.hash",
     )
 
+    FALLBACK_ADMIN_LIFETIME_MINUTES = int(
+        os.environ.get("JOURNEYMAN_FALLBACK_ADMIN_LIFETIME_MINUTES", "60")
+    )
+
     DIRECTORY_ADMIN_GROUP_NAME = (
         os.environ.get(
             "JOURNEYMAN_DIRECTORY_ADMIN_GROUP_NAME",

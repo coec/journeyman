@@ -14,6 +14,9 @@ security:
 
 authentication:
   fallback_admin_password_hash_file: /etc/journeyman/fallback-admin-password.hash
+  # Default is 60 minutes. Set to 0 only for lab/evaluation use when a
+  # non-expiring break-glass activation is deliberately required.
+  fallback_admin_lifetime_minutes: 60
   directory_admin_group_name: Journeyman Admins
   directory_user_group_name: Journeyman Users
 

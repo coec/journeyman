@@ -255,7 +255,11 @@ def _validate_auth_session(identity):
     now = _utc_now()
 
     if str(identity.get("authenticated_via") or "ldap") == "fallback":
-        from app.services.fallback_admin import active_fallback_activation
+
+        from app.services.fallback_admin import (
+            active_fallback_activation,
+            fallback_admin_activation_is_non_expiring,
+        )
 
         activation = active_fallback_activation(now=now)
         if activation is None:
@@ -265,16 +269,18 @@ def _validate_auth_session(identity):
 
         activated_at = _as_utc(activation.activated_at)
         activation_expires_at = _as_utc(activation.expires_at)
+        non_expiring = fallback_admin_activation_is_non_expiring(activation)
         if _as_utc(row.created_at) < activated_at:
             row.revoked_at = now
             db.session.commit()
             return None
-        if _as_utc(row.expires_at) > activation_expires_at:
+        if not non_expiring and _as_utc(row.expires_at) > activation_expires_at:
             row.expires_at = activation_expires_at
             db.session.commit()
 
         g.break_glass_activated_at = activated_at
-        g.break_glass_expires_at = activation_expires_at
+        g.break_glass_expires_at = None if non_expiring else activation_expires_at
+        g.break_glass_non_expiring = non_expiring
 
     if _as_utc(row.expires_at) <= now:
         row.revoked_at = now
@@ -362,6 +368,7 @@ def load_authenticated_user():
     g.authenticated_session_id = None
     g.break_glass_activated_at = None
     g.break_glass_expires_at = None
+    g.break_glass_non_expiring = False
 
     if current_app.config.get("AUTHENTICATION_DISABLED", False):
         g.authenticated_username = DEVELOPMENT_USERNAME

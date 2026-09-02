@@ -49,6 +49,16 @@
           journeyman_fqdn, journeyman_database_password,
           journeyman_tls_fullchain_src and journeyman_tls_key_src are required.
 
+    - name: Validate fallback administrator lifetime
+      ansible.builtin.assert:
+        that:
+          - (journeyman_fallback_admin_lifetime_minutes | string) is match('^[0-9]+$')
+          - journeyman_fallback_admin_lifetime_minutes | int >= 0
+        fail_msg: >-
+          journeyman_fallback_admin_lifetime_minutes must be zero or a positive
+          number of minutes. Zero disables automatic activation expiry and is
+          strongly discouraged for production deployments.
+
     - name: Check TLS full-chain source file on controller
       ansible.builtin.stat:
         path: "{{ journeyman_tls_fullchain_src }}"
@@ -418,6 +428,7 @@
             credential_key_file: /etc/journeyman/credential.key
           authentication:
             fallback_admin_password_hash_file: /etc/journeyman/fallback-admin-password.hash
+            fallback_admin_lifetime_minutes: {{ journeyman_fallback_admin_lifetime_minutes | int }}
             directory_admin_group_name: {{ journeyman_directory_admin_group_name | to_json }}
             directory_user_group_name: {{ journeyman_directory_user_group_name | to_json }}
           database:

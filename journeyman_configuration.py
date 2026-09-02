@@ -24,6 +24,7 @@ _SETTING_MAP = {
     ("authentication", "disabled"): "JOURNEYMAN_AUTHENTICATION_DISABLED",
     ("authentication", "fallback_admin_username"): "JOURNEYMAN_FALLBACK_ADMIN_USERNAME",
     ("authentication", "fallback_admin_password_hash_file"): "JOURNEYMAN_FALLBACK_ADMIN_PASSWORD_HASH_FILE",
+    ("authentication", "fallback_admin_lifetime_minutes"): "JOURNEYMAN_FALLBACK_ADMIN_LIFETIME_MINUTES",
     ("authentication", "directory_admin_group_name"): "JOURNEYMAN_DIRECTORY_ADMIN_GROUP_NAME",
     ("authentication", "directory_user_group_name"): "JOURNEYMAN_DIRECTORY_USER_GROUP_NAME",
     ("authentication", "session_absolute_lifetime_seconds"): "JOURNEYMAN_AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS",

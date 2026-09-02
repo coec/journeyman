@@ -10,6 +10,8 @@ from app.services.audit import record_audit_event
 
 
 FALLBACK_ADMIN_LIFETIME_SECONDS = 60 * 60
+FALLBACK_ADMIN_DEFAULT_LIFETIME_MINUTES = 60
+FALLBACK_ADMIN_NO_EXPIRY_AT = datetime.max.replace(tzinfo=timezone.utc)
 
 
 def _utc_now():
@@ -22,6 +24,31 @@ def _as_utc(value):
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+def fallback_admin_lifetime_minutes(lifetime_minutes=None):
+    if lifetime_minutes is None:
+        lifetime_minutes = current_app.config.get(
+            "FALLBACK_ADMIN_LIFETIME_MINUTES",
+            FALLBACK_ADMIN_DEFAULT_LIFETIME_MINUTES,
+        )
+    try:
+        lifetime_minutes = int(lifetime_minutes)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "FALLBACK_ADMIN_LIFETIME_MINUTES must be an integer."
+        ) from exc
+    if lifetime_minutes < 0:
+        raise RuntimeError(
+            "FALLBACK_ADMIN_LIFETIME_MINUTES cannot be negative."
+        )
+    if lifetime_minutes > 0:
+        try:
+            _utc_now() + timedelta(minutes=lifetime_minutes)
+        except OverflowError as exc:
+            raise RuntimeError(
+                "FALLBACK_ADMIN_LIFETIME_MINUTES is too large."
+            ) from exc
+    return lifetime_minutes
 
 
 def _fallback_username():
@@ -77,7 +104,7 @@ def expire_fallback_activation(reason, *, now=None):
 
 
 def expire_fallback_activation_if_due(*, now=None):
-    """Expire the activation when its immutable 60-minute deadline has passed."""
+    """Expire the activation when its configured deadline has passed."""
 
     now = _as_utc(now) or _utc_now()
     row = _activation()
@@ -101,11 +128,19 @@ def active_fallback_activation(*, now=None):
     return row
 
 
+def fallback_admin_activation_is_non_expiring(activation):
+    """Return whether an activation has no automatic expiry deadline."""
+    return (
+        activation is not None
+        and _as_utc(activation.expires_at) == FALLBACK_ADMIN_NO_EXPIRY_AT
+    )
+
+
 def provision_fallback_activation(*, now=None):
-    """Create a fresh, non-renewable 60-minute activation."""
+    """Create a fresh break-glass activation using the configured lifetime."""
 
     now = _as_utc(now) or _utc_now()
-
+    lifetime_minutes = fallback_admin_lifetime_minutes(lifetime_minutes)
     # Re-provisioning is a new activation, never an extension.
     expire_fallback_activation("reprovisioned", now=now)
 
@@ -115,7 +150,15 @@ def provision_fallback_activation(*, now=None):
         db.session.add(row)
 
     row.activated_at = now
-    row.expires_at = now + timedelta(seconds=FALLBACK_ADMIN_LIFETIME_SECONDS)
+    if lifetime_minutes == 0:
+        row.expires_at = FALLBACK_ADMIN_NO_EXPIRY_AT
+    else:
+        try:
+            row.expires_at = now + timedelta(minutes=lifetime_minutes)
+        except OverflowError as exc:
+            raise RuntimeError(
+                "FALLBACK_ADMIN_LIFETIME_MINUTES is too large."
+            ) from exc
     row.expired_at = None
     row.expiry_reason = ""
     db.session.commit()
@@ -126,8 +169,15 @@ def provision_fallback_activation(*, now=None):
         actor_role="Server Administrator",
         authenticated_via="local-cli",
         details={
-            "expires_at": _as_utc(row.expires_at).isoformat(),
-            "maximum_lifetime_seconds": FALLBACK_ADMIN_LIFETIME_SECONDS,
+            "expires_at": (
+                None
+                if lifetime_minutes == 0
+                else _as_utc(row.expires_at).isoformat()
+            ),
+            "maximum_lifetime_seconds": (
+                None if lifetime_minutes == 0 else lifetime_minutes * 60
+            ),
+            "non_expiring": lifetime_minutes == 0,
         },
     )
     return row

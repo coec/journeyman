@@ -14,6 +14,11 @@ journeyman_tls_key_src: /secure/path/journeyman-key.pem
 # If the proxy URL contains credentials, protect this file with Ansible Vault.
 # journeyman_pip_proxy: http://proxy.example.com:8080
 
+# Break-glass activation lifetime. The default is 60 minutes. A longer value can
+# be useful for lab/evaluation installs. Zero disables automatic activation
+# expiry and is strongly discouraged for production deployments.
+# journeyman_fallback_admin_lifetime_minutes: 10080
+
 # Optional initial directory-role defaults shown during LDAP bootstrap.
 journeyman_directory_admin_group_name: Journeyman Admins
 journeyman_directory_user_group_name: Journeyman Users

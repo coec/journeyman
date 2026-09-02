@@ -133,10 +133,13 @@ may execute only Packages granted directly to them or through registered AD
 Teams.
 
 A local break-glass `admin` account may be provisioned for emergency recovery.
-Each activation is non-renewable, expires after 60 minutes, and expires
-immediately when the fallback administrator signs out. Re-entry requires a fresh
-server-admin CLI activation. Only a salted password hash is stored; fallback
-provisioning, use, and expiry are recorded in the Audit Log.
+Each activation is non-renewable and expires after 60 minutes by default. The
+lifetime can be extended by configuration or CLI override; automatic activation
+expiry can be disabled explicitly for lab/evaluation use, but this is strongly
+discouraged for production deployments. The configured lifetime applies when a
+new activation is generated. Signing out still expires the activation immediately.
+Only a salted password hash is stored; fallback provisioning, use,
+and expiry are recorded in the Audit Log.
 
 ## Secrets
 

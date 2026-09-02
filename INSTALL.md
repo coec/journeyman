@@ -151,6 +151,19 @@ deploy/ansible/install-journeyman.example.yml
 That file also documents optional initial directory-group defaults and the production
 outbound allowlist.
 
+The break-glass administrator activation defaults to 60 minutes. For a lab or
+evaluation system without directory services, the installer can use a longer lifetime:
+
+```yaml
+journeyman_fallback_admin_lifetime_minutes: 10080  # 7 days
+```
+
+Setting the value to `0` disables automatic activation expiry. This is strongly
+discouraged for production deployments. Normal browser-session lifetime limits still
+apply, and explicitly signing out expires the current break-glass activation.
+Changing this setting affects newly generated activations; it does not alter an
+already active break-glass session.
+
 ### 6. Configure a proxy if required
 
 If `pip` must use an HTTP/HTTPS proxy to download Python dependencies, add:
@@ -384,9 +397,15 @@ needed at the same time, for example:
 
 ```yaml
 authentication:
+  fallback_admin_lifetime_minutes: 60
   directory_admin_group_name: Journeyman Admins
   directory_user_group_name: Journeyman Users
 ```
+
+`fallback_admin_lifetime_minutes` defaults to `60`. Longer values are supported for
+lab/evaluation environments. Setting it to `0` disables automatic activation expiry
+and is strongly discouraged for production use. Browser sessions retain their normal
+absolute lifetime, and signing out still expires the activation immediately.
 
 Do not change the YAML configuration file ownership to make it writable by the service
 account. Application and worker processes should only read this file.
@@ -619,6 +638,23 @@ cd /opt/journeyman
 export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
 /opt/journeyman/venv/bin/flask --app run.py fallback-admin generate
 ```
+
+The configured lifetime can be overridden for one activation:
+
+```bash
+/opt/journeyman/venv/bin/flask --app run.py fallback-admin generate \
+  --lifetime-minutes 10080
+```
+
+For a deliberately non-expiring lab/evaluation activation:
+
+```bash
+/opt/journeyman/venv/bin/flask --app run.py fallback-admin generate --no-expiry
+```
+
+`--no-expiry` is strongly discouraged for production deployments. It disables only
+the automatic activation deadline: normal browser-session lifetime limits remain in
+force, and explicitly signing out expires the activation immediately.
 
 The password is shown once; Journeyman stores only its salted hash. Sign in with this
 account, configure **Settings -> Directory and Authentication**, and validate both

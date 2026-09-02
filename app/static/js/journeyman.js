@@ -333,6 +333,9 @@ window.Journeyman = {
         if (!body || body.dataset.breakGlass !== "true") {
             return;
         }
+        if (body.dataset.breakGlassNonExpiring === "true") {
+            return;
+        }
 
         const activatedAt = new Date(body.dataset.breakGlassActivatedAt || "");
         const expiresAt = new Date(body.dataset.breakGlassExpiresAt || "");
@@ -340,7 +343,14 @@ window.Journeyman = {
             return;
         }
 
-        const warningMinutes = [30, 45, 50, 55];
+        const lifetimeMilliseconds = expiresAt.getTime() - activatedAt.getTime();
+        if (lifetimeMilliseconds <= 0) {
+            return;
+        }
+        const warningFractions = [0.5, 0.75, 5 / 6, 11 / 12];
+        const warningThresholds = warningFractions.map(function (fraction) {
+            return activatedAt.getTime() + (lifetimeMilliseconds * fraction);
+        });
         const shownWarnings = new Set();
 
         function ensureModal() {
@@ -357,7 +367,7 @@ window.Journeyman = {
               <section class="break-glass-warning-dialog" role="dialog" aria-modal="true" aria-labelledby="break-glass-warning-title">
                 <h2 id="break-glass-warning-title">Break-glass access expiring</h2>
                 <p id="break-glass-warning-message"></p>
-                <p>This emergency activation cannot be extended. Signing out expires it immediately.</p>
+                <p>This emergency activation is non-renewable. Signing out expires it immediately.</p>
                 <div class="form-actions">
                   <button class="button primary" type="button" data-break-glass-warning-close>OK</button>
                 </div>
@@ -369,10 +379,41 @@ window.Journeyman = {
             return modal;
         }
 
+        function plural(value, singular) {
+            return `${value} ${singular}${value === 1 ? "" : "s"}`;
+        }
+        function formatRemainingWords(milliseconds) {
+            const totalMinutes = Math.max(1, Math.ceil(milliseconds / 60000));
+            const days = Math.floor(totalMinutes / 1440);
+            const hours = Math.floor((totalMinutes % 1440) / 60);
+            const minutes = totalMinutes % 60;
+            if (days > 0) {
+                return `${plural(days, "day")} ${plural(hours, "hour")} ${plural(minutes, "minute")}`;
+            }
+            if (hours > 0) {
+                return `${plural(hours, "hour")} ${plural(minutes, "minute")}`;
+            }
+            return plural(totalMinutes, "minute");
+        }
+        function formatCountdown(milliseconds) {
+            const remainingSeconds = Math.ceil(milliseconds / 1000);
+            const days = Math.floor(remainingSeconds / 86400);
+            const hours = Math.floor((remainingSeconds % 86400) / 3600);
+            const minutes = Math.floor((remainingSeconds % 3600) / 60);
+            const seconds = remainingSeconds % 60;
+            if (days > 0) {
+                return `${days}d ${hours}h ${minutes}m`;
+            }
+            if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            }
+            return `${minutes}:${String(seconds).padStart(2, "0")}`;
+        }
+
         function showWarning(elapsedMinutes) {
             const modal = ensureModal();
             modal.querySelector("#break-glass-warning-message").textContent =
-                `${60 - elapsedMinutes} minutes remain before this break-glass activation expires.`;
+                `${formatRemainingWords(remainingMilliseconds)} remain before this break-glass activation expires.`;
             modal.hidden = false;
         }
 
@@ -390,24 +431,21 @@ window.Journeyman = {
             }
 
             if (countdown) {
-                const remainingSeconds = Math.ceil(remainingMilliseconds / 1000);
-                const minutes = Math.floor(remainingSeconds / 60);
-                const seconds = remainingSeconds % 60;
-                countdown.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
+                countdown.textContent = formatCountdown(remainingMilliseconds);
             }
-
-            const elapsedMinutes = Math.floor((now - activatedAt.getTime()) / 60000);
-            const applicableWarnings = warningMinutes.filter(minute => minute <= elapsedMinutes);
+            const applicableWarnings = warningThresholds.filter(function (threshold) {
+                return threshold <= now;
+            });
             if (applicableWarnings.length) {
                 const latest = applicableWarnings[applicableWarnings.length - 1];
-                warningMinutes.forEach(function (minute) {
-                    if (minute < latest) {
-                        shownWarnings.add(minute);
+                warningThresholds.forEach(function (threshold) {
+                    if (threshold < latest) {
+                        shownWarnings.add(threshold);
                     }
                 });
                 if (!shownWarnings.has(latest)) {
                     shownWarnings.add(latest);
-                    showWarning(latest);
+                    showWarning(remainingMilliseconds);
                 }
             }
             window.setTimeout(update, 1000);

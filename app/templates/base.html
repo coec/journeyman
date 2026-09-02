@@ -167,7 +167,11 @@
     {% if journeyman_break_glass %}
     <div class="break-glass-banner" role="status">
       <strong>Break-glass administrator</strong>
+      {% if journeyman_break_glass_non_expiring %}
+      <span>Emergency access only · automatic expiry disabled</span>
+      {% else %}
       <span>Emergency access only · expires in <span data-break-glass-countdown>calculating…</span></span>
+      {% endif %}
     </div>
     {% endif %}
 

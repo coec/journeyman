@@ -184,6 +184,7 @@ def create_app(config_object=None, *, instance_path=None):
     # services from app.models creates an audit -> models -> notifications ->
     # audit circular import during application startup.
     from app.services import notifications as _notification_event_listeners  # noqa: F401
+    from app.services import job_audit as _job_audit_event_listeners  # noqa: F401
 
     @app.before_request
     def prepare_content_security_policy_nonce():
@@ -379,6 +380,7 @@ def create_app(config_object=None, *, instance_path=None):
                 "journeyman_break_glass": False,
                 "journeyman_break_glass_activated_at": "",
                 "journeyman_break_glass_expires_at": "",
+                "journeyman_break_glass_non_expiring": False,
                 "journeyman_security_notices": [],
                 "journeyman_runtime_dependencies": (),
                 "journeyman_runtime_python_version": "",
@@ -432,6 +434,9 @@ def create_app(config_object=None, *, instance_path=None):
             "journeyman_break_glass_expires_at": (
                 getattr(g, "break_glass_expires_at", None).isoformat()
                 if getattr(g, "break_glass_expires_at", None) else ""
+            ),
+            "journeyman_break_glass_non_expiring": bool(
+                getattr(g, "break_glass_non_expiring", False)
             ),
         }
 
