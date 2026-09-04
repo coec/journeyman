@@ -678,6 +678,31 @@ For SQLite development/evaluation installs, see [`INSTALL.SQLite.md`](INSTALL.SQ
 
 ## Remote runners
 
+### Bootstrap machine credential prerequisites
+
+Before installing or updating a remote runner from the Journeyman WebUI, prepare
+the account represented by the **Bootstrap machine credential**. For the supported
+bootstrap workflow, that account must:
+
+- exist on both the Journeyman server and the target runner host;
+- use SSH key authentication, with the credential's public key present in
+  `~/.ssh/authorized_keys` for that account on the target runner;
+- be permitted to use `sudo` non-interactively on the target runner. For a
+  dedicated Journeyman automation account that is expected to run arbitrary
+  playbooks and scripts as other users, a typical sudoers entry is:
+
+  ```sudoers
+  svc_journeyman ALL=(ALL) NOPASSWD: ALL
+  ```
+
+- be reachable using a host key trusted by the Journeyman service account on the
+  controller. The controller's `journeyman` account uses its configured OpenSSH
+  `known_hosts` files for host-key verification.
+
+The WebUI installer performs SSH-authentication and privilege-escalation preflight
+checks before testing HTTPS trust or modifying the runner. A failure at either
+preflight should be corrected on the bootstrap account before retrying the install.
+
 Remote runners have their own bootstrap playbook:
 
 ```text

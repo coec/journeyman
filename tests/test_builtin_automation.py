@@ -97,10 +97,10 @@ def test_builtin_remote_runner_proxy_input_lists_url_credentials(app):
 def test_builtin_remote_runner_bootstrap_input_lists_linux_machine_credentials(app):
     with app.app_context():
         linux = Credential(
-            name="src_ansibilion",
+            name="svc_journeyman",
             owner="admin",
             credential_type="machine",
-            username="ansibilion",
+            username="svc_journeyman",
         )
         linux.set_credential_data({"password": "secret", "become_password": "sudo-secret"})
         windows = Credential(
@@ -120,8 +120,14 @@ def test_builtin_remote_runner_bootstrap_input_lists_linux_machine_credentials(a
         )
         assert bootstrap_input.input_type == "choice"
         assert bootstrap_input.get_choices() == [
-            {"value": linux.id, "label": "src_ansibilion"}
+            {"value": linux.id, "label": "svc_journeyman"}
         ]
+        assert (
+            "must already exist on the Journeyman server and target runner"
+            in bootstrap_input.help_text
+        )
+        assert "authorized_keys" in bootstrap_input.help_text
+        assert "sudo non-interactively" in bootstrap_input.help_text
 
 
 def test_builtin_backup_automation_is_seeded_disabled(app):

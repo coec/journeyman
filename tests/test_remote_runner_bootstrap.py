@@ -609,11 +609,19 @@ def test_remote_runner_install_preflights_journeyman_tls_trust_before_mutation()
     ).read_text(encoding="utf-8")
 
     for playbook in (manage_playbook, install_playbook):
-        check = playbook.index("- name: Check trusted HTTPS connectivity to Journeyman")
-        require = playbook.index("- name: Require trusted HTTPS connectivity to Journeyman")
+        ssh = playbook.index("- name: Verify SSH authentication to remote runner")
+        sudo = playbook.index("- name: Verify privilege escalation on remote runner")
+        check = playbook.index("- name: Check Journeyman HTTPS trust from remote runner")
+        require = playbook.index("- name: Require Journeyman HTTPS trust from remote runner")
         mutate = playbook.index("- name: Create Journeyman runner group")
 
-        assert check < require < mutate
+        assert ssh < sudo < check < require < mutate
+        preflight_section = playbook[ssh:check]
+        assert "ansible.builtin.raw: /usr/bin/true" in preflight_section
+        assert "become: false" in preflight_section
+        assert "become: true" in preflight_section
+        assert preflight_section.count("changed_when: false") >= 2
+
         tls_section = playbook[check:mutate]
         assert "ansible.builtin.uri:" in tls_section
         assert "/api/runners/register" in tls_section

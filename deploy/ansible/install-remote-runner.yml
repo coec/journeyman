@@ -66,7 +66,17 @@
           The Journeyman Signal spool helper was not found at
           {{ journeyman_signal_spool_source }} on the Ansible execution node.
 
-    - name: Check trusted HTTPS connectivity to Journeyman
+    - name: Verify SSH authentication to remote runner
+      ansible.builtin.raw: /usr/bin/true
+      become: false
+      changed_when: false
+
+    - name: Verify privilege escalation on remote runner
+      ansible.builtin.raw: /usr/bin/true
+      become: true
+      changed_when: false
+
+    - name: Check Journeyman HTTPS trust from remote runner
       ansible.builtin.uri:
         url: "{{ journeyman_server_url | regex_replace('/+$', '') }}/api/runners/register"
         method: GET
@@ -78,7 +88,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Require trusted HTTPS connectivity to Journeyman
+    - name: Require Journeyman HTTPS trust from remote runner
       ansible.builtin.assert:
         that:
           - journeyman_runner_tls_preflight.status | default(-1) | int >= 100
@@ -135,6 +145,16 @@
           owner: "{{ journeyman_runner_user }}"
           group: "{{ journeyman_runner_group }}"
           mode: "2770"
+
+    - name: Install remote runner operating system dependencies
+      ansible.builtin.package:
+        name:
+          - python3
+          - python3-pip
+          - python3-virtualenv
+          - ansible-core
+        state: present
+      become: true
 
     - name: Check runner Python interpreter
       ansible.builtin.stat:
@@ -233,13 +253,36 @@
           - "{{ journeyman_runner_config }}"
           - --work-root
           - "{{ journeyman_runner_work_root }}"
+          - --signal-spool-root
+          - "{{ journeyman_signal_spool_root }}"
           - --ca-file
           - "{{ journeyman_runner_ca_file }}"
       environment:
         JOURNEYMAN_REGISTRATION_TOKEN: "{{ journeyman_registration_token }}"
-      when: not journeyman_runner_registration.stat.exists
-      no_log: true
-      notify: Restart Journeyman remote runner
+      register: journeyman_runner_register
+      changed_when: journeyman_runner_register.rc == 0
+      failed_when: false
+      when:
+        - journeyman_manage_action == 'install'
+        - not (journeyman_runner_install_registration.stat.exists | default(false))
+
+    - name: Report runner registration failure
+      ansible.builtin.fail:
+        msg: >-
+          Runner registration failed with exit code
+          {{ journeyman_runner_register.rc }}.
+          stdout: {{
+            (journeyman_runner_register.stdout | default(''))
+            | replace(journeyman_registration_token, '[REDACTED]')
+          }}
+          stderr: {{
+            (journeyman_runner_register.stderr | default(''))
+            | replace(journeyman_registration_token, '[REDACTED]')
+          }}
+      when:
+        - journeyman_manage_action == 'install'
+        - journeyman_runner_register is defined
+        - journeyman_runner_register.rc | default(0) != 0
 
     - name: Protect runner registration credentials
       ansible.builtin.file:

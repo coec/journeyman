@@ -3,7 +3,7 @@ from pathlib import Path
 from werkzeug.security import check_password_hash
 
 from app import db
- from app.cli import _write_hash_file
+from app.cli import _write_hash_file
 from app.models import FallbackAdminActivation
 from app.services.fallback_admin import fallback_admin_activation_is_non_expiring
 from journeyman_configuration import load_journeyman_configuration

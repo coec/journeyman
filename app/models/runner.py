@@ -21,6 +21,11 @@ class Runner(db.Model):
     # Feature/service capabilities are separate from execution capabilities.
     managed_capabilities_json = db.Column(db.Text, nullable=False, default="{}")
     enabled = db.Column(db.Boolean, nullable=False, default=True)
+    # A draining runner remains authenticated so in-flight work can report
+    # completion, but it is ineligible for new Job/slice/environment claims.
+    drain_job_id = db.Column(db.Integer, nullable=True, index=True)
+    drain_requested_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    drain_reason = db.Column(db.String(255), nullable=False, default="")
     is_local = db.Column(db.Boolean, nullable=False, default=False, index=True)
     max_concurrent_steps = db.Column(db.Integer, nullable=False, default=1)
     management_bootstrap_credential_id = db.Column(

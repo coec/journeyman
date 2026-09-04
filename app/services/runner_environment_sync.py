@@ -130,6 +130,10 @@ def queue_environment_sync(environment, runner):
 def claim_next_environment_sync(runner):
     """Atomically claim one queued Environment synchronization for ``runner``."""
 
+    from app.services.runners import runner_health
+    if runner_health(runner) != "healthy":
+        return None
+
     while True:
         candidate = (
             RunnerEnvironmentSync.query

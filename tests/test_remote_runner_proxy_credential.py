@@ -17,10 +17,10 @@ from app.views.packages import (
 def test_remote_runner_proxy_credential_is_resolved_only_for_execution(app):
     with app.app_context():
         bootstrap = Credential(
-            name="src_ansibilion",
+            name="svc_journeyman",
             owner="admin",
             credential_type="machine",
-            username="ansibilion",
+            username="svc_journeyman",
         )
         bootstrap.set_credential_data({
             "password": "ssh-secret",
@@ -93,10 +93,10 @@ def test_existing_runner_prefills_saved_management_credentials(app):
 
     with app.app_context():
         bootstrap = Credential(
-            name="src_ansibilion",
+            name="svc_journeyman",
             owner="admin",
             credential_type="machine",
-            username="ansibilion",
+            username="svc_journeyman",
         )
         bootstrap.set_credential_data({"password": "secret", "become_password": "sudo"})
         proxy = Credential(

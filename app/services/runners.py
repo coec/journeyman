@@ -335,6 +335,8 @@ def authenticate_runner(runner_uuid, secret):
 def runner_health(runner, now=None):
     if not runner.enabled:
         return "disabled"
+    if runner.drain_job_id is not None:
+        return "draining"
     if runner.is_local and runner.status_message == "Stopped":
         return "offline"
     if not runner.is_local and not runner.is_registered:

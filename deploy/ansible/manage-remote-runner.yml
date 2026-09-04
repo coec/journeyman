@@ -402,7 +402,17 @@
               The Journeyman SNMP trap spool helper was not found at
               {{ journeyman_snmp_trap_spool_source }} on the execution node.
 
-        - name: Check trusted HTTPS connectivity to Journeyman
+        - name: Verify SSH authentication to remote runner
+          ansible.builtin.raw: /usr/bin/true
+          become: false
+          changed_when: false
+
+        - name: Verify privilege escalation on remote runner
+          ansible.builtin.raw: /usr/bin/true
+          become: true
+          changed_when: false
+
+        - name: Check Journeyman HTTPS trust from remote runner
           ansible.builtin.uri:
             url: "{{ journeyman_server_url | regex_replace('/+$', '') }}/api/runners/register"
             method: GET
@@ -414,7 +424,7 @@
           changed_when: false
           failed_when: false
 
-        - name: Require trusted HTTPS connectivity to Journeyman
+        - name: Require Journeyman HTTPS trust from remote runner
           ansible.builtin.assert:
             that:
               - journeyman_runner_tls_preflight.status | default(-1) | int >= 100
@@ -827,10 +837,30 @@
               - "{{ journeyman_runner_ca_file }}"
           environment:
             JOURNEYMAN_REGISTRATION_TOKEN: "{{ journeyman_registration_token }}"
+          register: journeyman_runner_register
+          changed_when: journeyman_runner_register.rc == 0
+          failed_when: false
           when:
             - journeyman_manage_action == 'install'
             - not (journeyman_runner_install_registration.stat.exists | default(false))
-          no_log: true
+
+        - name: Report runner registration failure
+          ansible.builtin.fail:
+            msg: >-
+              Runner registration failed with exit code
+              {{ journeyman_runner_register.rc }}.
+              stdout: {{
+                (journeyman_runner_register.stdout | default(''))
+                | replace(journeyman_registration_token, '[REDACTED]')
+              }}
+              stderr: {{
+                (journeyman_runner_register.stderr | default(''))
+                | replace(journeyman_registration_token, '[REDACTED]')
+              }}
+          when:
+            - journeyman_manage_action == 'install'
+            - journeyman_runner_register is defined
+            - journeyman_runner_register.rc | default(0) != 0
 
         - name: Repair missing runner registration during update
           ansible.builtin.command:

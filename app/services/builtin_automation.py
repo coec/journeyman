@@ -473,7 +473,11 @@ def ensure_builtin_admin_automation():
         label="Bootstrap machine credential",
         help_text=(
             "Linux/UNIX Machine credential used by Ansible to SSH to the target "
-            "host and perform privilege escalation during install/update."
+            "host and perform privilege escalation during install/update. The "
+            "designated bootstrap account must already exist on the Journeyman "
+            "server and target runner, its public key must be present in the "
+            "runner account's authorized_keys, and it must be permitted to use "
+            "sudo non-interactively (typically NOPASSWD)."
         ),
         input_type=PACKAGE_INPUT_CHOICE,
         required=False,

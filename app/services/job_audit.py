@@ -120,3 +120,8 @@ def _audit_job_terminal_status(job, value, oldvalue, initiator):
     if value == oldvalue:
         return
     queue_terminal_job_audit_event(job, value)
+    if str(value or "").strip().lower() in TERMINAL_AUDIT_RESULTS:
+        # A management drain is owned by the Job, not by the runner heartbeat.
+        # Releasing it here covers success, failure, cancellation and recovery.
+        from app.services.runner_draining import release_runner_drain_for_job
+        release_runner_drain_for_job(job)

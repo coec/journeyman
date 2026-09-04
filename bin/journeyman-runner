@@ -1307,7 +1307,14 @@ def materialize_machine_credential_extra_vars(step, job_directory):
         key_path = private_directory / (
             "machine-credential-step-{}.key".format(step.id)
         )
-        key_path.write_text(str(private_key), encoding="utf-8")
+        private_key_text = (
+            str(private_key)
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .rstrip("\n")
+            + "\n"
+        )
+        key_path.write_text(private_key_text, encoding="utf-8")
         os.chmod(key_path, 0o600)
         variables[prefix + "ansible_private_key_file"] = str(key_path)
 

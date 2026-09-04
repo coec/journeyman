@@ -116,23 +116,54 @@
         - { path: /var/lib/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/repos, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/jobs, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/lib/journeyman/inventory-snapshots, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/runner-artifacts, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/log/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/spool/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/spool/journeyman/signals, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /opt/journeyman/environments, owner: journeyman, group: journeyman, mode: '0750' }
 
-    - name: Ensure main helper scripts are executable
+    - name: Find Journeyman executable helpers
+      ansible.builtin.find:
+        paths: /opt/journeyman/bin
+        file_type: file
+        patterns: "journeyman-*"
+      register: journeyman_bin_helpers
+
+    - name: Ensure Journeyman executable helpers are executable
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ item.path }}"
         owner: "{{ journeyman_user }}"
         group: "{{ journeyman_group }}"
         mode: '0755'
-      loop:
-        - /opt/journeyman/bin/journeyman-environment-builder
-        - /opt/journeyman/bin/journeyman-runner
-        - /opt/journeyman/bin/journeyman-runner-admin
-        - /opt/journeyman/scripts/journeyman-apply-web-settings
+      loop: "{{ journeyman_bin_helpers.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Ensure privileged web-settings helper is executable
+      ansible.builtin.file:
+        path: /opt/journeyman/scripts/journeyman-apply-web-settings
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+        mode: '0755'
+
+    - name: Create Journeyman SSH configuration directory
+      ansible.builtin.file:
+        path: /opt/journeyman/.ssh
+        state: directory
+        owner: journeyman
+        group: journeyman
+        mode: '0700'
+
+    - name: Create Journeyman known_hosts file
+      ansible.builtin.file:
+        path: /opt/journeyman/.ssh/known_hosts
+        state: touch
+        owner: journeyman
+        group: journeyman
+        mode: '0600'
+        modification_time: preserve
+        access_time: preserve
 
     - name: Create canonical application virtual environment
       ansible.builtin.command:
