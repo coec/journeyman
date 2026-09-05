@@ -382,6 +382,8 @@ def create_app(config_object=None, *, instance_path=None):
                 "journeyman_break_glass_expires_at": "",
                 "journeyman_break_glass_non_expiring": False,
                 "journeyman_security_notices": [],
+                "journeyman_system_message_count": 0,
+                "journeyman_running_job_count": 0,
                 "journeyman_runtime_dependencies": (),
                 "journeyman_runtime_python_version": "",
             }
@@ -404,7 +406,11 @@ def create_app(config_object=None, *, instance_path=None):
         )
 
         from app.services.secret_lifecycle import security_notices_for_identity
+        from app.services.navigation_status import visible_running_job_count
         is_admin = current_user_is_admin()
+        security_notices = security_notices_for_identity(
+            username, is_admin=is_admin
+        )
 
         runtime_dependencies = ()
         runtime_python_version = ""
@@ -420,7 +426,9 @@ def create_app(config_object=None, *, instance_path=None):
             "journeyman_username": username,
             "journeyman_display_name": display_name,
             "journeyman_is_admin": is_admin,
-            "journeyman_security_notices": security_notices_for_identity(
+            "journeyman_security_notices": security_notices,
+            "journeyman_system_message_count": len(security_notices),
+            "journeyman_running_job_count": visible_running_job_count(
                 username, is_admin=is_admin
             ),
             "journeyman_runtime_dependencies": runtime_dependencies,

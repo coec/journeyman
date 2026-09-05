@@ -8,6 +8,7 @@ from flask import current_app
 from app import db
 from app.services.audit import record_audit_event
 from app.services.runners import runner_health
+from app.services.runner_draining import release_runner_drain_for_job
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,10 @@ def cancel_job(job, *, source="Journeyman web interface"):
                     execution_slice.finished_at = now
                     execution_slice.dispatch_token = ""
 
+        # A disruptive runner-management Job may establish its drain while
+        # still queued. Cancelling it is terminal, so release that ownership
+        # in the same transaction as the Job cancellation.
+        release_runner_drain_for_job(job)
         db.session.commit()
         record_audit_event(
             "job.cancel",
@@ -164,6 +169,9 @@ def _finalize_abandoned_cancellation(job, *, now, stale_seconds):
         "Cancellation finalized after the Job remained in stopping state for "
         "at least {} seconds and no runner reported active execution."
     ).format(stale_seconds)
+    # Recovery is also a terminal transition. Do not leave a runner drain
+    # orphaned if its management Job was abandoned while cancelling.
+    release_runner_drain_for_job(job)
 
 
 def recover_stale_cancelling_jobs(*, jobs=None, now=None, stale_seconds=None):

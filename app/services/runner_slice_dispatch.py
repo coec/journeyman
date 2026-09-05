@@ -3,8 +3,10 @@
 import secrets
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app import db
-from app.models import Job, JobStep, JobStepExecutionSlice
+from app.models import Job, JobStep, JobStepExecutionSlice, Runner
 from app.services.runners import runner_health
 from app.services.runner_environments import (
     job_step_environment_requirement,
@@ -91,6 +93,8 @@ def reconcile_non_runnable_steps(job):
 def runner_can_claim_slice(runner, execution_slice):
     step = execution_slice.step
     job = step.job if step is not None else None
+    if runner.drain_job_id is not None:
+        return False
     if runner_health(runner) != "healthy":
         return False
     if runner.running_steps >= runner.max_concurrent_steps:
@@ -162,7 +166,7 @@ def claim_next_remote_slice(runner):
             from app.services.runner_slice_lifecycle import fail_pending_remote_slice
 
             reported = RunnerEnvironment.query.filter_by(
-                runner_id=runner.id,
+                Runner_id=runner.id,
                 environment_id=requirement.environment_id,
             ).one_or_none()
             message = (
@@ -183,6 +187,25 @@ def claim_next_remote_slice(runner):
 
         if not runner_can_claim_slice(runner, candidate):
             continue
+
+        # Serialize claim against disruptive runner-management drain
+        # acquisition. request_runner_drain() locks the same Runner row.
+        locked_runner = (
+            db.session.execute(
+                select(Runner)
+                .where(Runner.id == runner.id)
+                .with_for_update()
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if locked_runner is None or locked_runner.drain_job_id is not None:
+            db.session.rollback()
+            return None, None
+        if not runner_can_claim_slice(locked_runner, candidate):
+            db.session.rollback()
+            continue
+
         token = secrets.token_urlsafe(32)
         assigned_at = utcnow()
         updated = (
@@ -194,11 +217,15 @@ def claim_next_remote_slice(runner):
             )
             .update(
                 {
-                    JobStepExecutionSlice.assigned_runner_id: runner.id,
+                    JobStepExecutionSlice.assigned_runner_id: locked_runner.id,
                     JobStepExecutionSlice.assigned_at: assigned_at,
                     JobStepExecutionSlice.dispatch_token: token,
                     JobStepExecutionSlice.status: "assigned",
-                    JobStepExecutionSlice.message: "Assigned to remote runner {}.".format(runner.name),
+                    JobStepExecutionSlice.message: (
+                        "Assigned to remote runner {}.".format(
+                            locked_runner.name
+                        )
+                    ),
                 },
                 synchronize_session=False,
             )

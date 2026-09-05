@@ -1327,13 +1327,19 @@ def prepare_ansible_workspace_environment(environment, workspace):
     /var/lib/journeyman for the service account and is therefore read-only.
     """
     result = dict(environment)
-    ansible_home = Path(workspace) / "private" / "ansible"
+    private_directory = workspace / "private"
+    ansible_home = private_directory / "ansible"
     local_temp = ansible_home / "tmp"
-    control_path = ansible_home / "cp"
+
+    control_path = Path(
+        os.environ.get(
+            "ANSIBLE_SSH_CONTROL_PATH_DIR",
+            "/run/journeyman/ansible-cp",
+        )
+    )
 
     for path in (ansible_home, local_temp, control_path):
-        path.mkdir(parents=True, exist_ok=True)
-        os.chmod(path, 0o700)
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     result["ANSIBLE_HOME"] = str(ansible_home)
     result["ANSIBLE_LOCAL_TEMP"] = str(local_temp)
@@ -1586,6 +1592,12 @@ def materialize_machine_credential_extra_vars(
     if username:
         variables[prefix + "ansible_user"] = username
 
+    # Journeyman-managed nodes may be frequently rebuilt. Do not pin or
+    # persist SSH host keys for Machine credential connections.
+    variables[prefix + "ansible_ssh_common_args"] = (
+        "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    )
+
     password = data.get("password")
     private_key = data.get("ssh_private_key")
 
@@ -1599,7 +1611,16 @@ def materialize_machine_credential_extra_vars(
         key_path = private_directory / (
             "machine-credential-step-{}.key".format(step["position"])
         )
-        key_path.write_text(str(private_key), encoding="utf-8")
+
+        private_key_text = (
+            str(private_key)
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .rstrip("\n")
+            + "\n"
+        )
+
+        key_path.write_text(private_key_text, encoding="utf-8")
         os.chmod(key_path, 0o600)
         variables[prefix + "ansible_private_key_file"] = str(key_path)
 

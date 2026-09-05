@@ -142,6 +142,54 @@
   <main class="main">
     <header class="topbar">
       <div class="account-actions">
+        <details class="topbar-indicator topbar-messages">
+          <summary
+            class="topbar-indicator-button"
+            title="System messages"
+            aria-label="System messages{% if journeyman_system_message_count %}: {{ journeyman_system_message_count }} active{% endif %}"
+          >
+            <svg class="topbar-indicator-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 6.5h17v11h-17z"></path>
+              <path d="m4 7 8 6 8-6"></path>
+            </svg>
+            {% if journeyman_system_message_count %}
+            <span class="topbar-indicator-badge">{{ journeyman_system_message_count }}</span>
+            {% endif %}
+          </summary>
+          <div class="topbar-popover topbar-message-popover">
+            <strong>System messages</strong>
+            {% if journeyman_security_notices %}
+              <ul class="topbar-message-list">
+                {% for notice in journeyman_security_notices %}
+                <li class="topbar-message topbar-message-{{ notice.severity }}">{{ notice.message }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p>No system messages.</p>
+            {% endif %}
+          </div>
+        </details>
+
+        <a
+          class="topbar-indicator-button topbar-activities"
+          href="{{ url_for('main.jobs', status='running') }}"
+          title="Current activities"
+          aria-label="Current activities: {{ journeyman_running_job_count }} executing Jobs"
+          data-navigation-status-url="{{ url_for('main.navigation_status') }}"
+        >
+          <svg class="topbar-indicator-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3.5" y="4" width="4" height="4" rx=".5"></rect>
+            <path d="m4.5 6 1 1 2-2"></path>
+            <path d="M10 6h10"></path>
+            <rect x="3.5" y="10" width="4" height="4" rx=".5"></rect>
+            <path d="m4.5 12 1 1 2-2"></path>
+            <path d="M10 12h10"></path>
+            <rect x="3.5" y="16" width="4" height="4" rx=".5"></rect>
+            <path d="M10 18h6"></path>
+          </svg>
+          <span class="topbar-indicator-badge" data-current-activity-count>{{ journeyman_running_job_count }}</span>
+        </a>
+
         <a
           class="account account-link"
           href="{{ url_for('main.user_preferences') }}"
@@ -174,13 +222,6 @@
       {% endif %}
     </div>
     {% endif %}
-
-    {% for notice in journeyman_security_notices or [] %}
-    <div class="security-lifecycle-banner security-lifecycle-{{ notice.severity }}" role="status">
-      <strong>Security lifecycle</strong>
-      <span>{{ notice.message }}</span>
-    </div>
-    {% endfor %}
 
     <section class="content">
       {% with messages = get_flashed_messages(with_categories=true) %}

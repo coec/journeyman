@@ -57,8 +57,13 @@ def _jobs_list_fingerprint():
 def jobs():
     per_page = page_size_for_user(current_username())
     page = max(request.args.get("page", 1, type=int) or 1, 1)
+    status_filter = (request.args.get("status") or "").strip().lower()
+    query = _visible_jobs_query()
+    if status_filter == "running":
+        query = query.filter(Job.status == "running")
+
     pagination = (
-        _visible_jobs_query()
+        query
         .order_by(Job.id.desc())
         .paginate(page=page, per_page=per_page, error_out=False)
     )
@@ -71,6 +76,8 @@ def jobs():
         "jobs.html",
         jobs=pagination.items,
         pagination=pagination,
+        pagination_args={"status": status_filter} if status_filter else {},
+        status_filter=status_filter,
         failed_rerun_hosts_by_job_id=failed_rerun_hosts_by_job_id,
     )
 

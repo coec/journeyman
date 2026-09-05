@@ -2886,3 +2886,4 @@ from .views import reactions as _reaction_routes  # noqa: E402,F401
 
 from .views import notifications as _notification_routes  # noqa: E402,F401
 from .views import dispatch_progress as _dispatch_progress_routes  # noqa: E402,F401
+from .views import navigation_status as _navigation_status_routes  # noqa: E402,F401

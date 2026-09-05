@@ -9,9 +9,16 @@
   <div>
     <h1>Jobs</h1>
     <p>
+      {% if status_filter == "running" %}
+      Currently executing work visible to you.
+      {% else %}
       Project execution history and queued work.
+      {% endif %}
     </p>
   </div>
+  {% if status_filter == "running" %}
+  <a class="button secondary" href="{{ url_for('main.jobs') }}">All Jobs</a>
+  {% endif %}
 </div>
 
 <section class="panel">

@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
 from app import db
@@ -94,13 +95,30 @@ def _unassign_not_started_work(runner):
 def request_runner_drain(runner, job, *, action):
     if runner is None or runner.is_local:
         return False
-    if runner.drain_job_id not in (None, job.id):
+
+    # Serialize drain acquisition against remote Job/slice claims. Claim
+    # paths lock this same row immediately before assigning work.
+    locked_runner = (
+        db.session.execute(
+            select(Runner)
+            .where(Runner.id == runner.id)
+            .with_for_update()
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if locked_runner is None or locked_runner.is_local:
         return False
-    if runner.drain_job_id is None:
-        runner.drain_job_id = job.id
-        runner.drain_requested_at = utcnow()
-        runner.drain_reason = "Runner management: {} (Job #{})".format(action, job.id)[:255]
-    _unassign_not_started_work(runner)
+
+    if locked_runner.drain_job_id not in (None, job.id):
+        return False
+    if locked_runner.drain_job_id is None:
+        locked_runner.drain_job_id = job.id
+        locked_runner.drain_requested_at = utcnow()
+        locked_runner.drain_reason = "Runner management: {} (Job #{})".format(
+            action, job.id
+        )[:255]
+    _unassign_not_started_work(locked_runner)
     return True
 
 

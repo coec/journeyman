@@ -4,8 +4,10 @@ import json
 import secrets
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app import db
-from app.models import Job
+from app.models import Job, Runner
 from app.services.runners import runner_health
 from app.services.project_concurrency import job_can_start
 from app.services.runner_environments import (
@@ -49,6 +51,8 @@ def _step_environment_path(runner, job, step):
 
 
 def runner_can_claim(runner, job):
+    if runner.drain_job_id is not None:
+        return False
     if runner_health(runner) != "healthy":
         return False
     if runner.running_steps >= runner.max_concurrent_steps:
@@ -78,6 +82,25 @@ def claim_next_remote_job(runner):
     for candidate in candidates:
         if not runner_can_claim(runner, candidate):
             continue
+
+        # Serialize claim against disruptive runner-management drain
+        # acquisition. request_runner_drain() locks the same Runner row.
+        locked_runner = (
+            db.session.execute(
+                select(Runner)
+                .where(Runner.id == runner.id)
+                .with_for_update()
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if locked_runner is None or locked_runner.drain_job_id is not None:
+            db.session.rollback()
+            return None, None
+        if not runner_can_claim(locked_runner, candidate):
+            db.session.rollback()
+            continue
+
         token = secrets.token_urlsafe(32)
         assigned_at = utcnow()
         updated = (
@@ -90,10 +113,12 @@ def claim_next_remote_job(runner):
             )
             .update(
                 {
-                    Job.assigned_runner_id: runner.id,
+                    Job.assigned_runner_id: locked_runner.id,
                     Job.assigned_at: assigned_at,
                     Job.dispatch_token: token,
-                    Job.message: "Assigned to remote runner {}.".format(runner.name),
+                    Job.message: "Assigned to remote runner {}.".format(
+                        locked_runner.name
+                    )
                 },
                 synchronize_session=False,
             )

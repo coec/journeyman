@@ -89,3 +89,52 @@ def test_draining_runner_cannot_claim_environment_sync(app):
         assert claim_next_environment_sync(runner) is None
         db.session.refresh(sync)
         assert sync.status == "queued"
+
+
+def test_claim_next_job_skips_management_job_while_target_runner_is_busy(
+    app,
+    monkeypatch,
+):
+    """A draining management Job must stay queued without starving local work."""
+    import importlib.util
+    from pathlib import Path
+
+    from app import db
+    from app.models import Job
+
+    runner_script = Path(app.root_path).parent / "bin" / "journeyman-runner"
+    spec = importlib.util.spec_from_file_location(
+        "journeyman_runner_test_module",
+        runner_script,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with app.app_context():
+        management = Job(
+            status="queued",
+            dispatch_target="local",
+            message="",
+        )
+        ordinary = Job(
+            status="queued",
+            dispatch_target="local",
+            message="",
+        )
+        db.session.add_all([management, ordinary])
+        db.session.commit()
+
+        monkeypatch.setattr(
+            "app.services.project_concurrency.job_can_start",
+            lambda job: True,
+        )
+        monkeypatch.setattr(
+            "app.services.runner_draining.management_job_ready_to_start",
+            lambda job: job.id != management.id,
+        )
+
+        claimed = module.claim_next_job()
+
+        assert claimed.id == ordinary.id
+        assert db.session.get(Job, management.id).status == "queued"
+        assert db.session.get(Job, ordinary.id).status == "running"

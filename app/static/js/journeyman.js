@@ -657,3 +657,46 @@ document.addEventListener(
     }
   });
 }());
+
+(function () {
+  "use strict";
+
+  const activityLink = document.querySelector("[data-navigation-status-url]");
+  const activityCount = document.querySelector("[data-current-activity-count]");
+
+  if (!activityLink || !activityCount || !("fetch" in window)) {
+    return;
+  }
+
+  const statusUrl = activityLink.dataset.navigationStatusUrl;
+
+  async function refreshNavigationStatus() {
+    if (document.hidden) {
+      return;
+    }
+
+    try {
+      const response = await fetch(statusUrl, {
+        credentials: "same-origin",
+        headers: {"Accept": "application/json"},
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      const runningJobs = Number(payload.running_jobs || 0);
+      activityCount.textContent = String(runningJobs);
+      activityLink.setAttribute(
+        "aria-label",
+        `Current activities: ${runningJobs} executing Jobs`
+      );
+    } catch (_error) {
+      // The page remains usable with the server-rendered count.
+    }
+  }
+
+  window.setInterval(refreshNavigationStatus, 5000);
+  document.addEventListener("visibilitychange", refreshNavigationStatus);
+}());

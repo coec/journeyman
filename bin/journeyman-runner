@@ -249,6 +249,7 @@ def claim_next_job():
     """
 
     from app.services.project_concurrency import job_can_start
+    from app.services.runner_draining import management_job_ready_to_start
 
     candidates = (
         Job.query
@@ -256,7 +257,19 @@ def claim_next_job():
         .order_by(Job.queued_at.asc(), Job.id.asc())
         .all()
     )
-    candidate = next((job for job in candidates if job_can_start(job)), None)
+
+    candidate = None
+    for job in candidates:
+        if not job_can_start(job):
+            continue
+        if not management_job_ready_to_start(job):
+            # A disruptive runner-management Job owns/requests the drain but
+            # must remain queued until the target runner is idle.  Continue
+            # looking so it does not block unrelated local work.
+            continue
+        candidate = job
+        break
+
     if candidate is None:
         return None
 
@@ -300,6 +313,7 @@ def claim_next_local_slice():
     from app.services.runner_slice_lifecycle import start_local_slice
     from app.services.project_oversight import update_job_oversight_state
     from app.services.project_concurrency import job_can_start
+    from app.services.runner_draining import management_job_ready_to_start
 
     jobs = (
         Job.query
@@ -315,6 +329,12 @@ def claim_next_local_slice():
 
     for job in jobs:
         if not job_can_start(job):
+            continue
+        if not management_job_ready_to_start(job):
+            # Disruptive runner-management Jobs are themselves sliced local
+            # Jobs.  Keep the management slice pending until the target runner
+            # is drained, while allowing unrelated local sliced work to be
+            # considered.
             continue
         reconcile_non_runnable_steps(job)
         if update_job_oversight_state(job):
@@ -1294,6 +1314,12 @@ def materialize_machine_credential_extra_vars(step, job_directory):
     username = str(snapshot.username or "").strip()
     if username:
         variables[prefix + "ansible_user"] = username
+
+    # Journeyman-managed nodes can be frequently rebuilt. Do not pin or
+    # persist SSH host keys for Machine credential connections.
+    variables[prefix + "ansible_ssh_common_args"] = (
+        "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    )
 
     password = data.get("password")
     if password:

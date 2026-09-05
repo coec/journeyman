@@ -2705,3 +2705,104 @@ nav.settings-tabs a.active:hover {
 .inventory-raw-details > summary {
   padding-right: 44px;
 }
+
+/* Persistent top-bar system messages and current-activity indicators. */
+.topbar-indicator {
+  position: relative;
+}
+
+.topbar-indicator > summary {
+  list-style: none;
+}
+
+.topbar-indicator > summary::-webkit-details-marker {
+  display: none;
+}
+
+.topbar-indicator-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.topbar-indicator-button:hover,
+.topbar-indicator[open] > .topbar-indicator-button {
+  color: var(--blue);
+  background: var(--bg);
+}
+
+.topbar-indicator-icon {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.topbar-indicator-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border: 2px solid #fff;
+  border-radius: 99px;
+  display: grid;
+  place-items: center;
+  background: var(--blue);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.topbar-popover {
+  position: absolute;
+  z-index: 1250;
+  top: calc(100% + 9px);
+  right: 0;
+  width: min(380px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(13, 32, 53, .16);
+}
+
+.topbar-message-popover > strong {
+  display: block;
+  margin-bottom: 9px;
+}
+
+.topbar-message-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.topbar-message {
+  padding: 9px 10px;
+  border-left: 3px solid var(--orange);
+  border-radius: 4px;
+  background: #fff8ee;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.topbar-message-error {
+  border-left-color: var(--red);
+  background: #fff0f0;
+}
