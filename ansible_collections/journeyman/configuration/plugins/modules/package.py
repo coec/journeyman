@@ -106,16 +106,73 @@ author:
 
 
 EXAMPLES = r'''
-- name: Configure a Package
+- name: Configure a Package with controls, inputs, and permissions
   journeyman.configuration.package:
-    name: Port Control
-    project: Port Control
+    name: Cisco Port Control
+    description: Administratively shut or enable a switch interface
+    project: Cisco Port Control
+    enabled: true
+    allow_as_reaction: true
+    access_mode: restricted
+    warning_message: Changing a switch port can interrupt service.
+    confirmation_required: true
+    confirmation_message: Confirm the target interface and requested state.
+    fixed_vars:
+      change_source: journeyman
+      enforce_policy: true
     inputs:
-      - name: interface
-        label: Interface
+      - name: hostname
+        label: Network device
+        help_text: Device receiving the change
         type: text
         required: true
+        secret: false
+        default: sw01.example.com
+        validation:
+          minimum_length: 3
+          maximum_length: 253
+        conditions: {}
+        display_role: operational_target
+        binding_type: extra_var
+        bind_to_inventory: true
+        inventory_binding_name: hostname
+      - name: interface
+        label: Interface
+        type: choice
+        required: true
+        choices:
+          - GigabitEthernet1/0/1
+          - GigabitEthernet1/0/2
+        validation:
+          choices_from_hostvar:
+            input: hostname
+            hostvar: interfaces
+        conditions:
+          visible_when:
+            all:
+              - hostname: sw01.example.com
+        display_role: confirmation_critical
+        binding_type: extra_var
+      - name: limit
+        label: Project step limit
+        type: text
+        required: false
+        binding_type: step_limit
+    permissions:
+      - type: team
+        name: Network Operations
+      - type: user
+        name: automation-admin
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Remove a Package
+  journeyman.configuration.package:
+    name: Retired Package
+    state: absent
 '''
 
 RETURN = r'''

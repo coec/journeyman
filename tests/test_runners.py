@@ -866,7 +866,7 @@ def test_remote_runner_claim_honours_required_runner_id(app):
         assert runner_can_claim(other, job) is False
 
 
-def test_remote_runner_uses_writable_workspace_for_ansible_runtime(tmp_path):
+def test_remote_runner_uses_writable_paths_for_ansible_runtime(tmp_path, monkeypatch):
     runner_path = (
         Path(__file__).resolve().parents[1]
         / "bin"
@@ -879,6 +879,8 @@ def test_remote_runner_uses_writable_workspace_for_ansible_runtime(tmp_path):
 
     workspace = tmp_path / "job-1-slice-1"
     workspace.mkdir()
+    control_path = tmp_path / "ansible-cp"
+    monkeypatch.setenv("ANSIBLE_SSH_CONTROL_PATH_DIR", str(control_path))
 
     environment = prepare_environment(
         {
@@ -892,16 +894,14 @@ def test_remote_runner_uses_writable_workspace_for_ansible_runtime(tmp_path):
     assert environment["HOME"] == "/var/lib/journeyman"
     assert environment["ANSIBLE_HOME"] == str(ansible_home)
     assert environment["ANSIBLE_LOCAL_TEMP"] == str(ansible_home / "tmp")
-    assert environment["ANSIBLE_SSH_CONTROL_PATH_DIR"] == str(
-        ansible_home / "cp"
-    )
+    assert environment["ANSIBLE_SSH_CONTROL_PATH_DIR"] == str(control_path)
     expected_remote_temp = "/tmp/.ansible-journeyman-job-1-slice-1"
     assert environment["ANSIBLE_REMOTE_TEMP"] == expected_remote_temp
     assert environment["ANSIBLE_REMOTE_TMP"] == expected_remote_temp
     assert (ansible_home / "tmp").is_dir()
-    assert (ansible_home / "cp").is_dir()
+    assert control_path.is_dir()
     assert ((ansible_home / "tmp").stat().st_mode & 0o777) == 0o700
-    assert ((ansible_home / "cp").stat().st_mode & 0o777) == 0o700
+    assert (control_path.stat().st_mode & 0o777) == 0o700
 
 
 def test_remote_runner_materializes_machine_credential(tmp_path):
@@ -945,7 +945,7 @@ def test_remote_runner_materializes_machine_credential(tmp_path):
 
     values = json.loads(variables_path.read_text(encoding="utf-8"))
     assert values["ansible_user"] == "automation"
-    assert values["ansible_password"] == "ssh-secret"
+    assert "ansible_password" not in values
     assert values["ansible_become_password"] == "become-secret"
     assert "ansible_become_method" not in values
     assert "ansible_become_user" not in values
@@ -1006,7 +1006,7 @@ def test_remote_runner_namespaces_linux_machine_credential_when_environment_cred
 
     values = json.loads(variables_path.read_text(encoding="utf-8"))
     assert values["linux_ansible_user"] == "svc-linux"
-    assert values["linux_ansible_password"] == "linux-password"
+    assert "linux_ansible_password" not in values
     assert "linux_ansible_become_method" not in values
     assert "linux_ansible_become_user" not in values
     assert "linux_ansible_private_key_file" in values

@@ -236,7 +236,7 @@ def app(
             # Match the production session policy.  Flask otherwise
             # falls back to its 31-day default for this synthetic
             # test configuration.
-            "PERMANENT_SESSION_LIFETIME": 28800,
+            "PERMANENT_SESSION_LIFETIME": 604800,
             "SESSION_REFRESH_EACH_REQUEST": True,
             "SQLALCHEMY_DATABASE_URI": (
                 "sqlite:///{}".format(

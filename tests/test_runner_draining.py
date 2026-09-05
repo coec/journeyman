@@ -97,26 +97,39 @@ def test_claim_next_job_skips_management_job_while_target_runner_is_busy(
 ):
     """A draining management Job must stay queued without starving local work."""
     import importlib.util
+    from importlib.machinery import SourceFileLoader
     from pathlib import Path
 
     from app import db
     from app.models import Job
 
     runner_script = Path(app.root_path).parent / "bin" / "journeyman-runner"
-    spec = importlib.util.spec_from_file_location(
+    loader = SourceFileLoader(
         "journeyman_runner_test_module",
-        runner_script,
+        str(runner_script),
     )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    loader.exec_module(module)
 
     with app.app_context():
+        project = Project(
+            name="Runner drain claim test project",
+            enabled=True,
+        )
+        db.session.add(project)
+        db.session.flush()
+
         management = Job(
+            project_id=project.id,
+            project_name=project.name,
             status="queued",
             dispatch_target="local",
             message="",
         )
         ordinary = Job(
+            project_id=project.id,
+            project_name=project.name,
             status="queued",
             dispatch_target="local",
             message="",

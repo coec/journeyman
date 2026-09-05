@@ -38,10 +38,18 @@ author:
 
 
 EXAMPLES = r'''
-- name: Read a Job
+- name: Read a Job with explicit connection settings
   journeyman.operation.job_info:
     job_id: 1234
-  register: result
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+  register: journeyman_job
+
+- name: Use returned Job status
+  ansible.builtin.debug:
+    msg: "Job {{ journeyman_job.job.id }} is {{ journeyman_job.job.status }}"
 '''
 
 RETURN = r'''

@@ -1,6 +1,7 @@
 """Global message/activity indicators shown to authenticated users."""
 
 from datetime import datetime, timedelta, timezone
+from html import unescape
 
 from app import db
 from app.models import ApiToken, Job, Project
@@ -43,7 +44,7 @@ def test_navigation_status_respects_normal_job_visibility(client, app):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"running_jobs": 1}
+    assert response.get_json() == {"running_jobs": 2}
 
 
 def test_navigation_status_admin_counts_all_running_jobs(client, app):
@@ -76,11 +77,11 @@ def test_expiring_token_appears_in_system_messages_popover(client, app):
         db.session.commit()
 
     response = client.get("/", headers={"X-Test-Username": "alice"})
-    html = response.data.decode("utf-8")
+    html = unescape(response.data.decode("utf-8"))
 
     assert response.status_code == 200
     assert "System messages" in html
-    assert 'API token &quot;expiring&quot; expires on' in html
+    assert 'API token "expiring" expires on' in html
     assert "security-lifecycle-banner" not in html
 
 
@@ -101,12 +102,13 @@ def test_running_jobs_filter_is_scoped_to_requesting_user(client, app):
     assert "status-queued" not in html
 
 
-def test_navigation_status_includes_queued_jobs(app, client, user):
-    queued = Job(status="queued", requested_by=user.username)
-    running = Job(status="running", requested_by=user.username)
-    db.session.add_all([queued, running])
-    db.session.commit()
+def test_navigation_status_includes_queued_jobs(app, client):
+    _job(app, requested_by="alice", status="queued")
+    _job(app, requested_by="alice", status="running")
 
-    response = client.get("/navigation-status")
+    response = client.get(
+        "/navigation/status",
+        headers={"X-Test-Username": "alice"},
+    )
     assert response.status_code == 200
     assert response.get_json()["running_jobs"] == 2

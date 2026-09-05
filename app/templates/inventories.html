@@ -167,6 +167,15 @@ Inventories · Journeyman
                                     Inspect
                                 </a>
 
+                                <details class="action-submenu">
+                                    <summary class="action-menu-item action-submenu-trigger">
+                                        Show Ansible <span aria-hidden="true">‹</span>
+                                    </summary>
+                                    <div class="action-submenu-items">
+                                        <a class="action-menu-item" href="{{ url_for('main.inventory_show_ansible_configuration', inventory_id=inventory.id) }}">Configuration</a>
+                                    </div>
+                                </details>
+
                                 <a
                                     class="action-menu-item"
                                     href="{{ url_for(

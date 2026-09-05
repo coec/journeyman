@@ -90,14 +90,50 @@ author:
 
 
 EXAMPLES = r'''
-- name: Configure a daily schedule
+- name: Configure a weekly Project schedule
   journeyman.configuration.schedule:
-    name: Nightly
+    name: Weekday maintenance
     project: Maintenance
-    schedule_type: daily
+    schedule_type: weekly
     timezone: Australia/Perth
-    start_at: "2026-09-01T02:00"
+    start_at: "2026-09-07T02:00"
+    end_at: "2026-12-31T23:59"
+    weekdays:
+      - 0
+      - 2
+      - 4
+    enabled: true
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Configure an interval schedule
+  journeyman.configuration.schedule:
+    name: Every two hours
+    project: Inventory refresh
+    schedule_type: interval
+    timezone: UTC
+    start_at: "2026-09-07T00:00"
+    interval_minutes: 120
+    enabled: true
+    state: present
+
+- name: Configure a one-time schedule
+  journeyman.configuration.schedule:
+    name: Sunday change
+    project: Planned change
+    schedule_type: once
+    timezone: Australia/Perth
+    start_at: "2026-09-13T01:00"
+    state: present
+
+- name: Remove a schedule
+  journeyman.configuration.schedule:
+    name: Retired schedule
+    project: Maintenance
+    state: absent
 '''
 
 RETURN = r'''

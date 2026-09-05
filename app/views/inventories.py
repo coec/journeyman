@@ -1,3 +1,4 @@
+from app.services.ansible_view import inventory_configuration_yaml
 """Inventory administration and preview routes."""
 
 from app.services.composite_inventory import normalize_source_inventories
@@ -28,6 +29,23 @@ from app.routes import (
     inventory_config, inventory_host_count, json, redirect, refresh_inventory,
     render_template, request, resolve_inventory, url_for, jsonify,
 )
+
+
+
+@bp.get("/inventories/<int:inventory_id>/ansible/configuration")
+def inventory_show_ansible_configuration(inventory_id):
+    if not current_user_is_admin():
+        abort(403)
+    inventory = db.get_or_404(Inventory, inventory_id)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=inventory_configuration_yaml(inventory),
+        ansible_note=None,
+        resource_kind="Inventory",
+        resource_name=inventory.name,
+        back_url=url_for("main.inventories") + "#inventory-{}".format(inventory.id),
+    )
 
 @bp.get("/inventories")
 def inventories():

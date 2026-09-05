@@ -33,20 +33,23 @@ session verification and do not authenticate the request.
 
 ## Timeout model
 
-Journeyman currently configures authenticated sessions as permanent Flask
-sessions with:
+Journeyman uses a per-user **sliding inactivity timeout** backed by the
+server-side authentication-session registry. The default is 480 minutes
+(8 hours). Users can change their own timeout under **Preferences** to any
+value from 15 minutes through 7 days, using minutes, hours, or days.
 
-- `PERMANENT_SESSION_LIFETIME = 28800` seconds (8 hours); and
-- Flask's default `SESSION_REFRESH_EACH_REQUEST = True` behaviour.
+`AuthSession.last_seen_at` is refreshed while an authenticated session is in
+use. If the elapsed time since `last_seen_at` reaches the user's configured
+timeout, the server-side session is revoked and the browser must authenticate
+again. The browser's permanent-session cookie lifetime is 7 days so that it
+does not prematurely defeat a longer user-selected idle timeout. The cookie is
+still refreshed on active requests by Flask's default
+`SESSION_REFRESH_EACH_REQUEST = True` behaviour.
 
-This implements an approximately eight-hour **sliding inactivity timeout**: an
-active permanent session is refreshed while requests continue, while a session
-which is not used for the configured lifetime must authenticate again.
-
-Journeyman does **not currently implement a separate absolute maximum lifetime**
-which expires a continuously active browser session regardless of activity.
-ASVS v5.0.0-7.1.1 and v5.0.0-7.3.2 are therefore Deferred until an absolute
-maximum lifetime is defined, documented and enforced.
+An independent server-side **absolute maximum lifetime** remains in force even
+for continuously active sessions. It defaults to 30 days and is configured
+with `JOURNEYMAN_AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS`. This is deliberately
+separate from the user-selectable inactivity timeout.
 
 ## Concurrent sessions
 
@@ -129,8 +132,8 @@ revoked, and has not passed its absolute expiry.
 Logout revokes the server-side record before clearing the browser cookie. A
 previously copied valid cookie therefore cannot be replayed after logout.
 
-The browser session retains the existing eight-hour sliding inactivity lifetime.
-An independent server-side maximum defaults to 24 hours and is configured with
+The server-side registry also enforces the user's configured inactivity timeout.
+An independent server-side maximum defaults to 30 days and is configured with
 `JOURNEYMAN_AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS`. Continuously active
 sessions therefore still require a new login after the absolute lifetime.
 

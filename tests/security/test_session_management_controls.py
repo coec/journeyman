@@ -119,7 +119,7 @@ def test_login_replaces_pre_authentication_session_cookie(app, client, monkeypat
         assert browser_session["journeyman_identity"]["username"] == "alice"
 
 
-def test_authenticated_session_uses_documented_sliding_inactivity_timeout(
+def test_authenticated_session_cookie_supports_maximum_idle_timeout(
     app,
     client,
     monkeypatch,
@@ -128,7 +128,7 @@ def test_authenticated_session_uses_documented_sliding_inactivity_timeout(
     assert response.status_code == 302
 
     lifetime = app.permanent_session_lifetime
-    assert int(lifetime.total_seconds()) == 28800
+    assert int(lifetime.total_seconds()) == 604800
     assert app.config.get("SESSION_REFRESH_EACH_REQUEST", True) is True
     with client.session_transaction() as browser_session:
         assert browser_session.permanent is True
@@ -263,3 +263,51 @@ def test_absolute_session_lifetime_is_enforced_server_side(app, client, monkeypa
     with app.app_context():
         row = db.session.get(AuthSession, session_id)
         assert row.revoked_at is not None
+
+
+def test_per_user_idle_session_timeout_is_enforced_server_side(app, client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.models import AuthSession, UserPreference
+
+    response = _login(app, client, monkeypatch)
+    assert response.status_code == 302
+
+    with client.session_transaction() as browser_session:
+        session_id = browser_session["journeyman_session_id"]
+
+    with app.app_context():
+        db.session.add(UserPreference(username="alice", idle_session_timeout_minutes=60))
+        row = db.session.get(AuthSession, session_id)
+        row.last_seen_at = datetime.now(timezone.utc) - timedelta(minutes=61)
+        row.directory_checked_at = datetime.now(timezone.utc)
+        db.session.commit()
+
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+    with app.app_context():
+        row = db.session.get(AuthSession, session_id)
+        assert row.revoked_at is not None
+
+
+def test_active_session_with_two_day_idle_preference_remains_valid(app, client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.models import AuthSession, UserPreference
+
+    response = _login(app, client, monkeypatch)
+    assert response.status_code == 302
+
+    with client.session_transaction() as browser_session:
+        session_id = browser_session["journeyman_session_id"]
+
+    with app.app_context():
+        db.session.add(UserPreference(username="alice", idle_session_timeout_minutes=2880))
+        row = db.session.get(AuthSession, session_id)
+        row.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=47)
+        row.directory_checked_at = datetime.now(timezone.utc)
+        row.expires_at = datetime.now(timezone.utc) + timedelta(days=10)
+        db.session.commit()
+
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 200

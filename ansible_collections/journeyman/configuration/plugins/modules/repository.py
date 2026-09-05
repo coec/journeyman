@@ -76,13 +76,32 @@ author:
 
 
 EXAMPLES = r'''
-- name: Configure a Git repository
+- name: Configure a Git repository with every module option
   journeyman.configuration.repository:
     name: Automation
+    description: Main infrastructure automation repository
     repository_type: git
     url: https://git.example/automation.git
+    directory_path: ''
     default_branch: main
+    credential: Git service account
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Configure a local directory repository
+  journeyman.configuration.repository:
+    name: Local automation
+    repository_type: directory
+    directory_path: /srv/journeyman/automation
+    state: present
+
+- name: Remove a repository
+  journeyman.configuration.repository:
+    name: Retired repository
+    state: absent
 '''
 
 RETURN = r'''

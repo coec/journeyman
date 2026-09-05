@@ -1,3 +1,4 @@
+from app.services.ansible_view import credential_configuration_yaml
 """Credential administration and owner-only reveal routes."""
 
 import yaml
@@ -8,7 +9,7 @@ from app.routes import (
     CREDENTIAL_TYPE_SOURCE_CONTROL, CREDENTIAL_TYPE_VAULT,
     CREDENTIAL_TYPE_ZABBIX, CREDENTIAL_TYPE_URL, CREDENTIAL_TYPE_CUSTOM, Credential, ProjectStep, SECURITY_SCOPE_CHOICES,
     VALID_CREDENTIAL_TYPES, VALID_SECURITY_SCOPES, _clean, abort, bp,
-    can_administer, current_app, current_username, db, flash, jsonify, or_,
+    can_administer, current_app, current_user_is_admin, current_username, db, flash, jsonify, or_,
     record_audit_event, redirect, render_template, request, url_for,
     validate_credential_environment_variables,
 )
@@ -162,6 +163,26 @@ def _revealed_credential_values(credential, credential_data):
 
     return values
 
+
+
+
+@bp.get("/credentials/<int:credential_id>/ansible/configuration")
+def credential_show_ansible_configuration(credential_id):
+    if not current_user_is_admin():
+        abort(403)
+    credential = db.get_or_404(Credential, credential_id)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=credential_configuration_yaml(credential),
+        ansible_note=(
+            "Stored secret values cannot be read back by Journeyman. "
+            "Populated secret fields are represented with Ansible variable placeholders."
+        ),
+        resource_kind="Credential",
+        resource_name=credential.name,
+        back_url=url_for("main.credentials"),
+    )
 
 @bp.route("/credentials")
 def credentials():

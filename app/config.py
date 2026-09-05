@@ -94,7 +94,16 @@ class Config:
         or "Journeyman Users"
     )
 
-    PERMANENT_SESSION_LIFETIME = 28800
+    # Browser cookies must be able to outlive the longest selectable per-user
+    # idle timeout. The server-side auth-session registry enforces each user's
+    # actual inactivity limit.
+    AUTH_SESSION_DEFAULT_IDLE_TIMEOUT_MINUTES = int(
+        os.environ.get("JOURNEYMAN_AUTH_SESSION_DEFAULT_IDLE_TIMEOUT_MINUTES", "480")
+    )
+    AUTH_SESSION_MAX_IDLE_TIMEOUT_MINUTES = int(
+        os.environ.get("JOURNEYMAN_AUTH_SESSION_MAX_IDLE_TIMEOUT_MINUTES", "10080")
+    )
+    PERMANENT_SESSION_LIFETIME = AUTH_SESSION_MAX_IDLE_TIMEOUT_MINUTES * 60
 
     # Explicit bound for the serialized signed browser session. Oversized
     # sessions are cleared rather than emitted and risking proxy/browser truncation.
@@ -102,12 +111,12 @@ class Config:
         os.environ.get("JOURNEYMAN_MAX_SESSION_COOKIE_BYTES", "3072")
     )
 
-    # Sliding browser-cookie lifetime is eight hours; the server-side
-    # registry also imposes an independent absolute maximum lifetime.
+    # Per-user inactivity is enforced by the server-side session registry.
+    # An independent absolute maximum lifetime is retained as a safety bound.
     AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS = int(
         os.environ.get(
             "JOURNEYMAN_AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS",
-            "86400",
+            "2592000",
         )
     )
 

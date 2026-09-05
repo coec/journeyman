@@ -1,3 +1,4 @@
+from app.services.ansible_view import schedule_configuration_yaml
 """Project scheduling administration routes."""
 
 from datetime import datetime, timezone
@@ -115,6 +116,22 @@ def _apply(schedule, values):
         schedule.enabled = False
     schedule.claimed_at = None
 
+
+
+
+@bp.get("/schedules/<int:schedule_id>/ansible/configuration")
+def schedule_show_ansible_configuration(schedule_id):
+    _require_admin()
+    schedule = db.get_or_404(ProjectSchedule, schedule_id)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=schedule_configuration_yaml(schedule),
+        ansible_note=None,
+        resource_kind="Schedule",
+        resource_name=schedule.name,
+        back_url=url_for("main.schedules"),
+    )
 
 @bp.get("/schedules")
 def schedules():

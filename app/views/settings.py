@@ -1,11 +1,13 @@
 """System and environment-build settings routes."""
 
-from flask import abort, flash, redirect, render_template, request, url_for
+from flask import abort, current_app, flash, redirect, render_template, request, url_for
 
 from app import db
 from app.auth import current_user_is_admin, current_username
 from app.services.user_preferences import get_or_create_user_preferences
+from app.services.api_tokens import create_api_token
 from app.services.name_ordering import reserved_name_ordering
+from app.models import ApiToken
 from app.models.system_setting import APPLY_STATUS_APPLIED, APPLY_STATUS_FAILED, utcnow
 from app.routes import bp
 from app.services.audit import record_audit_event
@@ -247,6 +249,27 @@ def apply_system_settings():
     flash("Nginx configuration applied successfully.", "success")
     return redirect(url_for("main.system_settings"))
 
+def _render_user_preferences(*, generated_api_token=None, token_error=None, status=200):
+    username = current_username()
+    preferences = get_or_create_user_preferences(username)
+    api_tokens = (
+        ApiToken.query
+        .filter_by(username=username)
+        .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
+        .all()
+    )
+    return (
+        render_template(
+            "user_preferences.html",
+            preferences=preferences,
+            api_tokens=api_tokens,
+            generated_api_token=generated_api_token,
+            token_error=token_error,
+        ),
+        status,
+    )
+
+
 @bp.route("/preferences", methods=["GET", "POST"])
 def user_preferences():
     preferences = get_or_create_user_preferences(current_username())
@@ -255,10 +278,90 @@ def user_preferences():
         preferences.hide_disabled_packages = request.form.get("hide_disabled_packages") == "1"
         rows_per_page = request.form.get("rows_per_page", type=int)
         preferences.rows_per_page = rows_per_page if rows_per_page in (25, 50, 100, 200) else 50
+
+        if "idle_session_timeout_value" in request.form or "idle_session_timeout_unit" in request.form:
+            idle_timeout_value = request.form.get("idle_session_timeout_value", type=int)
+            idle_timeout_unit = str(request.form.get("idle_session_timeout_unit") or "minutes")
+            multipliers = {"minutes": 1, "hours": 60, "days": 1440}
+            idle_timeout_minutes = (
+                idle_timeout_value * multipliers[idle_timeout_unit]
+                if idle_timeout_value is not None and idle_timeout_unit in multipliers
+                else None
+            )
+            max_idle_minutes = int(
+                current_app.config.get("AUTH_SESSION_MAX_IDLE_TIMEOUT_MINUTES", 10080)
+            )
+            if idle_timeout_minutes is None or not 15 <= idle_timeout_minutes <= max_idle_minutes:
+                flash(
+                    "Idle session timeout must be between 15 minutes and {} days.".format(
+                        max_idle_minutes // 1440
+                    ),
+                    "error",
+                )
+                return _render_user_preferences(status=400)
+            preferences.idle_session_timeout_minutes = idle_timeout_minutes
         db.session.commit()
         flash("Preferences saved.", "success")
         return redirect(url_for("main.user_preferences"))
-    return render_template("user_preferences.html", preferences=preferences)
+    return _render_user_preferences()
+
+
+@bp.post("/preferences/api-tokens")
+def user_api_token_create():
+    username = current_username()
+    name = str(request.form.get("name") or "").strip()
+    if len(name) > 120:
+        return _render_user_preferences(
+            token_error="API token names must be 120 characters or fewer.",
+            status=400,
+        )
+
+    try:
+        row, secret = create_api_token(
+            name=name,
+            username=username,
+            administrator=current_user_is_admin(),
+        )
+    except ValueError as exc:
+        return _render_user_preferences(token_error=str(exc), status=400)
+
+    record_audit_event(
+        "api_token.created",
+        object_type="api_token",
+        object_id=str(row.id),
+        object_name=row.name,
+        details={"role": row.role, "expires_at": row.expires_at.isoformat()},
+    )
+    return _render_user_preferences(
+        generated_api_token={"row": row, "secret": secret},
+        status=201,
+    )
+
+
+@bp.post("/preferences/api-tokens/<int:token_id>/revoke")
+def user_api_token_revoke(token_id):
+    row = ApiToken.query.filter_by(
+        id=token_id,
+        username=current_username(),
+    ).one_or_none()
+    if row is None:
+        abort(404)
+
+    if row.enabled:
+        row.enabled = False
+        db.session.commit()
+        record_audit_event(
+            "api_token.revoked",
+            object_type="api_token",
+            object_id=str(row.id),
+            object_name=row.name,
+            details={"role": row.role},
+        )
+        flash('API token "{}" revoked.'.format(row.name), "success")
+    else:
+        flash('API token "{}" is already revoked.'.format(row.name), "info")
+
+    return redirect(url_for("main.user_preferences"))
 
 
 @bp.route("/settings/release-testing", methods=["GET", "POST"])

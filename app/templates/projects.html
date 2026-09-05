@@ -257,6 +257,24 @@
                 <button class="action-menu-item" type="submit">Clone</button>
               </form>
 
+              {% if not project.builtin_key %}
+                <details class="action-submenu">
+                  <summary class="action-menu-item action-submenu-trigger">
+                    Show Ansible <span aria-hidden="true">‹</span>
+                  </summary>
+                  <div class="action-submenu-items">
+                    <a
+                      class="action-menu-item"
+                      href="{{ url_for('main.project_show_ansible_configuration', project_id=project.id) }}"
+                    >Configuration</a>
+                    <a
+                      class="action-menu-item"
+                      href="{{ url_for('main.project_show_ansible_operation', project_id=project.id) }}"
+                    >Operation</a>
+                  </div>
+                </details>
+              {% endif %}
+
               <a class="action-menu-item" href="{{ url_for('main.project_edit', project_id=project.id) }}">Edit</a>
 
               <form

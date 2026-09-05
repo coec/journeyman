@@ -38,9 +38,13 @@ author:
 
 
 EXAMPLES = r'''
-- name: Cancel a Job
+- name: Cancel a Job with explicit connection settings
   journeyman.operation.job_cancel:
     job_id: 1234
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
 '''
 
 RETURN = r'''

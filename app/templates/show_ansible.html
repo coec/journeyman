@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Show Ansible · {{ ansible_kind }} · {{ resource_name }} · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Show Ansible · {{ ansible_kind }}</h1>
+    <p>{{ resource_kind }}: {{ resource_name }}</p>
+  </div>
+  <div class="page-heading-actions">
+    <a class="button" href="{{ back_url }}">← Back</a>
+  </div>
+</div>
+
+<section class="panel">
+  <div class="inventory-copy-heading">
+    <div>
+      <h2>{{ ansible_kind }}</h2>
+      {% if ansible_kind == "Configuration" %}
+        <p>
+          Declarative invocation that recreates the current {{ resource_kind|lower }}
+          using <code>journeyman.configuration.{{ resource_kind|lower|replace(' ', '_') }}</code>.
+          {% if ansible_note %}{{ ansible_note }}{% endif %}
+        </p>
+      {% else %}
+        <p>
+          Runtime invocation using <code>journeyman.operation.dispatch</code>.
+          {% if ansible_note %}{{ ansible_note }}{% endif %}
+        </p>
+      {% endif %}
+    </div>
+    <button
+      class="inventory-copy-button"
+      type="button"
+      data-copy-target="ansible-output"
+      title="Copy {{ ansible_kind|lower }}"
+      aria-label="Copy Ansible {{ ansible_kind|lower }}"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <rect x="9" y="9" width="10" height="10" rx="2"></rect>
+        <path d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"></path>
+      </svg>
+      <span class="inventory-copy-status" aria-live="polite"></span>
+    </button>
+  </div>
+  <pre id="ansible-output" class="job-output">{{ ansible_yaml }}</pre>
+</section>
+{% endblock %}

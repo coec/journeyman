@@ -336,7 +336,12 @@ def _message_for(event_row):
 
 
 def _send_email(target, subject, body):
-    validate_outbound_destination(target.host, target.port or 25, purpose="Notification SMTP")
+    validate_outbound_destination(
+        target.host,
+        target.port or 25,
+        purpose="Notification SMTP",
+        allow_self=True,
+    )
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = target.sender

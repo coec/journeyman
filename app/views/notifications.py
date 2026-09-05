@@ -80,7 +80,12 @@ def _validate_target(data, target=None):
             if data["tls_mode"] not in {"none", "starttls", "ssl"}:
                 errors.append("Select a valid SMTP TLS mode.")
             if data["host"]:
-                validate_outbound_destination(data["host"], data["port"] or 25, purpose="Notification SMTP")
+                validate_outbound_destination(
+                    data["host"],
+                    data["port"] or 25,
+                    purpose="Notification SMTP",
+                    allow_self=True,
+                )
         elif data["channel"] == CHANNEL_WEBHOOK:
             if not data["url"]:
                 errors.append("Webhook URL is required.")

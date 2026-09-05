@@ -1,3 +1,4 @@
+from app.services.ansible_view import reactor_configuration_yaml, signal_source_configuration_yaml
 """Journeyman Sources, Signals, Reactors and Reactions."""
 
 import hashlib
@@ -153,6 +154,25 @@ def _validate_source_form(data, source=None):
 
     return errors, networks, runner
 
+
+
+
+@bp.get("/sources/<int:source_id>/ansible/configuration")
+def source_show_ansible_configuration(source_id):
+    _admin_required()
+    source = db.get_or_404(SignalSource, source_id)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=signal_source_configuration_yaml(source),
+        ansible_note=(
+            "Stored HMAC secrets cannot be read back by Journeyman. "
+            "A configured secret is represented with an Ansible variable placeholder."
+        ),
+        resource_kind="Signal Source",
+        resource_name=source.name,
+        back_url=url_for("main.sources"),
+    )
 
 @bp.get("/sources")
 def sources():
@@ -503,6 +523,22 @@ def _reactor_context(data, reactor=None):
         recent_signals=recent_signals,
     )
 
+
+
+
+@bp.get("/reactors/<int:reactor_id>/ansible/configuration")
+def reactor_show_ansible_configuration(reactor_id):
+    _admin_required()
+    reactor = db.get_or_404(Reactor, reactor_id)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=reactor_configuration_yaml(reactor),
+        ansible_note=None,
+        resource_kind="Reactor",
+        resource_name=reactor.name,
+        back_url=url_for("main.reactors"),
+    )
 
 @bp.get("/reactors")
 def reactors():

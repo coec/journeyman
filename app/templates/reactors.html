@@ -14,7 +14,7 @@
     <details class="action-menu">
       <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
       <div class="action-menu-items">
-        <a class="action-menu-item" href="{{ url_for('main.reactor_edit', reactor_id=reactor.id) }}">Edit</a>
+        <details class="action-submenu"><summary class="action-menu-item action-submenu-trigger">Show Ansible <span aria-hidden="true">‹</span></summary><div class="action-submenu-items"><a class="action-menu-item" href="{{ url_for('main.reactor_show_ansible_configuration', reactor_id=reactor.id) }}">Configuration</a></div></details><a class="action-menu-item" href="{{ url_for('main.reactor_edit', reactor_id=reactor.id) }}">Edit</a>
         <form
           method="post"
           action="{{ url_for('main.reactor_delete', reactor_id=reactor.id) }}"

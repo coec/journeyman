@@ -15,6 +15,11 @@ window.Journeyman = {
         menus.forEach(function (menu) {
             menu.addEventListener("toggle", function () {
                 if (!menu.open) {
+                    menu.querySelectorAll("details.action-submenu[open]").forEach(
+                        function (submenu) {
+                            submenu.open = false;
+                        },
+                    );
                     return;
                 }
 
@@ -44,6 +49,15 @@ window.Journeyman = {
             });
 
             if (!openMenu) {
+                return;
+            }
+
+            const openSubmenu = openMenu.querySelector(
+                "details.action-submenu[open]",
+            );
+            if (openSubmenu) {
+                openSubmenu.open = false;
+                openSubmenu.querySelector("summary")?.focus();
                 return;
             }
 

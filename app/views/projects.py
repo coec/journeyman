@@ -15,6 +15,7 @@ from app.services.configuration_deletion import (
     delete_project_with_job_history,
 )
 from app.services.user_preferences import get_or_create_user_preferences
+from app.services.ansible_view import project_configuration_yaml, dispatch_yaml
 from app.services.pagination import paginate_list, page_size_for_user
 from app.services.environments import APPLICATION_ENVIRONMENT_NAME
 from app.services.project_concurrency import (
@@ -239,6 +240,64 @@ def _project_clone_name(project_name):
         suffix += 1
 
     return candidate
+
+
+def _project_ansible_context(project):
+    if project.builtin_key is not None:
+        abort(404)
+
+    return {
+        "resource_kind": "Project",
+        "resource_name": project.name,
+        "back_url": url_for("main.projects") + "#project-{}".format(project.id),
+    }
+
+
+@bp.get("/projects/<int:project_id>/ansible")
+def project_show_ansible(project_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    project = db.get_or_404(Project, project_id)
+    _project_ansible_context(project)
+    return redirect(
+        url_for(
+            "main.project_show_ansible_configuration",
+            project_id=project.id,
+        )
+    )
+
+
+@bp.get("/projects/<int:project_id>/ansible/configuration")
+def project_show_ansible_configuration(project_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    project = db.get_or_404(Project, project_id)
+    context = _project_ansible_context(project)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=project_configuration_yaml(project),
+        ansible_note=None,
+        **context
+    )
+
+
+@bp.get("/projects/<int:project_id>/ansible/operation")
+def project_show_ansible_operation(project_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    project = db.get_or_404(Project, project_id)
+    context = _project_ansible_context(project)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Operation",
+        ansible_yaml=dispatch_yaml("project", project.name),
+        ansible_note=None,
+        **context
+    )
 
 
 @bp.get("/projects")

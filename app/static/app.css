@@ -2124,6 +2124,39 @@ nav.settings-tabs a.active:hover {
   cursor: not-allowed;
 }
 
+/* Nested action menu used for related variants such as Show Ansible. */
+.action-submenu {
+  position: relative;
+}
+
+.action-submenu > summary {
+  list-style: none;
+}
+
+.action-submenu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.action-submenu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.action-submenu-items {
+  position: absolute;
+  z-index: 31;
+  right: calc(100% - 4px);
+  top: -5px;
+  min-width: 150px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.14);
+}
+
 .inventory-host-selector {
   max-width: 620px;
   margin-bottom: 18px;
@@ -2806,3 +2839,20 @@ nav.settings-tabs a.active:hover {
   border-left-color: var(--red);
   background: #fff0f0;
 }
+
+.api-token-panel { margin-top: 18px; }
+.api-token-panel h2, .api-token-panel h3 { margin-top: 0; }
+.api-token-panel h3 { margin-top: 24px; }
+.api-token-create-form { max-width: 640px; margin-top: 18px; }
+.api-token-create-form label, .api-token-create-form label span,
+.api-token-create-form label strong, .api-token-create-form label small { display: block; }
+.api-token-create-form label small { margin: 3px 0 8px; color: var(--muted); font-weight: 400; }
+.api-token-create-form input[type="text"] { width: 100%; }
+.api-token-secret { margin: 18px 0; padding: 14px; border: 1px solid var(--border); border-radius: 6px; }
+.api-token-secret p { margin-bottom: 8px; }
+.api-token-secret .secret-output { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
+.api-token-panel .table-wrap { overflow-x: auto; }
+.api-token-panel td form { margin: 0; }
+
+.preference-timeout-control { display: inline-flex; gap: 8px; align-items: center; }
+.preference-timeout-control input { width: 7rem; }

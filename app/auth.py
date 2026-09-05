@@ -287,6 +287,30 @@ def _validate_auth_session(identity):
         db.session.commit()
         return None
 
+    from app.models import UserPreference
+
+    default_idle_minutes = int(
+        current_app.config.get("AUTH_SESSION_DEFAULT_IDLE_TIMEOUT_MINUTES", 480)
+    )
+    preference = UserPreference.query.filter_by(username=username).first()
+    idle_minutes = (
+        int(preference.idle_session_timeout_minutes)
+        if preference is not None and preference.idle_session_timeout_minutes is not None
+        else default_idle_minutes
+    )
+    last_seen = _as_utc(row.last_seen_at)
+    if last_seen is not None and (now - last_seen).total_seconds() >= idle_minutes * 60:
+        row.revoked_at = now
+        db.session.commit()
+        record_audit_event(
+            "authentication.session_expired",
+            result="failure",
+            actor_username=username,
+            authenticated_via=str(identity.get("authenticated_via") or "ldap"),
+            details={"reason": "idle_timeout", "idle_timeout_minutes": idle_minutes},
+        )
+        return None
+
     if (
         str(identity.get("authenticated_via") or "ldap") == "ldap"
         and _directory_revalidation_due(row, now)
@@ -299,7 +323,6 @@ def _validate_auth_session(identity):
             # redundant-directory recovery does not force a new login.
             return False
 
-    last_seen = _as_utc(row.last_seen_at)
     if last_seen is None or (now - last_seen).total_seconds() >= 60:
         row.last_seen_at = now
         db.session.commit()
@@ -538,7 +561,7 @@ def _store_identity(identity, *, absolute_expires_at=None):
 
     now = _utc_now()
     absolute_seconds = int(
-        current_app.config.get("AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS", 86400)
+        current_app.config.get("AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS", 2592000)
     )
     if absolute_seconds <= 0:
         raise RuntimeError("AUTH_SESSION_ABSOLUTE_LIFETIME_SECONDS must be positive.")

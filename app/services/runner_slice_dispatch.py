@@ -166,7 +166,7 @@ def claim_next_remote_slice(runner):
             from app.services.runner_slice_lifecycle import fail_pending_remote_slice
 
             reported = RunnerEnvironment.query.filter_by(
-                Runner_id=runner.id,
+                runner_id=runner.id,
                 environment_id=requirement.environment_id,
             ).one_or_none()
             message = (

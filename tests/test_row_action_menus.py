@@ -12,8 +12,14 @@ def _template(name):
 
 def test_multi_action_table_rows_use_common_action_menu():
     templates = {
-        "projects.html": ["Dispatch", "Schedule", "Clone", "Edit", "Delete"],
-        "project_packages.html": ["Dispatch", "Edit", "Delete"],
+        "projects.html": [
+            "Dispatch", "Schedule", "Clone", "Show Ansible",
+            "Configuration", "Operation", "Edit", "Delete",
+        ],
+        "project_packages.html": [
+            "Dispatch", "Show Ansible", "Configuration", "Operation",
+            "Edit", "Delete",
+        ],
         "schedules.html": ["Dispatch now", "Edit", "Disable", "Delete"],
         "environments.html": ["Validate", "Make default", "Delete"],
         "teams.html": ["Members", "Remove"],
@@ -39,6 +45,26 @@ def test_multi_action_table_rows_use_common_action_menu():
                 action,
                 purpose="{} retains the {} row operation inside the dropdown".format(name, action),
             )
+
+
+def test_show_ansible_uses_configuration_and_operation_submenu():
+    for name in ("projects.html", "project_packages.html"):
+        content = _template(name)
+        assert_output_contains(
+            content,
+            'class="action-submenu"',
+            purpose="{} groups Show Ansible variants into a nested submenu".format(name),
+        )
+        assert_output_contains(
+            content,
+            ">Configuration</a>",
+            purpose="{} exposes the declarative collection invocation".format(name),
+        )
+        assert_output_contains(
+            content,
+            ">Operation</a>",
+            purpose="{} exposes the runtime dispatch invocation".format(name),
+        )
 
 
 def test_runner_management_playbook_updates_signal_capable_runner_components():

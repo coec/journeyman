@@ -88,13 +88,50 @@ author:
 '''
 
 EXAMPLES = r'''
-- name: Configure a Zabbix source
+- name: Configure a Zabbix Signal Source
   journeyman.configuration.signal_source:
-    name: Zabbix TRN02
+    name: Zabbix production
+    description: Signed webhook Signals from production Zabbix
     source_type: zabbix
+    enabled: true
+    allowed_networks:
+      - 192.0.2.0/24
+      - 2001:db8:100::/64
     zabbix_url: https://zabbix.example/
+    runner: Bentley runner
     hmac_secret: "{{ vault_journeyman_zabbix_hmac_secret }}"
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Configure an SNMP trap Signal Source
+  journeyman.configuration.signal_source:
+    name: Network traps
+    description: SNMP traps received by the site runner
+    source_type: snmp_trap
+    enabled: true
+    allowed_networks:
+      - 198.51.100.0/24
+    runner: Karratha runner
+    snmp_port: 1162
+    state: present
+
+- name: Configure a syslog Signal Source
+  journeyman.configuration.signal_source:
+    name: Appliance syslog
+    source_type: syslog
+    enabled: true
+    allowed_networks:
+      - 203.0.113.0/24
+    runner: Bentley runner
+    state: present
+
+- name: Remove a Signal Source
+  journeyman.configuration.signal_source:
+    name: Retired source
+    state: absent
 '''
 
 RETURN = r'''

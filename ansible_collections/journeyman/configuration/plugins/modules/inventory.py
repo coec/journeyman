@@ -165,14 +165,113 @@ author:
 '''
 
 EXAMPLES = r'''
-- name: Configure a static inventory
+- name: Configure a static inventory and override the Journeyman connection
   journeyman.configuration.inventory:
-    name: Lab
+    name: Lab Linux
     inventory_type: static
+    enabled: true
     content: |
       [linux]
       host01
+      host02
+    append_domain: lab.example.com
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Configure a Satellite inventory
+  journeyman.configuration.inventory:
+    name: Satellite production
+    inventory_type: satellite
+    credential: Satellite API
+    endpoint: https://satellite.example/
+    verify_tls: true
+    organization: Operations
+    state: present
+
+- name: Configure a filtered inventory with include and exclude rules
+  journeyman.configuration.inventory:
+    name: Linux patch targets
+    inventory_type: filtered
+    source_inventory: Satellite production
+    include_groups:
+      - match: all
+        rules:
+          - field: group
+            operator: equals
+            value: linux
+    exclude_groups:
+      - match: any
+        rules:
+          - field: group
+            operator: equals
+            value: manual_patch_exclusions
+          - field: hostname
+            operator: contains
+            value: database
+    state: present
+
+- name: Configure a composite inventory
+  journeyman.configuration.inventory:
+    name: All Linux
+    inventory_type: composite
+    source_inventories:
+      - Bentley Linux
+      - Karratha Linux
+    normalize_hostnames: fqdn
+    state: present
+
+- name: Configure a Zabbix inventory
+  journeyman.configuration.inventory:
+    name: Zabbix managed hosts
+    inventory_type: zabbix
+    credential: Zabbix API
+    endpoint: https://zabbix.example/
+    tag_name: journeyman
+    tag_value: managed
+    include_disabled: false
+    state: present
+
+- name: Configure a NetBox inventory
+  journeyman.configuration.inventory:
+    name: NetBox network devices
+    inventory_type: netbox
+    credential: NetBox API
+    endpoint: https://netbox.example/
+    status: active
+    tag: journeyman
+    site: bentley
+    role: router
+    state: present
+
+- name: Configure a Red Hat Lightspeed inventory
+  journeyman.configuration.inventory:
+    name: Lightspeed production
+    inventory_type: lightspeed
+    credential: Red Hat API
+    tags: environment=production
+    state: present
+
+- name: Configure an oVirt or RHV inventory
+  journeyman.configuration.inventory:
+    name: RHV Windows VMs
+    inventory_type: ovirt
+    credential: RHV API
+    endpoint: https://engine.example/ovirt-engine/api
+    query_filter:
+      status: up
+      os_type: windows
+    hostname_preference:
+      - fqdn
+      - name
+    state: present
+
+- name: Remove an inventory
+  journeyman.configuration.inventory:
+    name: Retired inventory
+    state: absent
 '''
 
 RETURN = r'''

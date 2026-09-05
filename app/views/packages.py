@@ -11,6 +11,7 @@ from app.services.configuration_deletion import (
     delete_package_with_job_history,
 )
 from app.services.user_preferences import get_or_create_user_preferences
+from app.services.ansible_view import package_configuration_yaml, dispatch_yaml
 from app.services.pagination import paginate_list, page_size_for_user
 from app.services.directory import DirectoryError, get_directory_client
 from app.services.directory_settings import get_or_create_directory_settings
@@ -1273,6 +1274,68 @@ def project_package_new():
         permission_directory_error=(
             principal_context["error"]
         ),
+    )
+
+
+def _package_ansible_context(package):
+    if package.builtin_key is not None:
+        abort(404)
+
+    return {
+        "resource_kind": "Package",
+        "resource_name": package.name,
+        "back_url": url_for("main.packages"),
+    }
+
+
+@bp.get("/packages/<int:package_id>/ansible")
+def project_package_show_ansible(package_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    package = db.get_or_404(ProjectPackage, package_id)
+    _package_ansible_context(package)
+    return redirect(
+        url_for(
+            "main.project_package_show_ansible_configuration",
+            package_id=package.id,
+        )
+    )
+
+
+@bp.get("/packages/<int:package_id>/ansible/configuration")
+def project_package_show_ansible_configuration(package_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    package = db.get_or_404(ProjectPackage, package_id)
+    context = _package_ansible_context(package)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=package_configuration_yaml(package),
+        ansible_note=None,
+        **context
+    )
+
+
+@bp.get("/packages/<int:package_id>/ansible/operation")
+def project_package_show_ansible_operation(package_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    package = db.get_or_404(ProjectPackage, package_id)
+    context = _package_ansible_context(package)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Operation",
+        ansible_yaml=dispatch_yaml("package", package.name),
+        ansible_note=(
+            "Package inputs are runtime values and are not included here. "
+            "Add an inputs mapping to the dispatch task when this Package "
+            "requires user-supplied values."
+        ),
+        **context
     )
 
 

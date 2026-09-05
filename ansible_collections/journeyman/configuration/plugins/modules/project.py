@@ -108,15 +108,80 @@ author:
 
 
 EXAMPLES = r'''
-- name: Configure a Project
+- name: Configure a complete Ansible workflow Project
   journeyman.configuration.project:
-    name: Verify hosts
-    inventory: Linux
+    name: Patch Linux servers
+    description: Refresh repositories, patch hosts, and verify service health
+    execution_type: ansible
+    inventory: Linux production
+    repository: SysAdmin automation
+    environment: Modern Ansible
+    credentials:
+      - Linux machine
+      - Vault password
+    max_parallel_steps: 4
+    concurrency_policy: serialized
+    oversight_required_between_all_steps: false
+    enabled: true
     steps:
+      - name: Patch
+        repository: SysAdmin automation
+        inventory: Linux production
+        environment: Modern Ansible
+        credentials:
+          - Linux machine
+        playbook: linux/patch.yml
+        limit: webservers
+        tags: patch,security
+        skip_tags: reboot
+        extra_vars:
+          reboot_allowed: false
+        verbosity: 2
+        check_mode: false
+        continue_on_failure: false
+        failure_only: false
+        refresh_repository: true
+        refresh_inventory_after: true
+        oversight_after: true
+        enabled: true
       - name: Verify
-        repository: Automation
-        playbook: verify.yml
+        playbook: linux/verify.yml
+        depends_on:
+          - Patch
+        extra_vars:
+          expected_service: httpd
+        verbosity: 1
+        check_mode: false
+        continue_on_failure: true
+        failure_only: false
+        refresh_repository: false
+        refresh_inventory_after: false
+        oversight_after: false
+        enabled: true
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Configure a remote-shell Project
+  journeyman.configuration.project:
+    name: Collect appliance status
+    description: Run a controlled command on remote appliances
+    execution_type: remote_shell
+    inventory: Appliances
+    credentials:
+      - Appliance SSH
+    steps:
+      - name: Show status
+        extra_vars:
+          command: show status
+    state: present
+
+- name: Remove a Project
+  journeyman.configuration.project:
+    name: Retired Project
+    state: absent
 '''
 
 RETURN = r'''

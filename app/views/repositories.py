@@ -1,3 +1,4 @@
+from app.services.ansible_view import repository_configuration_yaml
 """Source repository administration routes."""
 
 from app.routes import (
@@ -71,6 +72,25 @@ def _apply_repository_credential_from_form(repository):
             "HTTPS repositories require a Source Control credential."
         )
 
+
+
+
+@bp.get("/repositories/<int:repository_id>/ansible/configuration")
+def repository_show_ansible_configuration(repository_id):
+    if not current_user_is_admin():
+        abort(403)
+    repository = db.get_or_404(Repository, repository_id)
+    if repository.url == BUILTIN_REPOSITORY_URL:
+        abort(404)
+    return render_template(
+        "show_ansible.html",
+        ansible_kind="Configuration",
+        ansible_yaml=repository_configuration_yaml(repository),
+        ansible_note=None,
+        resource_kind="Repository",
+        resource_name=repository.name,
+        back_url=url_for("main.repositories"),
+    )
 
 @bp.get("/repositories")
 def repositories():

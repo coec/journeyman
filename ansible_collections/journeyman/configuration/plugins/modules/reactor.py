@@ -111,14 +111,50 @@ author:
 '''
 
 EXAMPLES = r'''
-- name: Configure an automatic Reactor
+- name: Configure a fully specified automatic Reactor
   journeyman.configuration.reactor:
     name: Recover GRE tunnel
-    source: Zabbix TRN02
-    package: Recover GRE Tunnel
+    description: Recover a failed GRE tunnel when Zabbix reports it down
+    enabled: true
     mode: automatic
+    source: Zabbix production
+    package: Recover GRE Tunnel
+    match:
+      all:
+        - field: event_name
+          operator: contains
+          value: GRE tunnel down
+        - field: severity
+          operator: in
+          value:
+            - High
+            - Disaster
+    mappings:
+      hostname: host
+      tunnel_name: tunnel
+    recovery_window_seconds: 120
+    recovery_match:
+      all:
+        - field: event_name
+          operator: contains
+          value: GRE tunnel recovered
+    recovery_correlation_inputs:
+      - hostname
+      - tunnel_name
     cooldown_seconds: 300
+    max_concurrency: 2
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Remove a Reactor
+  journeyman.configuration.reactor:
+    name: Retired Reactor
+    source: Zabbix production
+    package: Recover GRE Tunnel
+    state: absent
 '''
 
 RETURN = r'''

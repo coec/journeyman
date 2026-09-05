@@ -2,7 +2,9 @@
 {% block title %}Preferences · Journeyman{% endblock %}
 {% block content %}
 <div class="page-heading"><div><h1>Preferences</h1><p>Settings that apply only to your Journeyman account.</p></div></div>
+
 <section class="panel preferences-panel">
+  <h2>Display preferences</h2>
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="preference-options">
@@ -20,8 +22,75 @@
           {% for value in (25, 50, 100, 200) %}<option value="{{ value }}" {% if preferences.rows_per_page == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
         </select>
       </label>
+      <label class="preference-option">
+        <span><strong>Idle session timeout</strong><small>Sign out this browser session after this long without activity. Minimum 15 minutes; maximum 7 days.</small></span>
+        <span class="preference-timeout-control">
+          <input type="number" name="idle_session_timeout_value" min="1" required
+                 value="{% if preferences.idle_session_timeout_minutes % 1440 == 0 %}{{ preferences.idle_session_timeout_minutes // 1440 }}{% elif preferences.idle_session_timeout_minutes % 60 == 0 %}{{ preferences.idle_session_timeout_minutes // 60 }}{% else %}{{ preferences.idle_session_timeout_minutes }}{% endif %}">
+          <select name="idle_session_timeout_unit">
+            <option value="minutes" {% if preferences.idle_session_timeout_minutes % 60 != 0 %}selected{% endif %}>Minutes</option>
+            <option value="hours" {% if preferences.idle_session_timeout_minutes % 60 == 0 and preferences.idle_session_timeout_minutes % 1440 != 0 %}selected{% endif %}>Hours</option>
+            <option value="days" {% if preferences.idle_session_timeout_minutes % 1440 == 0 %}selected{% endif %}>Days</option>
+          </select>
+        </span>
+      </label>
     </div>
     <div class="form-actions"><button class="button primary" type="submit">Save Preferences</button></div>
   </form>
+</section>
+
+<section class="panel preferences-panel api-token-panel">
+  <h2>API tokens</h2>
+  <p class="help-text">Create bearer tokens for scripts and API clients acting as your Journeyman account. Tokens expire after 365 days and have the same Journeyman role as your account when created.</p>
+
+  {% if token_error %}
+    <div class="form-error" role="alert">{{ token_error }}</div>
+  {% endif %}
+
+  {% if generated_api_token %}
+    <div class="api-token-secret" role="status">
+      <strong>API token created: {{ generated_api_token.row.name }}</strong>
+      <p>Copy this token now. Journeyman stores only its digest and cannot display it again.</p>
+      <pre class="secret-output">{{ generated_api_token.secret }}</pre>
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('main.user_api_token_create') }}" class="api-token-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>
+      <span><strong>Token name</strong><small>Use a descriptive name for the client or automation that will use it.</small></span>
+      <input type="text" name="name" maxlength="120" required autocomplete="off" placeholder="e.g. deployment-script">
+    </label>
+    <div class="form-actions"><button class="button primary" type="submit">Create API Token</button></div>
+  </form>
+
+  <h3>Your API tokens</h3>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Role</th><th>Created</th><th>Expires</th><th>Last used</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for token in api_tokens %}
+          <tr>
+            <td>{{ token.name }}</td>
+            <td>{{ token.role }}</td>
+            <td><span class="utc-datetime" data-utc="{{ token.created_at.isoformat() }}">{{ token.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span></td>
+            <td><span class="utc-datetime" data-utc="{{ token.expires_at.isoformat() }}">{{ token.expires_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span></td>
+            <td>{% if token.last_used_at %}<span class="utc-datetime" data-utc="{{ token.last_used_at.isoformat() }}">{{ token.last_used_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</td>
+            <td>{{ 'Active' if token.enabled else 'Revoked' }}</td>
+            <td>
+              {% if token.enabled %}
+                <form method="post" action="{{ url_for('main.user_api_token_revoke', token_id=token.id) }}" data-confirm="Revoke API token '{{ token.name }}'? Any client using it will immediately lose access.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button danger" type="submit">Revoke</button>
+                </form>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7">You have not created any API tokens.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 {% endblock %}

@@ -83,6 +83,37 @@ def _host_matches(hostname, port, entry):
     return hostname == pattern
 
 
+def _self_destination_hostnames():
+    """Return hostnames that unambiguously identify this Journeyman host."""
+
+    values = {"localhost", "localhost.localdomain"}
+    if has_app_context():
+        values.add(str(current_app.config.get("PUBLIC_FQDN", "") or ""))
+    try:
+        values.add(socket.gethostname())
+    except OSError:
+        pass
+    try:
+        values.add(socket.getfqdn())
+    except OSError:
+        pass
+    return {
+        _normalise_allowed_entry(value)
+        for value in values
+        if _normalise_allowed_entry(value)
+    }
+
+
+def _is_self_destination(hostname):
+    hostname = _normalise_allowed_entry(hostname)
+    if hostname in _self_destination_hostnames():
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def _reject_local_special_address(hostname):
     """Reject loopback/link-local/unspecified/multicast literal IP targets."""
 
@@ -153,7 +184,7 @@ _SCP_STYLE_GIT_RE = re.compile(
 )
 
 
-def _validate_allowed_destination(hostname, port, purpose):
+def _validate_allowed_destination(hostname, port, purpose, *, allow_self=False):
     hostname = str(hostname or "").strip().lower().rstrip(".")
     if len(hostname) > MAX_OUTBOUND_HOSTNAME_LENGTH:
         raise OutboundSecurityError(
@@ -163,6 +194,9 @@ def _validate_allowed_destination(hostname, port, purpose):
         raise OutboundSecurityError(
             "{} URL must contain a hostname.".format(purpose)
         )
+
+    if allow_self and _is_self_destination(hostname):
+        return hostname
 
     _reject_local_special_address(hostname)
 
@@ -181,9 +215,25 @@ def _validate_allowed_destination(hostname, port, purpose):
     return hostname
 
 
-def validate_outbound_destination(hostname, port, *, purpose="outbound service"):
-    """Validate a host/port destination against the configured outbound allowlist."""
-    return _validate_allowed_destination(hostname, int(port), purpose)
+def validate_outbound_destination(
+    hostname,
+    port,
+    *,
+    purpose="outbound service",
+    allow_self=False,
+):
+    """Validate a host/port destination against the configured outbound allowlist.
+
+    ``allow_self`` is intentionally opt-in.  It permits services hosted on the
+    Journeyman machine itself without requiring the machine's own hostname in
+    ``JOURNEYMAN_OUTBOUND_ALLOWED_HOSTS``.
+    """
+    return _validate_allowed_destination(
+        hostname,
+        int(port),
+        purpose,
+        allow_self=allow_self,
+    )
 
 
 def validate_repository_url(url):

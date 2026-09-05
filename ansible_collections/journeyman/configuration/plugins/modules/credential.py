@@ -87,14 +87,25 @@ author:
 
 
 EXAMPLES = r'''
-- name: Configure a source-control credential
+- name: Configure a fully specified source-control credential
   journeyman.configuration.credential:
-    name: GitLab
+    name: GitLab automation
+    description: Token used by automation repositories
     credential_type: source_control
+    security_scope: shared
     username: automation
     credential_data:
       password: "{{ vault_gitlab_token }}"
     state: present
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
+
+- name: Remove an obsolete credential
+  journeyman.configuration.credential:
+    name: Old GitLab credential
+    state: absent
 '''
 
 RETURN = r'''

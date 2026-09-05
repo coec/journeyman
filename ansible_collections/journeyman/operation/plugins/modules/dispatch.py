@@ -68,23 +68,29 @@ author:
 '''
 
 EXAMPLES = r'''
-- name: Dispatch a Project
+- name: Dispatch a Project with explicit connection settings
   journeyman.operation.dispatch:
     type: project
     name: Patch Servers
+    journeyman_url: https://journeyman.example/
+    api_token: "{{ vault_journeyman_api_token }}"
+    validate_certs: true
+    timeout: 60
 
-- name: Dispatch a Package
+- name: Dispatch a Package with declared input values
   journeyman.operation.dispatch:
     type: package
     name: Cisco Port Control
     inputs:
+      hostname: sw01.example.com
       interface: GigabitEthernet1/0/10
       state: up
 
-- name: Rerun an existing Job from its immutable snapshots
+- name: Rerun all hosts from an existing Job's immutable snapshots
   journeyman.operation.dispatch:
     type: job
     job_id: 1234
+    rerun_scope: all
 
 - name: Rerun only failed or unreachable hosts
   journeyman.operation.dispatch:

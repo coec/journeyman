@@ -118,6 +118,24 @@ Packages · Journeyman
                     >Dispatch</button>
                   {% endif %}
 
+                  {% if not package.builtin_key %}
+                    <details class="action-submenu">
+                      <summary class="action-menu-item action-submenu-trigger">
+                        Show Ansible <span aria-hidden="true">‹</span>
+                      </summary>
+                      <div class="action-submenu-items">
+                        <a
+                          class="action-menu-item"
+                          href="{{ url_for('main.project_package_show_ansible_configuration', package_id=package.id) }}"
+                        >Configuration</a>
+                        <a
+                          class="action-menu-item"
+                          href="{{ url_for('main.project_package_show_ansible_operation', package_id=package.id) }}"
+                        >Operation</a>
+                      </div>
+                    </details>
+                  {% endif %}
+
                   <a
                     class="action-menu-item"
                     href="{{ url_for('main.project_package_edit', package_id=package.id) }}"

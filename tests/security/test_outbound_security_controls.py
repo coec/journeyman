@@ -167,3 +167,58 @@ def test_outbound_url_rejects_non_numeric_port_cleanly(app):
             validate_repository_url(
                 "https://git.example.test:omts/team/repo.git"
             )
+
+
+def test_notification_smtp_may_target_journeyman_itself_without_allowlist_entry(app):
+    from app.services.outbound_security import validate_outbound_destination
+
+    with app.app_context():
+        _enforce(app, ("git.example.test",))
+        app.config["PUBLIC_FQDN"] = "jm.local"
+
+        assert validate_outbound_destination(
+            "jm.local",
+            25,
+            purpose="Notification SMTP",
+            allow_self=True,
+        ) == "jm.local"
+        assert validate_outbound_destination(
+            "localhost",
+            25,
+            purpose="Notification SMTP",
+            allow_self=True,
+        ) == "localhost"
+        assert validate_outbound_destination(
+            "127.0.0.1",
+            25,
+            purpose="Notification SMTP",
+            allow_self=True,
+        ) == "127.0.0.1"
+
+
+def test_self_destination_exception_is_opt_in(app):
+    from app.services.outbound_security import validate_outbound_destination
+
+    with app.app_context():
+        _enforce(app, ("git.example.test",))
+        app.config["PUBLIC_FQDN"] = "jm.local"
+
+        with pytest.raises(
+            OutboundSecurityError,
+            match="not in JOURNEYMAN_OUTBOUND_ALLOWED_HOSTS",
+        ):
+            validate_outbound_destination(
+                "jm.local",
+                25,
+                purpose="outbound service",
+            )
+
+        with pytest.raises(
+            OutboundSecurityError,
+            match="prohibited local/special",
+        ):
+            validate_outbound_destination(
+                "127.0.0.1",
+                25,
+                purpose="outbound service",
+            )
