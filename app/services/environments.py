@@ -29,6 +29,15 @@ SYSTEM_ENVIRONMENT_NAME = "System Ansible"
 APPLICATION_ENVIRONMENT_NAME = "Journeyman application environment"
 
 
+PIP_SYSTEM_REQUIREMENTS_HINT = (
+    "Hint: Python package installation can fail when a package requires "
+    "operating-system libraries, headers, or build tools. Journeyman does "
+    "not install OS packages on the controller automatically; install the "
+    "required RPM/DNF packages on the Journeyman server, then rebuild the "
+    "Environment. See docs/ENVIRONMENTS.md for examples."
+)
+
+
 _COLLECTION_SPEC_RE = re.compile(r"^[A-Za-z0-9_]+\.[A-Za-z0-9_]+(?::[A-Za-z0-9*+_.-]+)?$")
 _SYSTEM_PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_.:@-]*$")
 
@@ -277,17 +286,21 @@ def update_registered_environment(environment):
     db.session.commit()
 
     output_parts = []
+    build_stage = "dependencies"
     try:
         if packages:
+            build_stage = "pip"
             output_parts.append(
                 _run([str(python_path), "-m", "pip", "install", *packages], use_build_proxy=True, proxy_credential=environment.proxy_credential)
             )
         if collection_specs:
+            build_stage = "collections"
             galaxy_path = root / "bin" / "ansible-galaxy"
             output_parts.append(
                 _run([str(galaxy_path), "collection", "install", *collection_specs], use_build_proxy=True, proxy_credential=environment.proxy_credential)
             )
 
+        build_stage = "validation"
         if not validate_environment(environment):
             raise EnvironmentBuildError(environment.validation_message or "Environment validation failed.")
 
@@ -301,8 +314,11 @@ def update_registered_environment(environment):
     except Exception as exc:
         environment.build_status = "failed"
         combined = "\n".join(part for part in output_parts if part)
+        failure_message = (combined + "\n" + str(exc)).strip()
+        if build_stage == "pip":
+            failure_message = failure_message + "\n\n" + PIP_SYSTEM_REQUIREMENTS_HINT
         environment.build_message = redact_proxy_secrets(
-            (combined + "\n" + str(exc)).strip(),
+            failure_message,
             proxy_credential=environment.proxy_credential,
         )[-12000:]
         environment.validation_status = "failed"
@@ -338,6 +354,7 @@ def create_managed_environment(environment):
     db.session.commit()
 
     output_parts = []
+    build_stage = "venv"
     had_previous = final_path.exists()
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -346,15 +363,18 @@ def create_managed_environment(environment):
 
         output_parts.append(_run([interpreter, "-m", "venv", str(final_path)]))
         python_path = final_path / "bin" / "python"
+        build_stage = "pip"
         environment.build_message = "Installing Python packages."
         db.session.commit()
         output_parts.append(_run([str(python_path), "-m", "pip", "install", ansible_spec, *packages], use_build_proxy=True, proxy_credential=environment.proxy_credential))
         if collection_specs:
+            build_stage = "collections"
             environment.build_message = "Installing Ansible collections."
             db.session.commit()
             galaxy_path = final_path / "bin" / "ansible-galaxy"
             output_parts.append(_run([str(galaxy_path), "collection", "install", *collection_specs], use_build_proxy=True, proxy_credential=environment.proxy_credential))
 
+        build_stage = "validation"
         if not validate_environment(environment):
             raise EnvironmentBuildError(environment.validation_message or "Environment validation failed.")
 
@@ -373,7 +393,13 @@ def create_managed_environment(environment):
             validate_environment(environment)
         environment.build_status = "failed"
         combined = "\n".join(part for part in output_parts if part)
-        environment.build_message = redact_proxy_secrets((combined + "\n" + str(exc)).strip(), proxy_credential=environment.proxy_credential)[-12000:]
+        failure_message = (combined + "\n" + str(exc)).strip()
+        if build_stage == "pip":
+            failure_message = failure_message + "\n\n" + PIP_SYSTEM_REQUIREMENTS_HINT
+        environment.build_message = redact_proxy_secrets(
+            failure_message,
+            proxy_credential=environment.proxy_credential,
+        )[-12000:]
         if not had_previous:
             environment.validation_status = "failed"
             environment.validation_message = "Environment build failed."

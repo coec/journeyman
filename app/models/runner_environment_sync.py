@@ -26,6 +26,9 @@ class RunnerEnvironmentSync(db.Model):
         index=True,
     )
     requested_revision = db.Column(db.String(64), nullable=False, default="")
+    requested_by = db.Column(
+        db.String(255), nullable=False, default="system", index=True
+    )
     status = db.Column(db.String(32), nullable=False, default="queued", index=True)
     message = db.Column(db.Text, nullable=False, default="")
     requested_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)

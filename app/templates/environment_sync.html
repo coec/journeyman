@@ -49,6 +49,9 @@
             {% if item.sync %}
               <strong>{{ item.sync.status|replace('_',' ')|title }}</strong>
               {% if item.sync.message %}<br><small>{{ item.sync.message }}</small>{% endif %}
+              {% if item.prerequisite_update_required %}
+                <br><a class="button" href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=item.runner.id, action='update') }}">Update runner prerequisites</a>
+              {% endif %}
               {% if item.sync.completed_at %}<br><small class="utc-datetime" data-utc="{{ item.sync.completed_at.isoformat() }}">{{ item.sync.completed_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</small>{% endif %}
             {% else %}
               —

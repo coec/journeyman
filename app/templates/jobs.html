@@ -22,7 +22,7 @@
 </div>
 
 <section class="panel">
-  {% if jobs %}
+  {% if jobs or environment_syncs %}
     <div class="table-wrapper">
       <table>
         <thead>
@@ -39,6 +39,63 @@
         </thead>
 
         <tbody>
+          {% for sync in environment_syncs %}
+            <tr>
+              <td>
+                <a href="{{ url_for('main.environment_sync', environment_id=sync.environment_id) }}">
+                  Sync #{{ sync.id }}
+                </a>
+              </td>
+
+              <td>
+                Environment sync — {{ sync.environment.name }} → {{ sync.runner.name }}
+              </td>
+
+              <td>
+                {% if sync.status == "building" %}
+                  {% set display_status = "running" %}
+                {% elif sync.status == "ready" %}
+                  {% set display_status = "successful" %}
+                {% else %}
+                  {% set display_status = sync.status %}
+                {% endif %}
+                <span class="status status-{{ display_status }}">
+                  {{ display_status | replace('_', ' ') | title }}
+                </span>
+              </td>
+
+              <td>{{ sync.requested_by }}</td>
+
+              <td>
+                <span class="utc-datetime" data-utc="{{ sync.requested_at.isoformat() }}">{{ sync.requested_at }}</span>
+              </td>
+
+              <td>
+                {% if sync.started_at %}
+                  <span class="utc-datetime" data-utc="{{ sync.started_at.isoformat() }}">{{ sync.started_at }}</span>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+
+              <td>—</td>
+
+              <td>
+                <details class="action-menu">
+                  <summary class="button action-menu-trigger">
+                    Actions <span aria-hidden="true">▾</span>
+                  </summary>
+                  <div class="action-menu-items">
+                    <a
+                      class="action-menu-item"
+                      href="{{ url_for('main.environment_sync', environment_id=sync.environment_id) }}"
+                    >View Environment sync</a>
+                  </div>
+                </details>
+              </td>
+            </tr>
+          {% endfor %}
+
           {% for job in jobs %}
             <tr>
               <td>
@@ -153,13 +210,13 @@
     <div class="empty-state">
       <h2>No jobs yet</h2>
       <p>
-        Dispatch a Project or Package to create the first queued Job.
+        Dispatch a Project or Package, or synchronize an Environment to a runner, to create the first Job.
       </p>
     </div>
   {% endif %}
 {% include "_pagination.html" %}
 </section>
-{% if jobs | selectattr("status", "in", ["queued", "running", "waiting_oversight", "cancelling"]) | list %}
+{% if has_active_work %}
 <script nonce="{{ csp_nonce }}">
 (function () {
     if (!window.EventSource) {

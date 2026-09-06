@@ -354,9 +354,12 @@ def test_managed_environment_sync_queue_claim_and_complete(app):
         environment.python_interpreter = "/usr/bin/python3.14"
         db.session.flush()
 
-        sync = queue_environment_sync(environment, runner)
+        sync = queue_environment_sync(
+            environment, runner, requested_by="alice"
+        )
         db.session.commit()
         sync_id = sync.id
+        assert sync.requested_by == "alice"
 
         claimed = claim_next_environment_sync(runner)
         assert claimed.id == sync_id
@@ -623,3 +626,75 @@ def test_out_of_date_remote_slice_is_failed_instead_of_left_pending(app):
         assert "saved Job snapshot can no longer be satisfied" in refreshed_slice.message
         assert refreshed_job.status == "failed"
         assert refreshed_job.finished_at is not None
+
+
+def test_environment_sync_rows_flags_missing_runner_system_packages(app):
+    from app import db
+    from app.models import Environment, Runner, RunnerEnvironmentSync
+    from app.services.runner_environment_sync import environment_sync_rows
+
+    with app.app_context():
+        environment = Environment(
+            name="RPM prerequisites",
+            path="/opt/journeyman/environments/rpm-prerequisites",
+            enabled=True,
+            validation_status="passed",
+        )
+        runner = Runner(
+            name="rpm-runner",
+            hostname="rpm-runner.example.test",
+            enabled=True,
+            runner_uuid="00000000-0000-0000-0000-000000000123",
+            api_secret_digest="digest",
+        )
+        db.session.add_all([environment, runner])
+        db.session.flush()
+        sync = RunnerEnvironmentSync(
+            environment=environment,
+            runner=runner,
+            status="failed",
+            message=(
+                "Required runner system packages are not installed: krb5-workstation. "
+                "Run Manage Remote Runner -> Update, then synchronize again."
+            ),
+        )
+        db.session.add(sync)
+        db.session.commit()
+
+        rows = environment_sync_rows(environment, [runner])
+
+        assert rows[0]["prerequisite_update_required"] is True
+
+
+def test_environment_sync_rows_does_not_offer_runner_update_for_other_failures(app):
+    from app import db
+    from app.models import Environment, Runner, RunnerEnvironmentSync
+    from app.services.runner_environment_sync import environment_sync_rows
+
+    with app.app_context():
+        environment = Environment(
+            name="Galaxy failure",
+            path="/opt/journeyman/environments/galaxy-failure",
+            enabled=True,
+            validation_status="passed",
+        )
+        runner = Runner(
+            name="galaxy-runner",
+            hostname="galaxy-runner.example.test",
+            enabled=True,
+            runner_uuid="00000000-0000-0000-0000-000000000124",
+            api_secret_digest="digest",
+        )
+        db.session.add_all([environment, runner])
+        db.session.flush()
+        db.session.add(RunnerEnvironmentSync(
+            environment=environment,
+            runner=runner,
+            status="failed",
+            message="Installing Environment collections failed.",
+        ))
+        db.session.commit()
+
+        rows = environment_sync_rows(environment, [runner])
+
+        assert rows[0]["prerequisite_update_required"] is False

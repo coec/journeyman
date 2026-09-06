@@ -13,9 +13,8 @@
     {% for environment in environments %}
       <tr>
         <td>
-          <strong>{{ environment.name }}</strong><br>
+          <strong>{{ environment.name }}</strong>{% if environment.is_default %} <span class="muted">(default)</span>{% endif %}<br>
           {% if environment.name == 'Journeyman application environment' %}<small>Journeyman application runtime</small>{% elif environment.path == '__SYSTEM_ANSIBLE__' %}<small>Built-in execution environment</small>{% elif environment.is_managed %}<small>Journeyman managed</small>{% else %}<small>Externally managed</small>{% endif %}
-          {% if environment.is_default %}<span class="badge success">Default</span>{% endif %}
         </td>
         <td><code>{{ environment.path }}</code>{% if environment.python_interpreter %}<br><small>Created with {{ environment.python_interpreter }}</small>{% endif %}</td>
         <td><code>{{ environment.ansible_config_path or "/etc/ansible/ansible.cfg" }}</code></td>
@@ -33,7 +32,7 @@
             <div class="action-menu-items">
               {% if not environment.is_builtin %}<a class="action-menu-item" href="{{ url_for('main.environment_edit', environment_id=environment.id) }}">Edit</a>{% endif %}
               {% if not environment.is_builtin and environment.name != 'Journeyman application environment' and environment.enabled and environment.validation_status == 'passed' and (not environment.is_managed or environment.build_status == 'passed') %}<a class="action-menu-item" href="{{ url_for('main.environment_sync', environment_id=environment.id) }}">Sync to runners</a>{% endif %}
-              <form method="post" action="{{ url_for('main.environment_validate', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">Validate</button></form>
+              {% if not (environment.is_managed and environment.build_status in ['queued', 'building']) %}<form method="post" action="{{ url_for('main.environment_validate', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">Validate</button></form>{% endif %}
               {% if environment.name != 'Journeyman application environment' and not environment.is_default and environment.enabled and environment.validation_status == 'passed' %}<form method="post" action="{{ url_for('main.environment_make_default', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">Make default</button></form>{% endif %}
               {% if not environment.is_builtin %}<form method="post" action="{{ url_for('main.environment_toggle', environment_id=environment.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item" type="submit">{{ 'Disable' if environment.enabled else 'Enable' }}</button></form>{% endif %}
               {% if not environment.is_builtin and not environment.is_default %}<form method="post" action="{{ url_for('main.environment_delete', environment_id=environment.id) }}" data-confirm="{{ 'Delete this managed environment and all files below its managed path?' if environment.is_managed else 'Delete this environment registration? Its files will not be removed.' }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-menu-item danger" type="submit">Delete</button></form>{% endif %}

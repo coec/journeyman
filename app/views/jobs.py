@@ -5,7 +5,7 @@ import time
 
 from flask import Response, jsonify, stream_with_context
 
-from app.models import JobStep, JobStepExecutionSlice
+from app.models import JobStep, JobStepExecutionSlice, RunnerEnvironmentSync
 from app.services.job_output_export import build_job_output_export
 from app.services.job_cancellation import cancel_job
 from app.services.job_rerun import (
@@ -40,9 +40,20 @@ def _visible_jobs_query():
     return query
 
 
+def _visible_environment_syncs_query():
+    """Return Environment synchronization work visible to this subject."""
+
+    query = RunnerEnvironmentSync.query
+    if not current_user_is_admin():
+        query = query.filter(
+            RunnerEnvironmentSync.requested_by == current_username()
+        )
+    return query
+
+
 def _jobs_list_fingerprint():
-    """Return lightweight state for recent visible Jobs."""
-    return tuple(
+    """Return lightweight state for recent visible asynchronous work."""
+    jobs = tuple(
         _visible_jobs_query()
         .with_entities(
             Job.id, Job.status, Job.queued_at, Job.started_at, Job.finished_at
@@ -51,6 +62,21 @@ def _jobs_list_fingerprint():
         .limit(500)
         .all()
     )
+    environment_syncs = tuple(
+        _visible_environment_syncs_query()
+        .with_entities(
+            RunnerEnvironmentSync.id,
+            RunnerEnvironmentSync.status,
+            RunnerEnvironmentSync.requested_at,
+            RunnerEnvironmentSync.started_at,
+            RunnerEnvironmentSync.completed_at,
+            RunnerEnvironmentSync.updated_at,
+        )
+        .order_by(RunnerEnvironmentSync.id.desc())
+        .limit(500)
+        .all()
+    )
+    return jobs, environment_syncs
 
 
 @bp.get("/jobs")
@@ -72,9 +98,28 @@ def jobs():
         for job in pagination.items
         if job.status in TERMINAL_JOB_STATUSES and job.status != "successful"
     }
+
+    sync_query = _visible_environment_syncs_query()
+    if status_filter == "running":
+        sync_query = sync_query.filter(RunnerEnvironmentSync.status == "building")
+    environment_syncs = (
+        sync_query
+        .order_by(RunnerEnvironmentSync.requested_at.desc())
+        .all()
+    )
+    has_active_work = any(
+        job.status in {"queued", "running", "waiting_oversight", "cancelling"}
+        for job in pagination.items
+    ) or any(
+        sync.status in {"queued", "building"}
+        for sync in environment_syncs
+    )
+
     return render_template(
         "jobs.html",
         jobs=pagination.items,
+        environment_syncs=environment_syncs,
+        has_active_work=has_active_work,
         pagination=pagination,
         pagination_args={"status": status_filter} if status_filter else {},
         status_filter=status_filter,

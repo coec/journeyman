@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 
 from app import db
-from app.models import ApiToken, Job, Project
+from app.models import ApiToken, Environment, Job, Project, Runner, RunnerEnvironmentSync
 
 
 def _job(app, *, requested_by, status):
@@ -112,3 +112,78 @@ def test_navigation_status_includes_queued_jobs(app, client):
     )
     assert response.status_code == 200
     assert response.get_json()["running_jobs"] == 2
+
+
+def test_navigation_status_counts_environment_sync_as_current_activity(client, app):
+    with app.app_context():
+        runner = Runner(
+            name="nav-sync-runner",
+            hostname="nav-sync-runner.example.com",
+            enabled=True,
+            is_local=False,
+        )
+        environment = Environment(
+            name="Nav sync environment",
+            path="/opt/journeyman/environments/nav-sync",
+            enabled=True,
+            is_managed=True,
+        )
+        db.session.add_all([runner, environment])
+        db.session.flush()
+        db.session.add(
+            RunnerEnvironmentSync(
+                runner=runner,
+                environment=environment,
+                status="building",
+                requested_by="alice",
+            )
+        )
+        db.session.commit()
+
+    response = client.get(
+        "/navigation/status",
+        headers={"X-Test-Username": "alice"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["running_jobs"] == 1
+
+
+def test_environment_sync_is_visible_on_jobs_page(client, app):
+    with app.app_context():
+        runner = Runner(
+            name="jobs-sync-runner",
+            hostname="jobs-sync-runner.example.com",
+            enabled=True,
+            is_local=False,
+        )
+        environment = Environment(
+            name="Jobs sync environment",
+            path="/opt/journeyman/environments/jobs-sync",
+            enabled=True,
+            is_managed=True,
+        )
+        db.session.add_all([runner, environment])
+        db.session.flush()
+        db.session.add(
+            RunnerEnvironmentSync(
+                runner=runner,
+                environment=environment,
+                status="queued",
+                requested_by="alice",
+            )
+        )
+        db.session.commit()
+
+    response = client.get(
+        "/jobs",
+        headers={"X-Test-Username": "alice"},
+    )
+    html = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Environment sync" in html
+    assert "Jobs sync environment" in html
+    assert "jobs-sync-runner" in html
+    assert "status-queued" in html
+    assert "EventSource" in html

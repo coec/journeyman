@@ -9,6 +9,7 @@ from app.models import Credential, Environment, Runner
 from app.credential_types import CREDENTIAL_TYPE_URL
 from app.services.url_credentials import URLCredentialError, proxy_url_for_credential
 from app.services.environments import APPLICATION_ENVIRONMENT_NAME
+from app.services.builtin_automation import ensure_builtin_admin_automation
 from app.services.runner_environment_sync import (
     RunnerEnvironmentSyncError,
     environment_sync_rows,
@@ -339,6 +340,12 @@ def environment_validate(environment_id):
     if not current_user_is_admin():
         abort(403)
     environment = db.get_or_404(Environment, environment_id)
+    if environment.is_managed and environment.build_status in {"queued", "building"}:
+        flash(
+            "Environment validation cannot be run while the environment is being built.",
+            "error",
+        )
+        return redirect(url_for("main.environments"))
     passed = validate_environment(environment)
     record_audit_event("environment.validated", result="success" if passed else "failed", object_type="environment", object_id=environment.id, object_name=environment.name, details={"message": environment.validation_message})
     flash("Environment validation passed." if passed else environment.validation_message, "success" if passed else "error")
@@ -378,7 +385,9 @@ def environment_sync(environment_id):
         errors = []
         for runner in selected:
             try:
-                queue_environment_sync(environment, runner)
+                queue_environment_sync(
+                    environment, runner, requested_by=current_username()
+                )
                 queued.append(runner)
             except RunnerEnvironmentSyncError as exc:
                 errors.append('{}: {}'.format(runner.name, exc))
@@ -408,6 +417,7 @@ def environment_sync(environment_id):
         environment=environment,
         runners=environment_sync_rows(environment, remote_runners),
         syncable=is_syncable_environment(environment),
+        manage_runner_package=ensure_builtin_admin_automation()["package"],
     )
 
 

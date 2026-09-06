@@ -1,6 +1,6 @@
 """Lightweight status used by the global Journeyman navigation bar."""
 
-from app.models import Job
+from app.models import Job, RunnerEnvironmentSync
 
 
 def visible_running_jobs_query(username, *, is_admin=False):
@@ -15,7 +15,21 @@ def visible_running_jobs_query(username, *, is_admin=False):
     return query
 
 
-def visible_running_job_count(username, *, is_admin=False):
-    """Return the number of currently executing Jobs visible to an identity."""
+def visible_running_environment_sync_count(username, *, is_admin=False):
+    """Return active Environment synchronizations visible to one identity."""
 
-    return visible_running_jobs_query(username, is_admin=is_admin).count()
+    query = RunnerEnvironmentSync.query.filter(
+        RunnerEnvironmentSync.status.in_(("queued", "building"))
+    )
+    if not is_admin:
+        query = query.filter(RunnerEnvironmentSync.requested_by == username)
+    return query.count()
+
+
+def visible_running_job_count(username, *, is_admin=False):
+    """Return the number of current activities visible to an identity."""
+
+    return (
+        visible_running_jobs_query(username, is_admin=is_admin).count()
+        + visible_running_environment_sync_count(username, is_admin=is_admin)
+    )

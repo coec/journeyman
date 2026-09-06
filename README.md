@@ -161,6 +161,13 @@ Journeyman supports:
 
 Selected environments are validated and snapshotted into queued Job steps.
 
+Environment definitions may also declare **remote runner system packages**.
+Journeyman installs those RPM/DNF requirements through Manage Remote Runner; it
+does not automatically modify operating-system packages on the Journeyman
+controller. Some Python packages need controller-side libraries, headers, or
+build tools before pip can install them. See [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md)
+for details and common examples.
+
 ## Services
 
 A standard main-server installation enables only `journeyman.service`. It

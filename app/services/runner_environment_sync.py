@@ -30,6 +30,22 @@ class RunnerEnvironmentSyncError(RuntimeError):
     pass
 
 
+_MISSING_SYSTEM_PACKAGES_PREFIX = "Required runner system packages are not installed:"
+
+
+def sync_requires_runner_prerequisite_update(sync):
+    """Return True when a failed sync can be remediated by runner Update.
+
+    Environment synchronization deliberately runs unprivileged.  Manage Remote
+    Runner -> Update is the privileged path that installs the union of declared
+    Environment system-package requirements on the target runner.
+    """
+
+    if sync is None or sync.status != "failed":
+        return False
+    return str(sync.message or "").startswith(_MISSING_SYSTEM_PACKAGES_PREFIX)
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -93,7 +109,7 @@ def validate_syncable_environment(environment):
         )
 
 
-def queue_environment_sync(environment, runner):
+def queue_environment_sync(environment, runner, *, requested_by="system"):
     validate_syncable_environment(environment)
     if runner is None or runner.is_local:
         raise RunnerEnvironmentSyncError("Environment synchronization requires a remote runner.")
@@ -118,6 +134,7 @@ def queue_environment_sync(environment, runner):
         db.session.add(row)
 
     row.requested_revision = revision
+    row.requested_by = str(requested_by or "system")
     row.status = "queued"
     row.message = "Waiting for runner to claim Environment synchronization."
     row.requested_at = _now()
@@ -333,6 +350,7 @@ def environment_sync_rows(environment, runners):
                 "sync": sync,
                 "sync_supported": not runner_update_available(runner),
                 "required_runner_version": CURRENT_REMOTE_RUNNER_VERSION,
+                "prerequisite_update_required": sync_requires_runner_prerequisite_update(sync),
             }
         )
     return result
