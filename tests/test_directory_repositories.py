@@ -13,7 +13,7 @@ def test_directory_repository_sync_creates_immutable_internal_git_snapshots(
     repository_root = tmp_path / "internal-repositories"
     repository_root.mkdir()
 
-    monkeypatch.setattr(git_service, "DIRECTORY_REPOSITORY_BASE", base)
+    app.config["REPOSITORY_ROOT"] = base
     repository = SimpleNamespace(
         id=991,
         name="Network directory",

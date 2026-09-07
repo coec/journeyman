@@ -20,9 +20,6 @@ class GitError(RuntimeError):
     pass
 
 
-DIRECTORY_REPOSITORY_BASE = Path("/opt/journeyman/repositories")
-
-
 @dataclass
 class CommitInfo:
     sha: str
@@ -83,6 +80,9 @@ def validate_directory_repository_path(
     exclude_repository_id=None,
 ):
     """Validate and canonicalise a plain-directory repository source path."""
+    directory_repository_base = Path(
+        current_app.config["REPOSITORY_ROOT"]
+    )
     raw = str(directory_path or "").strip()
     if not raw:
         raise GitError("Directory path is required.")
@@ -91,16 +91,16 @@ def validate_directory_repository_path(
     if not candidate_input.is_absolute():
         raise GitError(
             "Directory repository path must be absolute and under {}.".format(
-                DIRECTORY_REPOSITORY_BASE
+                directory_repository_base
             )
         )
 
     try:
-        base = DIRECTORY_REPOSITORY_BASE.resolve(strict=True)
+        base = directory_repository_base.resolve(strict=True)
     except OSError as exc:
         raise GitError(
             "Directory repository base does not exist: {}.".format(
-                DIRECTORY_REPOSITORY_BASE
+                directory_repository_base
             )
         ) from exc
 

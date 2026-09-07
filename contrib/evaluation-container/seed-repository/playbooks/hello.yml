@@ -1,0 +1,11 @@
+---
+- name: Hello from Journeyman
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Show a greeting
+      ansible.builtin.debug:
+        msg: >-
+          Hello from Journeyman. This playbook is running against
+          {{ inventory_hostname }}.

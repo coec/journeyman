@@ -1,0 +1,15 @@
+---
+- name: Show target uptime
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Read uptime
+      ansible.builtin.command:
+        cmd: uptime
+      changed_when: false
+      register: uptime_result
+
+    - name: Display uptime
+      ansible.builtin.debug:
+        var: uptime_result.stdout

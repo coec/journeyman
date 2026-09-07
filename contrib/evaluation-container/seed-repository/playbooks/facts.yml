@@ -1,0 +1,15 @@
+---
+- name: Show a few Ansible facts
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Display selected facts
+      ansible.builtin.debug:
+        msg:
+          hostname: "{{ ansible_hostname }}"
+          distribution: "{{ ansible_distribution }}"
+          distribution_version: "{{ ansible_distribution_version }}"
+          architecture: "{{ ansible_architecture }}"
+          python: "{{ ansible_python_version }}"
+          processor_vcpus: "{{ ansible_processor_vcpus | default('unknown') }}"

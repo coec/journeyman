@@ -1,0 +1,19 @@
+services:
+  journeyman:
+    build:
+      context: ../..
+      dockerfile: contrib/evaluation-container/Dockerfile
+    image: journeyman-evaluation:local
+    ports:
+      - "8080:5000"
+    volumes:
+      - journeyman-evaluation-data:/var/lib/journeyman
+    environment:
+      # Evaluation only. The fallback administrator is created with no
+      # automatic expiry so that a casual evaluator is not locked out while
+      # exploring the application.
+      JOURNEYMAN_EVALUATION: "1"
+    restart: unless-stopped
+
+volumes:
+  journeyman-evaluation-data:

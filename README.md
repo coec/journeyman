@@ -31,13 +31,43 @@ Deploy Journeyman behind appropriate network controls and restrict access to
 trusted users and systems. Internet-facing deployment is unsupported and
 strongly discouraged.
 
-### Intentionally non-containerized
+### Native by design
 
 Journeyman is intentionally non-containerized. The application, local and remote
 runners, and Python execution environments run directly on managed Linux systems
 using systemd and Python virtual environments.
 
 This is a deliberate operational design, not a temporary development limitation.
+
+Having said that, Journeyman can be containerized. The repository includes an
+evaluation container under `contrib/evaluation-container/` so that prospective
+users can quickly explore the application without preparing a dedicated Linux
+host.
+
+The evaluation container is intended for demonstration, evaluation and
+development only. It is not a supported production deployment architecture.
+Production deployments should use the documented native installation methods.
+
+The evaluation container currently uses Debian Bookworm with Python 3.14. This is
+intentionally different from Journeyman’s supported native RHEL deployment and
+demonstrates that the application itself is not inherently tied to an RPM-based
+userspace.
+
+Operators are free to build their own Docker, Podman, Kubernetes, OpenShift or
+other container-based deployments, but container-specific deployment,
+integration, persistence, networking, upgrade and troubleshooting issues are
+the responsibility of the operator unless explicitly documented otherwise by
+the Journeyman project.
+
+To try the evaluation container:
+
+```bash
+cd contrib/evaluation-container
+docker compose up --build
+```
+
+Then open `http://localhost:8080/`. The initial fallback administrator password
+is printed to the container log on first start.
 
 ## Core concepts
 

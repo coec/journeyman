@@ -2,20 +2,13 @@
 
 ## Release status
 
-Current: v1.5.0
-Target: v1.6.0
+Current: v1.8.0
+Target: v1.9.0
 
-## v1.6.0
+## v1.9.0
 
-- add a system status/notices facility for operational information such as
-  pip-audit findings on remote runners and counts of dispatched, queued and
-  executing jobs
-- rerun a failed project from the failed step
-- optionally force all host names in an inventory to lower case
-- SMIT enhancements (add "View as Ansible" facility on inventories,
-  projects and packages).
-- prevent a runner from being updated while it is running projects/packages
-  by implementing draining
+- Allow multistep projects with remote scripts and playbooks, currently
+  multistep projects must be all script or all playbook
 
 ## v1.7.0
 

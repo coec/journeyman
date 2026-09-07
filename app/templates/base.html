@@ -205,10 +205,49 @@
           data-about-open
           aria-haspopup="dialog"
           aria-controls="journeyman-about-modal"
-        >About</button>
+          aria-label="About Journeyman"
+          title="About Journeyman"
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M9.75 9a2.5 2.5 0 0 1 4.83.9c0 1.75-1.6 2.15-2.35 3.1-.28.36-.23.72-.23 1"></path>
+            <path d="M12 17h.01"></path>
+          </svg>
+        </button>
         <form class="logout-form" method="post" action="{{ url_for('auth.logout') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="logout-button" type="submit">Sign out</button>
+          <button
+            class="logout-button"
+            type="submit"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              width="20"
+              height="20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M10 4H5v16h5"></path>
+              <path d="M14 8l4 4-4 4"></path>
+              <path d="M18 12H9"></path>
+            </svg>
+          </button>
         </form>
       </div>
     </header>

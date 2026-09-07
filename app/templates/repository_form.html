@@ -84,10 +84,10 @@
         <input
           name="directory_path"
           value="{{ repository.directory_path if repository else '' }}"
-          placeholder="/opt/journeyman/repositories/network-automation"
+          placeholder="{{ config['REPOSITORY_ROOT'] }}/network-automation"
         >
         <small>
-          Must be an existing directory below <code>/opt/journeyman/repositories</code>.
+          Must be an existing directory below <code>{{ config['REPOSITORY_ROOT'] }}</code>.
           Directory repositories cannot contain or be contained by another Directory repository.
         </small>
       </label>

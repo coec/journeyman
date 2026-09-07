@@ -121,7 +121,7 @@ def test_remote_runner_safe_extract_accepts_regular_files_and_directories(tmp_pa
     assert (destination / "roles" / "main.yml").read_text() == "---\n"
 
 
-def test_directory_repository_must_be_child_of_fixed_base(monkeypatch, tmp_path):
+def test_directory_repository_must_be_child_of_configured_base(app, tmp_path):
     from app.services import git as git_service
 
     base = tmp_path / "managed-repositories"
@@ -130,18 +130,19 @@ def test_directory_repository_must_be_child_of_fixed_base(monkeypatch, tmp_path)
     child.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    monkeypatch.setattr(git_service, "DIRECTORY_REPOSITORY_BASE", base)
+    app.config["REPOSITORY_ROOT"] = base
 
-    assert git_service.validate_directory_repository_path(child) == str(child.resolve())
+    with app.app_context():
+        assert git_service.validate_directory_repository_path(child) == str(child.resolve())
 
-    with pytest.raises(GitError, match="below"):
-        git_service.validate_directory_repository_path(base)
+        with pytest.raises(GitError, match="below"):
+            git_service.validate_directory_repository_path(base)
 
-    with pytest.raises(GitError, match="below"):
-        git_service.validate_directory_repository_path(outside)
+        with pytest.raises(GitError, match="below"):
+            git_service.validate_directory_repository_path(outside)
 
 
-def test_directory_repositories_cannot_be_nested(monkeypatch, tmp_path):
+def test_directory_repositories_cannot_be_nested(app, tmp_path):
     from app.services import git as git_service
 
     base = tmp_path / "managed-repositories"
@@ -150,7 +151,7 @@ def test_directory_repositories_cannot_be_nested(monkeypatch, tmp_path):
     sibling = base / "network"
     child.mkdir(parents=True)
     sibling.mkdir()
-    monkeypatch.setattr(git_service, "DIRECTORY_REPOSITORY_BASE", base)
+    app.config["REPOSITORY_ROOT"] = base
 
     existing = SimpleNamespace(
         id=10,
@@ -158,38 +159,39 @@ def test_directory_repositories_cannot_be_nested(monkeypatch, tmp_path):
         repository_type="directory",
         directory_path=str(existing_path),
     )
+    with app.app_context():
+        with pytest.raises(GitError, match="cannot be nested"):
+            git_service.validate_directory_repository_path(child, [existing])
 
-    with pytest.raises(GitError, match="cannot be nested"):
-        git_service.validate_directory_repository_path(child, [existing])
-
-    with pytest.raises(GitError, match="cannot be nested"):
-        git_service.validate_directory_repository_path(existing_path, [
-            SimpleNamespace(
-                id=11,
-                name="Oracle tools",
-                repository_type="directory",
-                directory_path=str(child),
-            )
-        ])
-
-    assert git_service.validate_directory_repository_path(sibling, [existing]) == str(sibling.resolve())
+        with pytest.raises(GitError, match="cannot be nested"):
+            git_service.validate_directory_repository_path(existing_path, [
+                SimpleNamespace(
+                    id=11,
+                    name="Oracle tools",
+                    repository_type="directory",
+                    directory_path=str(child),
+                )
+            ])
+        assert git_service.validate_directory_repository_path(sibling, [existing]) == str(sibling.resolve())
 
 
-def test_directory_repository_rejects_symlinks_and_git_metadata(monkeypatch, tmp_path):
+def test_directory_repository_rejects_symlinks_and_git_metadata(app, tmp_path):
     from app.services import git as git_service
 
     base = tmp_path / "managed-repositories"
     repository = base / "network"
     repository.mkdir(parents=True)
-    monkeypatch.setattr(git_service, "DIRECTORY_REPOSITORY_BASE", base)
+    app.config["REPOSITORY_ROOT"] = base
 
     target = repository / "target.yml"
     target.write_text("---\n")
     (repository / "link.yml").symlink_to("target.yml")
-    with pytest.raises(GitError, match="Symlinks are not permitted"):
-        git_service.validate_directory_repository_path(repository)
+    with app.app_context():
+        with pytest.raises(GitError, match="Symlinks are not permitted"):
+            git_service.validate_directory_repository_path(repository)
 
     (repository / "link.yml").unlink()
     (repository / ".git").mkdir()
-    with pytest.raises(GitError, match="plain directories"):
-        git_service.validate_directory_repository_path(repository)
+    with app.app_context():
+        with pytest.raises(GitError, match="plain directories"):
+            git_service.validate_directory_repository_path(repository)
