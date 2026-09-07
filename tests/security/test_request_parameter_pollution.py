@@ -39,6 +39,7 @@ def test_declared_multi_value_fields_remain_supported():
     assert form_field_allows_multiple_values("weekdays")
     assert form_field_allows_multiple_values("include_field")
     assert form_field_allows_multiple_values("step_3_credential_ids")
+    assert form_field_allows_multiple_values("step_execution_type")
     assert not form_field_allows_multiple_values("name")
     assert not form_field_allows_multiple_values("owner")
 

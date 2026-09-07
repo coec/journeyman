@@ -18,9 +18,11 @@ options:
     - ansible
     - shell
     - remote_shell
+    - mixed
     default: ansible
     description:
     - Execution backend used by the Project.
+    - C(mixed) Projects may contain a combination of Ansible Playbook and Remote Script steps.
   inventory:
     type: str
     description:
@@ -69,6 +71,7 @@ options:
     elements: dict
     description:
     - Ordered workflow step definitions for the Project.
+    - For C(mixed) Projects, every step must set C(execution_type) to C(ansible) or C(remote_shell).
   state:
     type: str
     choices:
@@ -164,6 +167,34 @@ EXAMPLES = r'''
     validate_certs: true
     timeout: 60
 
+
+- name: Configure a mixed Ansible and remote-script Project
+  journeyman.configuration.project:
+    name: Upgrade application
+    description: Prepare with Ansible, run the vendor utility, then validate
+    execution_type: mixed
+    inventory: Application servers
+    repository: SysAdmin automation
+    environment: Modern Ansible
+    credentials:
+      - Linux machine
+    steps:
+      - name: Prepare
+        execution_type: ansible
+        playbook: application/prepare.yml
+      - name: Run vendor utility
+        execution_type: remote_shell
+        playbook: scripts/vendor-upgrade.sh
+        depends_on:
+          - Prepare
+        remote_script_batch_size: 10
+      - name: Validate
+        execution_type: ansible
+        playbook: application/validate.yml
+        depends_on:
+          - Run vendor utility
+    state: present
+
 - name: Configure a remote-shell Project
   journeyman.configuration.project:
     name: Collect appliance status
@@ -192,6 +223,36 @@ message: {description: Configuration result message, returned: when available, t
 
 
 
+_ALLOWED_MIXED_STEP_TYPES = {"ansible", "remote_shell"}
+
+
+def _validate_step_execution_types(params):
+    project_type = params.get("execution_type", "ansible")
+    steps = params.get("steps") or []
+
+    for index, step in enumerate(steps, start=1):
+        step_type = step.get("execution_type")
+        step_name = step.get("name") or "step {}".format(index)
+
+        if project_type == "mixed":
+            if not step_type:
+                raise ValueError(
+                    'Mixed Project step "{}" must define execution_type.'.format(step_name)
+                )
+            if step_type not in _ALLOWED_MIXED_STEP_TYPES:
+                raise ValueError(
+                    'Mixed Project step "{}" has unsupported execution_type "{}"; '
+                    'expected "ansible" or "remote_shell".'.format(step_name, step_type)
+                )
+            continue
+
+        if step_type and step_type != project_type:
+            raise ValueError(
+                'Project step "{}" execution_type "{}" conflicts with Project '
+                'execution_type "{}".'.format(step_name, step_type, project_type)
+            )
+
+
 def execute(params, client):
     name = params["name"]
     if params.get("state", "present") == "absent":
@@ -200,6 +261,8 @@ def execute(params, client):
             "/api/v1/project-configurations/by-name",
             query={"name": name},
         )
+
+    _validate_step_execution_types(params)
 
     payload = {
         "name": name,
@@ -238,7 +301,7 @@ def main():
             "description": {"type": "str", "default": ""},
             "execution_type": {
                 "type": "str",
-                "choices": ["ansible", "shell", "remote_shell"],
+                "choices": ["ansible", "shell", "remote_shell", "mixed"],
                 "default": "ansible",
             },
             "inventory": {"type": "str"},
@@ -271,7 +334,7 @@ def main():
             timeout=module.params["timeout"],
         )
         module.exit_json(**execute(module.params, client))
-    except JourneymanApiError as exc:
+    except (JourneymanApiError, ValueError) as exc:
         module.fail_json(msg=str(exc))
 
 

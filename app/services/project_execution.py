@@ -254,6 +254,13 @@ def queue_project_execution(
         )
 
     execution_type = project.execution_type or "ansible"
+
+    def step_execution_type(project_step):
+        value = getattr(project_step, "execution_type", None) or execution_type
+        if execution_type == "mixed":
+            return value if value in {"ansible", "remote_shell"} else "ansible"
+        return execution_type
+
     required_capability = (
         "shell" if execution_type == "shell" else "ansible"
     )
@@ -793,8 +800,11 @@ def queue_project_execution(
     # Project through the current editor normalises all step values.
     #
     project_check_mode = (
-        project.execution_type == "ansible"
-        and any(bool(step.check_mode) for step in project_steps)
+        execution_type in {"ansible", "mixed"}
+        and any(
+            bool(step.check_mode) and step_execution_type(step) == "ansible"
+            for step in project_steps
+        )
     )
 
     #
@@ -848,6 +858,7 @@ def queue_project_execution(
                     project_step.name
                     or "Step {}".format(position)
                 ),
+                execution_type=step_execution_type(project_step),
                 environment_name=execution_environment.name,
                 environment_id=execution_environment.id,
                 environment_revision=(
@@ -874,7 +885,10 @@ def queue_project_execution(
                 ),
                 extra_vars_json=project_step.extra_vars_json or "{}",
                 verbosity=project_step.verbosity,
-                check_mode=project_check_mode,
+                check_mode=(
+                    project_check_mode
+                    and step_execution_type(project_step) == "ansible"
+                ),
                 remote_shell_become=project_step.remote_shell_become,
                 remote_shell_serial=project_step.remote_shell_serial,
                 continue_on_failure=(

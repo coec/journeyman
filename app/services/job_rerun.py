@@ -420,6 +420,7 @@ def rerun_job(source_job, *, requested_by, source="Journeyman API", scope=RERUN_
             credential_snapshots=[credential_map[item.id] for item in source.credential_snapshots],
             position=source.position,
             name=source.name,
+            execution_type=getattr(source, "execution_type", None) or source_job.execution_type,
             environment_name=source.environment_name,
             environment_id=source.environment_id,
             environment_revision=source.environment_revision,

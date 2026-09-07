@@ -29,8 +29,9 @@ class Project(db.Model):
     """
     A Journeyman automation project.
 
-    A project contains one or more ordered playbook steps and uses one
-    project-level inventory.
+    A project contains one or more ordered execution steps and uses one
+    project-level inventory. Mixed projects may combine Ansible playbooks
+    and Remote Script steps.
     """
 
     __tablename__ = "project"

@@ -40,6 +40,7 @@ class ProjectExecutionPreviewStep:
     project_step_id: int
     position: int
     name: str
+    execution_type: str
     playbook: str
     repository_name: str
     repository_commit: str
@@ -467,6 +468,11 @@ def build_project_execution_preview(
                     step.name
                     or "Step {}".format(position)
                 ),
+                execution_type=(
+                    step.execution_type
+                    or project.execution_type
+                    or "ansible"
+                ),
                 playbook=step.playbook,
                 repository_name=(
                     repository.name
@@ -504,6 +510,7 @@ def build_project_execution_preview(
                 "project_step_id": step.id,
                 "position": position,
                 "name": preview_step.name,
+                "execution_type": preview_step.execution_type,
                 "playbook": step.playbook,
                 "repository_id": repository.id,
                 "repository_commit": (

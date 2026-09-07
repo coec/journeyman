@@ -53,7 +53,7 @@ def _optional_id(name):
 
 def _execution_type():
     value = _clean(request.form.get("execution_type")) or "ansible"
-    return value if value in {"ansible", "shell", "remote_shell"} else None
+    return value if value in {"ansible", "shell", "remote_shell", "mixed"} else None
 
 
 def _default_runner_destination():
@@ -171,10 +171,11 @@ def _project_dispatch_readiness_issues(project):
                 f'Step {step.position} repository "{repository.name}" is not synchronized.'
             )
 
+        step_execution_type = step.execution_type or project.execution_type or "ansible"
         if not step.playbook:
             artifact = (
                 "script"
-                if project.execution_type in {"shell", "remote_shell"}
+                if step_execution_type in {"shell", "remote_shell"}
                 else "Ansible YAML file"
             )
             issues.append(
@@ -192,7 +193,7 @@ def _project_dispatch_readiness_issues(project):
                     f'Step {step.position} environment "{environment.name}" has not passed validation.'
                 )
 
-        if project.execution_type != "shell":
+        if step_execution_type != "shell":
             inventory = step.inventory or project.inventory
             if inventory is None:
                 issues.append(
@@ -428,6 +429,7 @@ def project_new():
                 "name": "",
                 "repository_id": None,
                 "environment_id": None,
+                "execution_type": "ansible",
                 "playbook": "",
                 "limit": "",
                 "tags": "",
@@ -475,11 +477,12 @@ def project_new():
 
         step_rows = form_data["steps"]
         project_check_mode = (
-            form_data["execution_type"] == "ansible"
+            form_data["execution_type"] in {"ansible", "mixed"}
             and form_data["check_mode"]
         )
         for row in step_rows:
-            row["check_mode"] = project_check_mode
+            row_type = row.get("execution_type") or form_data["execution_type"]
+            row["check_mode"] = project_check_mode and row_type == "ansible"
 
         dependency_targets = {
             dependency
@@ -542,7 +545,12 @@ def project_new():
         )
 
         playbooks_by_repository = (
-            shell_files_by_repository
+            {
+                "ansible": ansible_files_by_repository,
+                "remote_shell": shell_files_by_repository,
+            }
+            if form_data["execution_type"] == "mixed"
+            else shell_files_by_repository
             if form_data["execution_type"] in {"shell", "remote_shell"}
             else ansible_files_by_repository
         )
@@ -638,6 +646,7 @@ def project_new():
                     repository_id=row["repository_id"],
                     environment_id=row["environment_id"],
                     credentials=selected_credentials,
+                    execution_type=(row.get("execution_type") or form_data["execution_type"]),
                     playbook=row["playbook"],
                     limit=row["limit"],
                     tags=row["tags"],
@@ -847,7 +856,12 @@ def project_edit(project_id):
         for repository in repositories
     }
     playbooks_by_repository = (
-        shell_files_by_repository
+        {
+            "ansible": ansible_files_by_repository,
+            "remote_shell": shell_files_by_repository,
+        }
+        if project.execution_type == "mixed"
+        else shell_files_by_repository
         if project.execution_type in {"shell", "remote_shell"}
         else ansible_files_by_repository
     )
@@ -906,11 +920,12 @@ def project_edit(project_id):
 
         step_rows = form_data["steps"]
         project_check_mode = (
-            form_data["execution_type"] == "ansible"
+            form_data["execution_type"] in {"ansible", "mixed"}
             and form_data["check_mode"]
         )
         for row in step_rows:
-            row["check_mode"] = project_check_mode
+            row_type = row.get("execution_type") or form_data["execution_type"]
+            row["check_mode"] = project_check_mode and row_type == "ansible"
 
         dependency_targets = {
             dependency
@@ -975,7 +990,12 @@ def project_edit(project_id):
         )
 
         playbooks_by_repository = (
-            shell_files_by_repository
+            {
+                "ansible": ansible_files_by_repository,
+                "remote_shell": shell_files_by_repository,
+            }
+            if form_data["execution_type"] == "mixed"
+            else shell_files_by_repository
             if form_data["execution_type"] in {"shell", "remote_shell"}
             else ansible_files_by_repository
         )
@@ -1083,6 +1103,7 @@ def project_edit(project_id):
                     repository_id=row["repository_id"],
                     environment_id=row["environment_id"],
                     credentials=selected_credentials,
+                    execution_type=(row.get("execution_type") or form_data["execution_type"]),
                     playbook=row["playbook"],
                     limit=row["limit"],
                     tags=row["tags"],
@@ -1210,6 +1231,7 @@ def project_clone(project_id):
                 repository_id=source_step.repository_id,
                 inventory_id=source_step.inventory_id,
                 environment_id=source_step.environment_id,
+                execution_type=source_step.execution_type or source.execution_type or "ansible",
                 playbook=source_step.playbook,
                 limit=source_step.limit,
                 tags=source_step.tags,

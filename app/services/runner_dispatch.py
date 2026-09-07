@@ -30,10 +30,9 @@ def _required_capabilities(job):
 
 
 def _runner_has_required_environments(runner, job):
-    if job.execution_type == "shell":
-        return True
     return all(
-        runner_environment_ready(
+        (getattr(step, "execution_type", None) or job.execution_type) == "shell"
+        or runner_environment_ready(
             runner,
             job_step_environment_requirement(step),
         )
@@ -42,7 +41,7 @@ def _runner_has_required_environments(runner, job):
 
 
 def _step_environment_path(runner, job, step):
-    if job.execution_type == "shell":
+    if (getattr(step, "execution_type", None) or job.execution_type) == "shell":
         return step.environment_path
     requirement = job_step_environment_requirement(step)
     if requirement is None:
@@ -152,6 +151,7 @@ def job_assignment_manifest(
                 "id": step.id,
                 "position": step.position,
                 "name": step.name,
+                "execution_type": getattr(step, "execution_type", None) or job.execution_type,
                 "playbook": step.playbook,
                 "repository_snapshot_id": step.job_repository_snapshot_id,
                 "environment_name": step.environment_name,

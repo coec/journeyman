@@ -342,7 +342,8 @@
                         {% endif %}
                     </dd>
 
-                    <dt>{{ "Script" if job.execution_type in ["shell", "remote_shell"] else "Playbook" }}</dt>
+                    {% set step_type = step.execution_type or job.execution_type %}
+                    <dt>{{ "Script" if step_type in ["shell", "remote_shell"] else "Playbook" }}</dt>
                     <dd><code>{{ step.playbook }}</code></dd>
 
                     <dt>Limit</dt>

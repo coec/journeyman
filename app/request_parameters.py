@@ -15,6 +15,7 @@ _MULTI_VALUE_FORM_FIELDS = frozenset({
     "step_repository_id",
     "step_inventory_id",
     "step_environment_id",
+    "step_execution_type",
     "step_playbook",
     "step_limit",
     "step_tags",

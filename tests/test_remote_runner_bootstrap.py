@@ -296,7 +296,7 @@ def test_remote_runner_environment_sync_has_writable_runner_local_root():
     )
     assert 'api("/api/runners/environments/claim")' in remote_runner
     assert "synchronize_execution_environment" in remote_runner
-    assert 'VERSION = "0.16"' in remote_runner
+    assert 'VERSION = "0.17"' in remote_runner
 
 
 def test_environment_sync_runner_api_endpoints_bypass_interactive_login():

@@ -273,6 +273,7 @@ def _step_data(step, credential_refs, internal=False):
         ),
         "inventory": step.inventory.name if step.inventory else None,
         "environment": step.environment.name if step.environment else None,
+        "execution_type": step.execution_type or step.project.execution_type or "ansible",
         "playbook": step.playbook,
         "limit": step.limit,
         "tags": step.tags,
@@ -837,7 +838,8 @@ def collect_export_payload(document):
                 asset_ref = "asset_{}".format(len(assets) + 1)
                 asset_refs[key] = asset_ref
                 suffix = source.suffix.lower()
-                if project.execution_type == "shell":
+                step_execution_type = step.execution_type or project.execution_type or "ansible"
+                if step_execution_type in {"shell", "remote_shell"}:
                     asset_type = "shell_script"
                     suffix = suffix or ".sh"
                     bucket = "scripts"
@@ -1704,6 +1706,11 @@ def _upsert_project(data, counts, credential_requirements):
             project=obj,
             position=int(step_data["position"]),
             name=step_data.get("name") or "",
+            execution_type=(
+                step_data.get("execution_type")
+                or data.get("execution_type")
+                or "ansible"
+            ),
             playbook=step_data.get("playbook") or "",
         )
         _set_attrs(

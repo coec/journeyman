@@ -36,7 +36,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 LOGGER = logging.getLogger("journeyman-remote-runner")
-VERSION = "0.16"
+VERSION = "0.17"
 KEY_INFO = b"journeyman remote execution data v1"
 STOP = False
 
@@ -1252,8 +1252,12 @@ def materialize_step_extra_vars(mapping, workspace):
     return path
 
 
+def effective_step_execution_type(step, manifest_execution_type):
+    return str(step.get("execution_type") or manifest_execution_type or "ansible")
+
+
 def package_environment(data, execution_type):
-    if execution_type not in {"shell", "remote_shell"} or not data.get("package"):
+    if execution_type not in {"shell", "remote_shell", "mixed"} or not data.get("package"):
         return {}
     definition = data["package"].get("definition") or {}
     values = data["package"].get("execution_vars") or {}

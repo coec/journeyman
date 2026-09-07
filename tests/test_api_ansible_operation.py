@@ -432,6 +432,82 @@ def test_configuration_project_module_submits_whole_workflow():
     )]
 
 
+def test_configuration_project_module_submits_mixed_workflow():
+    from ansible_collections.journeyman.configuration.plugins.modules.project import execute
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, payload=None, query=None):
+            self.calls.append((method, path, payload, query))
+            return {"changed": True, "project": {"name": "Mixed workflow"}}
+
+    params = {
+        "name": "Mixed workflow",
+        "execution_type": "mixed",
+        "steps": [
+            {"name": "Prepare", "execution_type": "ansible", "playbook": "prepare.yml"},
+            {
+                "name": "Run utility",
+                "execution_type": "remote_shell",
+                "playbook": "scripts/run.sh",
+                "depends_on": ["Prepare"],
+            },
+        ],
+        "state": "present",
+    }
+
+    client = FakeClient()
+    result = execute(params, client)
+
+    assert result["changed"] is True
+    assert client.calls[0][2]["execution_type"] == "mixed"
+    assert client.calls[0][2]["steps"] == params["steps"]
+
+
+def test_configuration_project_module_rejects_mixed_step_without_execution_type():
+    import pytest
+
+    from ansible_collections.journeyman.configuration.plugins.modules.project import execute
+
+    class FakeClient:
+        def request(self, *args, **kwargs):
+            raise AssertionError("API must not be called for invalid mixed Project")
+
+    params = {
+        "name": "Invalid mixed workflow",
+        "execution_type": "mixed",
+        "steps": [{"name": "Prepare", "playbook": "prepare.yml"}],
+        "state": "present",
+    }
+
+    with pytest.raises(ValueError, match="must define execution_type"):
+        execute(params, FakeClient())
+
+
+def test_configuration_project_module_rejects_local_script_in_mixed_project():
+    import pytest
+
+    from ansible_collections.journeyman.configuration.plugins.modules.project import execute
+
+    class FakeClient:
+        def request(self, *args, **kwargs):
+            raise AssertionError("API must not be called for invalid mixed Project")
+
+    params = {
+        "name": "Invalid mixed workflow",
+        "execution_type": "mixed",
+        "steps": [
+            {"name": "Local command", "execution_type": "shell", "playbook": "script.sh"}
+        ],
+        "state": "present",
+    }
+
+    with pytest.raises(ValueError, match='expected "ansible" or "remote_shell"'):
+        execute(params, FakeClient())
+
+
 def test_project_configuration_service_creates_multistep_project_and_is_idempotent(app):
     from app.models import Project, Repository
     from app.services.project_configuration import configure_project

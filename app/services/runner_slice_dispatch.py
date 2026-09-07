@@ -117,7 +117,8 @@ def runner_can_claim_slice(runner, execution_slice):
         return False
     if not execution_slice.get_required_capabilities().issubset(runner.capabilities()):
         return False
-    if job.execution_type != "shell" and not runner_environment_ready(
+    step_execution_type = getattr(step, "execution_type", None) or job.execution_type
+    if step_execution_type != "shell" and not runner_environment_ready(
         runner, job_step_environment_requirement(step)
     ):
         return False
@@ -156,7 +157,7 @@ def claim_next_remote_slice(runner):
         job = step.job if step is not None else None
         requirement = (
             job_step_environment_requirement(step)
-            if job is not None and job.execution_type != "shell"
+            if job is not None and (getattr(step, "execution_type", None) or job.execution_type) != "shell"
             else None
         )
         if requirement is not None and runner_environment_state(
@@ -255,7 +256,7 @@ def claim_next_remote_slice(runner):
 def _slice_environment_path(execution_slice):
     step = execution_slice.step
     job = step.job
-    if job.execution_type == "shell":
+    if (getattr(step, "execution_type", None) or job.execution_type) == "shell":
         return step.environment_path
     requirement = job_step_environment_requirement(step)
     if requirement is None:
@@ -273,7 +274,7 @@ def slice_assignment_manifest(execution_slice, token, repository_artifacts=None,
         "job_id": job.id,
         "slice_id": execution_slice.id,
         "project_name": job.project_name,
-        "execution_type": job.execution_type,
+        "execution_type": getattr(step, "execution_type", None) or job.execution_type,
         "dispatch_token": token,
         "assigned_at": execution_slice.assigned_at.isoformat() if execution_slice.assigned_at else None,
         "repositories": repository_artifacts,

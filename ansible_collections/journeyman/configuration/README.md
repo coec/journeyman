@@ -7,7 +7,7 @@ Declarative, idempotent configuration modules backed exclusively by Journeyman's
 - `journeyman.configuration.repository`
 - `journeyman.configuration.credential`
 - `journeyman.configuration.inventory`
-- `journeyman.configuration.project`
+- `journeyman.configuration.project` — supports Ansible, local Script, Remote Script, and mixed Ansible/Remote Script Projects
 - `journeyman.configuration.package`
 - `journeyman.configuration.schedule`
 - `journeyman.configuration.signal_source`
@@ -28,7 +28,7 @@ The collection declares a dependency on `journeyman.operation >= 1.0.0` because 
 
 Configuration modules use `state: present|absent` and return `changed: false` when the requested state already matches Journeyman. Stored credential secrets and Signal Source HMAC secrets are never returned by the REST API. Omitted secret fields are retained on updates where supported.
 
-Mutating configuration modules do **not** claim Ansible check-mode support in v1.0.0. Server-side configuration operations are transactional/idempotent, but a true dry-run contract has not yet been implemented.
+Mutating configuration modules do **not** claim Ansible check-mode support. Server-side configuration operations are transactional/idempotent, but a true dry-run contract has not yet been implemented.
 
 ## Examples
 
@@ -63,6 +63,35 @@ Mutating configuration modules do **not** claim Ansible check-mode support in v1
       - name: Verify
         repository: SysAdmin
         playbook: verify.yml
+    state: present
+```
+
+A mixed Project declares `execution_type: mixed` at Project level and an execution type on every step. Mixed Projects currently support Ansible Playbook (`ansible`) and Remote Script (`remote_shell`) steps.
+
+```yaml
+- name: Configure mixed Project
+  journeyman.configuration.project:
+    name: Upgrade application
+    execution_type: mixed
+    inventory: Application servers
+    repository: SysAdmin
+    environment: Modern Ansible
+    credentials:
+      - Linux machine
+    steps:
+      - name: Prepare
+        execution_type: ansible
+        playbook: application/prepare.yml
+      - name: Run vendor utility
+        execution_type: remote_shell
+        playbook: scripts/vendor-upgrade.sh
+        depends_on:
+          - Prepare
+      - name: Validate
+        execution_type: ansible
+        playbook: application/validate.yml
+        depends_on:
+          - Run vendor utility
     state: present
 ```
 

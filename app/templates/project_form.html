@@ -56,8 +56,9 @@
                 <option value="ansible" {% if form_data.execution_type == "ansible" %}selected{% endif %}>Ansible</option>
                 <option value="shell" {% if form_data.execution_type == "shell" %}selected{% endif %}>Script</option>
                 <option value="remote_shell" {% if form_data.execution_type == "remote_shell" %}selected{% endif %}>Remote Script</option>
+                <option value="mixed" {% if form_data.execution_type == "mixed" %}selected{% endif %}>Mixed — Ansible + Remote Script</option>
             </select>
-            <small>All steps in a Project use the same execution type.</small>
+            <small>Mixed Projects may combine Ansible playbooks and Remote Scripts step by step.</small>
         </label>
 
         <label class="checkbox-label ansible-playbook-only-field">
@@ -232,6 +233,15 @@
                 <label>
                     Step name
                     <input name="step_name" value="{{ step.name }}" placeholder="Publish content views">
+                </label>
+
+                <label class="mixed-step-type-field">
+                    Step type
+                    <select class="step-execution-type" name="step_execution_type">
+                        <option value="ansible" {% if step.execution_type == "ansible" %}selected{% endif %}>Ansible Playbook</option>
+                        <option value="remote_shell" {% if step.execution_type == "remote_shell" %}selected{% endif %}>Remote Script</option>
+                    </select>
+                    <small>Available when Project type is Mixed.</small>
                 </label>
 
                 <fieldset class="step-dependency-fieldset">
@@ -467,6 +477,15 @@
             <input name="step_name" placeholder="Workflow step">
         </label>
 
+        <label class="mixed-step-type-field">
+            Step type
+            <select class="step-execution-type" name="step_execution_type">
+                <option value="ansible" selected>Ansible Playbook</option>
+                <option value="remote_shell">Remote Script</option>
+            </select>
+            <small>Available when Project type is Mixed.</small>
+        </label>
+
         <fieldset class="step-dependency-fieldset">
             <legend>Depends on</legend>
             <div
@@ -651,8 +670,16 @@
     const executionTypeSelect =
         document.getElementById("project-execution-type");
 
-    function filesByRepository() {
-      return ["shell", "remote_shell"].includes(executionTypeSelect.value)
+    function effectiveStepExecutionType(step) {
+      if (executionTypeSelect.value === "mixed") {
+        const select = step ? step.querySelector(".step-execution-type") : null;
+        return select ? select.value : "ansible";
+      }
+      return executionTypeSelect.value;
+    }
+
+    function filesByRepository(step) {
+      return ["shell", "remote_shell"].includes(effectiveStepExecutionType(step))
         ? shellFilesByRepository
         : ansibleFilesByRepository;
     }
@@ -682,7 +709,7 @@
         const dependencies = step.querySelectorAll('.step-dependencies input[type="checkbox"]:checked');
         if (!repository || !playbook || !playbook.value) return true;
         if (failureOnly && failureOnly.checked && dependencies.length === 0) return true;
-        if (executionTypeSelect.value !== "shell") {
+        if (effectiveStepExecutionType(step) !== "shell") {
           const stepInventory = step.querySelector('select[name="step_inventory_id"]');
           const projectInventory = document.querySelector('select[name="inventory_id"]');
           if (!(stepInventory && stepInventory.value) && !(projectInventory && projectInventory.value)) {
@@ -834,7 +861,7 @@
         const selectedValue = select.dataset.selected || select.value;
     
         const entries =
-          filesByRepository()[repositoryId] || [];
+          filesByRepository(step)[repositoryId] || [];
     
         select.innerHTML = "";
     
@@ -844,7 +871,7 @@
         placeholder.value = "";
     
         const isShellArtifact =
-          ["shell", "remote_shell"].includes(executionTypeSelect.value);
+          ["shell", "remote_shell"].includes(effectiveStepExecutionType(step));
 
         if (!repositoryId) {
           placeholder.textContent =
@@ -1188,6 +1215,7 @@
         const playbookSelect =
           newStep.querySelector(".step-playbook");
     
+        updateStepTypeUi(newStep);
         populatePlaybookSelect(playbookSelect);
         updateStepNumbers();
         activateStepTab(newStep);
@@ -1263,6 +1291,15 @@
             const step = event.target.closest(".workflow-step");
             const select = step.querySelector(".step-credentials");
             if (select) select.disabled = !event.target.checked;
+            return;
+          }
+          if (event.target.matches(".step-execution-type")) {
+            const step = event.target.closest(".workflow-step");
+            const playbookSelect = step.querySelector(".step-playbook");
+            if (playbookSelect) playbookSelect.dataset.selected = "";
+            updateStepTypeUi(step);
+            if (playbookSelect) populatePlaybookSelect(playbookSelect);
+            updateStepTabs();
             return;
           }
 
@@ -1359,33 +1396,62 @@
         }
       );
 
-      function updateExecutionTypeUi() {
-        const executionType = executionTypeSelect.value;
-        const isLocalShell = executionType === "shell";
-        const isRemoteShell = executionType === "remote_shell";
-        document.querySelectorAll(".remote-shell-only-field").forEach((field) => {
+      function updateStepTypeUi(step) {
+        const stepType = effectiveStepExecutionType(step);
+        const isRemoteShell = stepType === "remote_shell";
+        const isLocalShell = stepType === "shell";
+        step.querySelectorAll(".remote-shell-only-field").forEach((field) => {
           field.style.display = isRemoteShell ? "" : "none";
         });
-        const isShellArtifact = isLocalShell || isRemoteShell;
-        document.querySelectorAll(".step-artifact-label").forEach((label) => {
-          label.textContent = isShellArtifact ? "Script" : "Ansible YAML file";
+        step.querySelectorAll(".step-artifact-label").forEach((label) => {
+          label.textContent = (isLocalShell || isRemoteShell) ? "Script" : "Ansible YAML file";
         });
-        document.querySelectorAll(".ansible-only-field").forEach((field) => {
+        step.querySelectorAll(".ansible-only-field").forEach((field) => {
           field.hidden = isLocalShell;
         });
-        document.querySelectorAll(".ansible-playbook-only-field").forEach((field) => {
+        step.querySelectorAll(".ansible-playbook-only-field").forEach((field) => {
           field.hidden = isLocalShell || isRemoteShell;
         });
-        document.querySelectorAll(".inventory-field").forEach((field) => {
+        step.querySelectorAll(".inventory-field").forEach((field) => {
           field.hidden = isLocalShell;
           field.querySelectorAll("select").forEach((select) => {
             select.disabled = isLocalShell;
           });
         });
+      }
+
+      function updateExecutionTypeUi() {
+        const executionType = executionTypeSelect.value;
+        const isLocalShell = executionType === "shell";
+        const isRemoteShell = executionType === "remote_shell";
+        const isMixed = executionType === "mixed";
+
+        document.querySelectorAll(".mixed-step-type-field").forEach((field) => {
+          field.hidden = !isMixed;
+        });
+        document.querySelectorAll(".ansible-playbook-only-field").forEach((field) => {
+          if (!field.closest(".workflow-step")) {
+            field.hidden = isLocalShell || isRemoteShell;
+          }
+        });
+        document.querySelectorAll(".inventory-field").forEach((field) => {
+          if (!field.closest(".workflow-step")) {
+            field.hidden = isLocalShell;
+            field.querySelectorAll("select").forEach((select) => {
+              select.disabled = isLocalShell;
+            });
+          }
+        });
         const localShellNotice = document.getElementById("local-shell-notice");
         if (localShellNotice) localShellNotice.hidden = !isLocalShell;
         const remoteShellNotice = document.getElementById("remote-shell-notice");
-        if (remoteShellNotice) remoteShellNotice.hidden = !isRemoteShell;
+        if (remoteShellNotice) {
+          remoteShellNotice.hidden = !(isRemoteShell || isMixed);
+          const strong = remoteShellNotice.querySelector("strong");
+          if (strong) strong.textContent = isMixed ? "Mixed execution:" : "Remote Script:";
+        }
+
+        document.querySelectorAll(".workflow-step").forEach(updateStepTypeUi);
         populateAllPlaybookSelects();
         updateStepTabs();
       }

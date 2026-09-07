@@ -62,6 +62,7 @@ def project_configuration_params(project):
             "repository": step.repository.name if step.repository else "",
             "inventory": step.inventory.name if step.inventory else "",
             "environment": step.environment.name if step.environment else "",
+            "execution_type": step.execution_type or step.project.execution_type or "ansible",
             "playbook": step.playbook or "",
             "limit": step.limit or "",
             "tags": step.tags or "",

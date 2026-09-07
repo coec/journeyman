@@ -78,6 +78,7 @@ def _normalise_steps(values, *, default_repository, default_inventory, default_e
         inventory = _lookup(Inventory, item.get("inventory"), "Inventory") if _name(item.get("inventory")) else None
         environment = _lookup(Environment, item.get("environment"), "Environment") if _name(item.get("environment")) else None
         credentials = _lookup_credentials(item.get("credentials", []))
+        step_execution_type = _name(item.get("execution_type"))
 
         playbook = _name(item.get("playbook"))
         extra_vars = item.get("extra_vars", {})
@@ -116,6 +117,7 @@ def _normalise_steps(values, *, default_repository, default_inventory, default_e
             "inventory": inventory,
             "environment": environment,
             "credentials": credentials,
+            "execution_type": step_execution_type,
             "playbook": playbook,
             "limit": _name(item.get("limit")),
             "tags": _name(item.get("tags")),
@@ -175,6 +177,7 @@ def _project_state(project):
                 "environment": step.environment.name if step.environment else "",
                 "credentials": [row.name for row in step.credentials] if step.credentials_override else [],
                 "credentials_override": bool(step.credentials_override),
+                "execution_type": step.execution_type or project.execution_type or "ansible",
                 "playbook": step.playbook or "",
                 "limit": step.limit or "",
                 "tags": step.tags or "",
@@ -206,7 +209,7 @@ def configure_project(values, *, owner="system"):
         raise ProjectConfigurationError(reserved_error)
 
     execution_type = _name(values.get("execution_type")) or "ansible"
-    if execution_type not in {"ansible", "shell", "remote_shell"}:
+    if execution_type not in {"ansible", "shell", "remote_shell", "mixed"}:
         raise ProjectConfigurationError("Project execution_type is invalid.")
     max_parallel_steps = int(values.get("max_parallel_steps", 4))
     if max_parallel_steps < 1 or max_parallel_steps > 32:
@@ -222,6 +225,17 @@ def configure_project(values, *, owner="system"):
         default_inventory=inventory,
         default_environment=environment,
     )
+    for row in steps:
+        if execution_type == "mixed":
+            row_type = row["execution_type"] or "ansible"
+            if row_type not in {"ansible", "remote_shell"}:
+                raise ProjectConfigurationError(
+                    "Mixed Project steps must use execution_type ansible or remote_shell."
+                )
+            row["execution_type"] = row_type
+        else:
+            row["execution_type"] = execution_type
+
 
     legacy_concurrency = values.get("allow_concurrent_instances", None)
     default_concurrency = (
@@ -254,6 +268,7 @@ def configure_project(values, *, owner="system"):
                 "environment": row["environment"].name if row["environment"] else "",
                 "credentials": [item.name for item in row["credentials"]],
                 "credentials_override": bool(row["credentials_override"]),
+                "execution_type": row["execution_type"],
                 "playbook": row["playbook"],
                 "limit": row["limit"],
                 "tags": row["tags"],
@@ -308,6 +323,7 @@ def configure_project(values, *, owner="system"):
             inventory=row["inventory"],
             environment=row["environment"],
             credentials=row["credentials"],
+            execution_type=row["execution_type"],
             playbook=row["playbook"],
             limit=row["limit"],
             tags=row["tags"],

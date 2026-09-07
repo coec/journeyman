@@ -82,6 +82,7 @@
         </h2>
 
         <code>{{ step.playbook }}</code>
+        <small>{{ "Remote Script" if step.execution_type == "remote_shell" else "Ansible Playbook" }}</small>
       </div>
 
       <span

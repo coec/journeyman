@@ -341,6 +341,12 @@ class JobStep(db.Model):
         default="/etc/ansible/ansible.cfg",
     )
 
+    execution_type = db.Column(
+        db.String(20),
+        nullable=False,
+        default="ansible",
+    )
+
     playbook = db.Column(
         db.String(500),
         nullable=False,

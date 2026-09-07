@@ -32,10 +32,11 @@ project_step_credential = db.Table(
 
 class ProjectStep(db.Model):
     """
-    One ordered playbook execution within a Project.
+    One ordered execution within a Project.
 
-    A single-playbook Project has one ProjectStep.
-    A workflow Project has two or more ordered ProjectSteps.
+    execution_type snapshots whether this step is an Ansible playbook,
+    local Script, or Remote Script. Mixed Projects currently permit Ansible
+    and Remote Script steps.
     """
 
     __tablename__ = "project_step"
@@ -84,6 +85,12 @@ class ProjectStep(db.Model):
         db.ForeignKey("environment.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
+    )
+
+    execution_type = db.Column(
+        db.String(20),
+        nullable=False,
+        default="ansible",
     )
 
     playbook = db.Column(
@@ -276,5 +283,6 @@ class ProjectStep(db.Model):
     def __repr__(self):
         return (
             f"<ProjectStep project_id={self.project_id} "
-            f"position={self.position} playbook={self.playbook!r}>"
+            f"position={self.position} execution_type={self.execution_type!r} "
+            f"playbook={self.playbook!r}>"
         )

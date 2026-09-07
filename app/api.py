@@ -514,6 +514,7 @@ def _project_configuration_document(project):
                 "inventory": step.inventory.name if step.inventory else "",
                 "environment": step.environment.name if step.environment else "",
                 "credentials": [row.name for row in step.credentials] if step.credentials_override else [],
+                "execution_type": step.execution_type or step.project.execution_type or "ansible",
                 "playbook": step.playbook or "",
                 "limit": step.limit or "",
                 "tags": step.tags or "",

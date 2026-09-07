@@ -98,6 +98,6 @@ def test_runner_management_playbook_updates_signal_capable_runner_components():
     )
     assert_output_contains(
         runner,
-        'VERSION = "0.16"',
+        'VERSION = "0.17"',
         purpose="The SNMP-capable runner release is versioned distinctly from earlier runner releases",
     )

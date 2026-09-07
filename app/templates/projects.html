@@ -149,7 +149,8 @@
                 <code class="project-step-playbook">
                   {{ step.playbook }}
                 </code>
-                <small>{{ "Script" if project.execution_type == "shell" else ("Remote Script" if project.execution_type == "remote_shell" else "Ansible") }}</small>
+                {% set step_type = step.execution_type or project.execution_type or "ansible" %}
+                <small>{{ "Script" if step_type == "shell" else ("Remote Script" if step_type == "remote_shell" else "Ansible") }}</small>
 
                 <div class="project-step-metadata">
                   <span>

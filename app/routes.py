@@ -1678,6 +1678,10 @@ def _project_steps_from_request():
         "step_environment_id"
     )
 
+    execution_types = request.form.getlist(
+        "step_execution_type"
+    )
+
     playbooks = request.form.getlist(
         "step_playbook"
     )
@@ -1751,6 +1755,7 @@ def _project_steps_from_request():
         len(repository_ids),
         len(inventory_ids),
         len(environment_ids),
+        len(execution_types),
         len(playbooks),
         len(limits),
         len(tags),
@@ -1844,6 +1849,11 @@ def _project_steps_from_request():
                 "repository_id": repository_id,
                 "environment_id": environment_id,
                 "credential_ids": credential_ids,
+                "execution_type": (
+                    _clean(execution_types[index])
+                    if index < len(execution_types)
+                    else ""
+                ),
                 "playbook": (
                     _clean(playbooks[index])
                     if index < len(playbooks)
@@ -1911,6 +1921,7 @@ def _project_steps_for_form(project):
                 credential.id
                 for credential in step.credentials
             ],
+            "execution_type": step.execution_type or project.execution_type or "ansible",
             "playbook": step.playbook,
             "limit": step.limit,
             "tags": step.tags,
@@ -2005,6 +2016,18 @@ def _validate_project_steps(
             errors.append("Workflow step dependencies contain a cycle.")
 
     for position, row in enumerate(step_rows, start=1):
+        step_execution_type = _clean(row.get("execution_type")) or execution_type
+        if execution_type == "mixed":
+            if step_execution_type not in {"ansible", "remote_shell"}:
+                errors.append(
+                    f"Step {position} must be an Ansible Playbook or Remote Script in a Mixed Project."
+                )
+                step_execution_type = "ansible"
+        elif step_execution_type != execution_type:
+            # Homogeneous Projects preserve the historical Project-level type.
+            step_execution_type = execution_type
+        row["execution_type"] = step_execution_type
+
         if (
             dispatch_validation
             and row.get("failure_only")
@@ -2035,9 +2058,16 @@ def _validate_project_steps(
                         "must be synchronized first."
                     )
 
+                repository_files = playbooks_by_repository
+                if (
+                    isinstance(playbooks_by_repository, dict)
+                    and "ansible" in playbooks_by_repository
+                    and "remote_shell" in playbooks_by_repository
+                ):
+                    repository_files = playbooks_by_repository[step_execution_type]
                 available_paths = {
                     entry["path"]
-                    for entry in playbooks_by_repository.get(
+                    for entry in repository_files.get(
                         repository.id,
                         [],
                     )
@@ -2167,7 +2197,7 @@ def _validate_project_steps(
         if dispatch_validation:
             playbook = row.get("playbook", "")
             artifact_label = (
-                "script" if execution_type in {"shell", "remote_shell"}
+                "script" if step_execution_type in {"shell", "remote_shell"}
                 else "Ansible YAML file"
             )
 
