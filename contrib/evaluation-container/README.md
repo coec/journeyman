@@ -189,16 +189,26 @@ all:
       ansible_connection: local
 ```
 
-This lets the supplied examples run without SSH credentials or another machine.
+The sample inventory uses `ansible_connection: local`, so Journeyman does not
+need to SSH to another machine. A machine credential should still be assigned
+to the sample Projects. This satisfies Journeyman's normal Project credential
+requirements and also provides privilege-escalation credentials if a playbook
+requires `become`.
 
 ## Credentials
 
-`svc_journeyman` has been pre-configured in the container but needs to be added in
-Journeyman. Add `svc_journeyman` as a `machine` credential. Do not provide a
-password, instead use `svc_journeyman`'s private key. Obtain the key using:
+`svc_journeyman` has been pre-configured in the container but needs to be added
+to Journeyman. Add `svc_journeyman` as a `machine` credential and select it on
+the sample Projects. Although localhost execution does not require SSH
+authentication, Journeyman Projects normally require a machine credential, and
+one may also be required for privilege escalation.
+
+Do not provide a password; instead use `svc_journeyman`'s private key. Obtain
+the private key using:
+
 ```bash
 podman exec journeyman-evaluation \
-  cat /home/svc_journeyman/.ssh/id_ed25519.pub
+  cat /home/svc_journeyman/.ssh/id_ed25519
 ```
 
 ## Persistence
