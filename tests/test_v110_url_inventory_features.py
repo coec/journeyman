@@ -115,6 +115,5 @@ def test_operator_tools_survive_roadmap_roll_forward():
     assert "Current:" in roadmap
     assert "Target:" in roadmap
 
-    assert (root / "scripts" / "journeyman-smit").is_file()
     assert (root / "scripts" / "journeyman-postgresql-upgrade").is_file()
     assert (root / "docs" / "POSTGRESQL_UPGRADE.md").is_file()

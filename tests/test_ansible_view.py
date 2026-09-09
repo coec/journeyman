@@ -59,7 +59,7 @@ def test_project_configuration_params_preserve_credential_inheritance():
         get_dependency_positions=lambda: [1],
     )
     project = SimpleNamespace(
-        name="SMIT Project",
+        name="Example Project",
         description="Rendered as Ansible",
         execution_type="ansible",
         inventory=_named("Linux"),
