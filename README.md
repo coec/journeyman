@@ -71,7 +71,9 @@ is printed to the container log on first start.
 
 ## Core concepts
 
-- **Projects** define one or more ordered automation steps.
+- **Projects** define one or more ordered automation steps. A Project may use a
+  single execution type for every step, or use **Mixed** execution so individual
+  steps can alternate between Ansible playbooks and Remote Scripts.
 - **Packages** provide the controlled user-facing dispatch layer around Projects.
   A Package may have no inputs at all, or may combine prompted runtime inputs,
   fixed values, dispatch permissions, warnings, target preview, and confirmation.
@@ -97,7 +99,9 @@ For development or controlled execution of multi-step workflows, Projects can op
 
 Projects define **how automation runs**: workflow steps, dependencies,
 repositories, inventories, credentials, execution environments, routing, and
-failure handling.
+failure handling. Projects may be homogeneous (Ansible, Script, or Remote Script)
+or mixed. A Mixed Project records an execution type on each step and currently
+supports Ansible Playbook and Remote Script steps in the same dependency graph.
 
 Packages define **how a person is allowed to dispatch a Project**. A Package can
 be a simple one-click dispatch with no prompts, or it can expose a controlled set
@@ -244,19 +248,67 @@ Security policy, design principles, the threat model, and the ASVS coverage
 framework are documented in [`SECURITY.md`](SECURITY.md) and
 [`docs/security/`](docs/security/).
 
-## Script Projects
+## Project execution types
 
-Projects may execute either Ansible playbooks or repository-backed scripts.
-A Project uses one execution type for all of its steps. Script files must be
-regular files inside the immutable repository snapshot. Files ending in `.sh`
-are accepted, and extensionless or other script files are accepted when they
-begin with a shebang such as `#!/bin/bash`, `#!/usr/bin/perl`, or
-`#!/usr/bin/python3`. Local Script execution honours the shebang when present
-and falls back to `/bin/bash` for `.sh` files without one. The required
-interpreter must exist on the selected runner. Arbitrary command text cannot be
-entered in the UI. Script steps use the same dependency graph, parallel-step
-limit, credential environment variables, cancellation handling, output
-capture, and repository snapshotting as Ansible steps.
+Projects support four execution modes:
+
+- **Ansible** — every step executes an Ansible playbook.
+- **Script** — every step executes a repository-backed script locally on the
+  selected Journeyman runner.
+- **Remote Script** — every step executes a repository-backed script against
+  inventory hosts using Ansible transport and Journeyman host-to-runner routing.
+- **Mixed** — each step independently selects **Ansible Playbook** or
+  **Remote Script**, allowing both types in the same multi-step workflow.
+
+For example, a Mixed Project can validate a host with Ansible, run a vendor
+script remotely, and then run another Ansible validation step. Dependencies,
+parallel execution, inventory/repository/environment overrides, failure handling,
+runner routing, oversight, and immutable Job snapshots continue to apply at the
+step level. A Mixed Project currently does not include local **Script** steps;
+local Script execution has different no-inventory execution semantics and remains
+a homogeneous Project type.
+
+Repository-backed script files must be regular files inside the immutable
+repository snapshot. Files ending in `.sh` are accepted, and extensionless or
+other script files are accepted when they begin with a shebang such as
+`#!/bin/bash`, `#!/usr/bin/perl`, or `#!/usr/bin/python3`. Local Script execution
+honours the shebang when present and falls back to `/bin/bash` for `.sh` files
+without one. The required interpreter must exist on the selected runner.
+Arbitrary command text cannot be entered in the UI. Script steps use the same
+dependency graph, parallel-step limit, credential environment variables,
+cancellation handling, output capture, and repository snapshotting as Ansible
+steps.
+
+A Mixed Project represented through the `journeyman.configuration` collection
+looks like:
+
+```yaml
+- name: Configure mixed Project
+  journeyman.configuration.project:
+    name: Application maintenance
+    execution_type: mixed
+    inventory: Application servers
+    repository: Automation
+    credentials:
+      - Linux machine
+    steps:
+      - name: Pre-check
+        execution_type: ansible
+        playbook: application/precheck.yml
+
+      - name: Run vendor utility
+        execution_type: remote_shell
+        playbook: scripts/vendor-maintenance.sh
+        depends_on:
+          - Pre-check
+
+      - name: Validate
+        execution_type: ansible
+        playbook: application/validate.yml
+        depends_on:
+          - Run vendor utility
+    state: present
+```
 
 
 ## Remote runners
