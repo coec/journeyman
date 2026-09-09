@@ -2048,11 +2048,14 @@ def execute_step(
             process_environment["JOURNEYMAN_STATS_FILE"] = str(stats_path)
 
         execution_type = (
-        getattr(step, "execution_type", None)
-        or getattr(step.job, "execution_type", "ansible")
-        or "ansible"
-    )
-        if execution_type in {"ansible", "remote_shell"} and host_results_path is not None:
+            getattr(step, "execution_type", None)
+            or getattr(step.job, "execution_type", "ansible")
+            or "ansible"
+        )
+        if (
+            execution_type in {"ansible", "remote_shell"}
+            and host_results_path is not None
+        ):
             enabled_callbacks = [
                 item.strip()
                 for item in process_environment.get(

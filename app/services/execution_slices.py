@@ -11,6 +11,7 @@ from app.services.inventory_runner_routing import (
     InventoryRunnerRoutingError,
     _is_local_target,
     _runner_reference,
+    is_builtin_runner_reference,
     registered_remote_runner,
 )
 from app.services.runner_crews import (
@@ -62,10 +63,11 @@ def plan_step_execution_slices(
     Precedence:
 
       1. localhost / ansible_connection=local -> built-in local runner
-      2. explicit host journeyman_runner       -> that registered runner
-      3. Project default exact runner          -> that runner
-      4. Project default Runner Crew           -> least-busy eligible member
-      5. no Project default                    -> built-in local runner
+      2. explicit host journeyman_runner=builtin -> built-in local runner
+      3. explicit host journeyman_runner       -> that registered runner
+      4. Project default exact runner          -> that runner
+      5. Project default Runner Crew           -> least-busy eligible member
+      6. no Project default                    -> built-in local runner
 
     A Runner Crew is resolved once for the whole default-routed host set in the
     step.  Hosts are not randomly spread across crew members.
@@ -126,12 +128,17 @@ def plan_step_execution_slices(
             continue
 
         reference = _runner_reference(variables)
+        if is_builtin_runner_reference(reference):
+            add_local(host)
+            continue
+
         if reference:
             runner = registered_remote_runner(reference)
             if runner is None:
                 raise InventoryRunnerRoutingError(
                     'Host "{}" requests runner "{}", but no enabled registered '
-                    "remote runner with that name, hostname or UUID exists."
+                    "remote runner with that name, hostname or UUID exists. Use 'builtin' "
+                    "to select the built-in Journeyman runner."
                     .format(host, reference)
                 )
             add_remote(runner, host)

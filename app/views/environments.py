@@ -157,7 +157,7 @@ def environments():
         flash(message, "success")
         return redirect(url_for("main.environments"))
 
-    rows = Environment.query.order_by(Environment.is_default.desc(), Environment.name.asc()).all()
+    rows = Environment.query.order_by(Environment.name.asc()).all()
     pagination = paginate_list(rows, page_size_for_user(current_username()))
     return render_template(
         "environments.html",

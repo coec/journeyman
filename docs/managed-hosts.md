@@ -228,6 +228,49 @@ The runner selected for the Job must be able to:
 
 This is especially important when using remote runners. A host reachable from the Journeyman server is not necessarily reachable from every remote runner.
 
+### Selecting the built-in runner from inventory
+
+A host can explicitly request execution from the built-in Journeyman runner with the reserved `journeyman_runner` value `builtin`:
+
+```yaml
+all:
+  hosts:
+    runner.local:
+      journeyman_runner: builtin
+```
+
+This controls **where Journeyman runs the automation**. It does not change how Ansible connects to the target. In the example above, the built-in runner still connects to `runner.local` normally, typically over SSH using the selected Machine credential.
+
+`ansible_connection: local` has different semantics: it tells Ansible to execute on the runner itself. Use it for a genuine localhost target, for example:
+
+```yaml
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+```
+
+An inventory may therefore route different hosts explicitly:
+
+```yaml
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+    runner.local:
+      journeyman_runner: builtin
+    client.local:
+      journeyman_runner: runner.local
+```
+
+The `builtin` override takes precedence over a Project default runner or Runner Crew.
+
+### Managing Journeyman infrastructure as managed hosts
+
+The Journeyman server and remote-runner hosts may themselves be included in inventories and managed like other hosts. Journeyman does not prevent automation from restarting, stopping, reconfiguring or rebooting the node that is currently executing a Job slice.
+
+Administrators must account for that dependency when designing Projects. If automation stops or reboots the runner that is executing the current slice, the running work may be interrupted and any other hosts assigned to that runner may not complete. Route self-maintenance work from another runner, split disruptive operations into suitable steps, or otherwise design the workflow to tolerate the interruption.
+
 ## SSH host-key policy
 
 Journeyman-managed SSH connections deliberately do not retain or validate SSH host keys.

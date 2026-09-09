@@ -125,6 +125,38 @@ def test_inventory_routing_rejects_local_and_remote_mix(app):
             )
 
 
+def test_inventory_runner_override_accepts_builtin(app):
+    from app.services.inventory_runner_routing import (
+        validate_inventory_runner_overrides,
+    )
+
+    with app.app_context():
+        assignments = validate_inventory_runner_overrides(
+            _inventory({
+                "runner.local": {
+                    "journeyman_runner": "builtin",
+                },
+            })
+        )
+
+        assert "runner.local" in assignments
+        assert assignments["runner.local"] is None
+
+
+def test_legacy_inventory_routing_accepts_builtin_override(app):
+    with app.app_context():
+        routing = derive_inventory_runner_routing(
+            _inventory({
+                "runner.local": {
+                    "journeyman_runner": "builtin",
+                },
+            })
+        )
+
+        assert routing["dispatch_target"] == "local"
+        assert routing["required_runner_id"] is None
+        assert routing["required_runner_site"] == ""
+
 def test_inventory_runner_override_accepts_registered_hostname(app):
     from app.services.inventory_runner_routing import (
         validate_inventory_runner_overrides,

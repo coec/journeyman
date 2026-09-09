@@ -10,11 +10,6 @@ Target: v1.9.0
 - Allow multistep projects with remote scripts and playbooks, currently
   multistep projects must be all script or all playbook
 
-## v1.7.0
-
-- enhance collection documentation to include more diverse examples
-- review all pytests for duplication and relevance
-
 ## v2.0.0
 
 - Redesign encryption key handling to use X.509 keys and certificates

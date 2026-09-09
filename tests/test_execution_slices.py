@@ -95,6 +95,26 @@ def test_slice_planner_allows_local_and_remote_hosts_in_one_step(app):
         assert plans[1].hosts == ("host01",)
 
 
+def test_slice_planner_builtin_override_wins_over_project_default(app):
+    with app.app_context():
+        default = _runner("runner-a", "runner-a.example.com")
+        plans = plan_step_execution_slices(
+            inventory_data=_inventory({
+                "runner.local": {"journeyman_runner": "builtin"},
+                "host01": {},
+            }),
+            target_hosts=("runner.local", "host01"),
+            default_runner=default,
+        )
+
+        assert len(plans) == 2
+        assert plans[0].dispatch_target == "local"
+        assert plans[0].required_runner_id is None
+        assert plans[0].hosts == ("runner.local",)
+        assert plans[1].dispatch_target == "remote"
+        assert plans[1].required_runner_id == default.id
+        assert plans[1].hosts == ("host01",)
+
 def test_slice_planner_rejects_unknown_explicit_runner(app):
     with app.app_context():
         with pytest.raises(

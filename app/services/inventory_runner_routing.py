@@ -8,6 +8,7 @@ class InventoryRunnerRoutingError(Exception):
 
 
 LOCAL_HOST_NAMES = {"localhost", "127.0.0.1", "::1"}
+BUILTIN_RUNNER_REFERENCES = {"builtin"}
 
 
 def _clean(value):
@@ -102,6 +103,12 @@ def _runner_reference(variables):
     return values[0] if values else ""
 
 
+def is_builtin_runner_reference(reference):
+    """Return True when an explicit inventory override selects the built-in runner."""
+
+    return _clean(reference).lower() in BUILTIN_RUNNER_REFERENCES
+
+
 def registered_remote_runner(reference):
     """Resolve a configured runner name, UUID or hostname to one valid runner."""
 
@@ -188,11 +195,16 @@ def validate_inventory_runner_overrides(resolved_inventory_data):
             if not reference:
                 continue
 
+            if is_builtin_runner_reference(reference):
+                assignments[str(host)] = None
+                continue
+
             runner = registered_remote_runner(reference)
             if runner is None:
                 raise InventoryRunnerRoutingError(
                     'Host "{}" requests runner "{}", but no enabled registered '
-                    "remote runner with that name, hostname or UUID exists."
+                    "remote runner with that name, hostname or UUID exists. Use 'builtin' "
+                    "to select the built-in Journeyman runner."
                     .format(host, reference)
                 )
 
@@ -266,13 +278,38 @@ def derive_inventory_runner_routing(resolved_inventory_data):
                 "from host(s): {}.".format(", ".join(sorted(missing)))
             )
 
+        builtin_hosts = [
+            host
+            for host, reference in runner_values
+            if is_builtin_runner_reference(reference)
+        ]
+        remote_values = [
+            (host, reference)
+            for host, reference in runner_values
+            if not is_builtin_runner_reference(reference)
+        ]
+
+        if builtin_hosts and remote_values:
+            raise InventoryRunnerRoutingError(
+                "Legacy single-runner inventory routing cannot mix the built-in "
+                "runner with registered remote runners in one Job."
+            )
+
+        if builtin_hosts:
+            return {
+                "dispatch_target": "local",
+                "required_runner_site": "",
+                "required_runner_id": None,
+            }
+
         runners = {}
-        for host, reference in runner_values:
+        for host, reference in remote_values:
             runner = registered_remote_runner(reference)
             if runner is None:
                 raise InventoryRunnerRoutingError(
                     'Host "{}" requests runner "{}", but no enabled registered '
-                    "remote runner with that name, hostname or UUID exists."
+                    "remote runner with that name, hostname or UUID exists. Use 'builtin' "
+                    "to select the built-in Journeyman runner."
                     .format(host, reference)
                 )
             runners[runner.id] = runner

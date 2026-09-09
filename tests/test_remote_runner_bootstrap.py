@@ -492,7 +492,8 @@ def test_ansible_execution_records_final_per_host_results_for_failed_only_reruns
         assert '"JOURNEYMAN_HOST_RESULTS_STATUS_ONLY"' in source
 
     assert 'execution_type in {"ansible", "remote_shell"}' in builtin_runner
-    assert 'job.execution_type in {"ansible", "remote_shell"}' in builtin_runner
+    assert 'getattr(step, "execution_type", None)' in builtin_runner
+    assert 'getattr(job, "execution_type", "ansible")' in builtin_runner
     assert 'manifest["execution_type"] in {"ansible", "remote_shell"}' in remote_runner
 
 

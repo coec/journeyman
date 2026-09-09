@@ -53,6 +53,9 @@ def test_environments_page_moves_default_marker_to_managed_environment(app, clie
     assert response.status_code == 200
     assert b"<strong>My Environment</strong> <span class=\"muted\">(default)</span>" in response.data
     assert b"<strong>System Ansible</strong><br>" in response.data
+    assert response.data.index(b"<strong>Journeyman application environment</strong>") < response.data.index(
+        b"<strong>My Environment</strong>"
+    ) < response.data.index(b"<strong>System Ansible</strong>")
 
 
 def test_admin_can_register_managed_environment(app, client, monkeypatch, tmp_path):
