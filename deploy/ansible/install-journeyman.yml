@@ -10,7 +10,6 @@
     journeyman_root: /opt/journeyman
     journeyman_venv: /opt/journeyman/venv
     journeyman_python: /usr/bin/python3.14
-    journeyman_pip_proxy: ""
     journeyman_packages:
       - postgresql-server
       - nginx
