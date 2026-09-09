@@ -8,6 +8,19 @@ scheduling, auditing, and distributed execution.
 
 Journeyman is licensed under the Apache License, Version 2.0. See LICENSE.
 
+## Who is Journeyman for?
+
+Journeyman is intended primarily for Unix/Linux systems administrators who 
+regularly need to run Ansible playbooks and scripts across multiple systems. It 
+is designed to provide a simpler, operationally focused automation platform for
+teams that need inventories, credentials, scheduling, remote execution,
+workflows, and auditability without the full complexity of a larger enterprise
+automation platform.
+
+For many environments, Journeyman can serve as a practical alternative to Red
+Hat Ansible Automation Platform, particularly where the required feature set
+is focused on day-to-day systems administration and infrastructure automation.
+
 ## Design principles
 
 ### Intentionally single-tenant
