@@ -12,12 +12,15 @@ from app.config import Config
 import app.auth as auth
 import app.routes as routes
 from app.models import (
+    AuthorizationRole,
     Job,
     JobPackageSnapshot,
     Project,
     ProjectPackage,
     ProjectPackageInput,
     ProjectPackagePermission,
+    Team,
+    UserAccount,
 )
 from app.models.project_package import (
     PACKAGE_ACCESS_AUTHENTICATED,
@@ -30,6 +33,7 @@ from app.models.project_package import (
     PACKAGE_PRINCIPAL_GROUP,
     PACKAGE_PRINCIPAL_USER,
 )
+from app.services.authorization import ROLE_USER
 
 
 PROJECT_ROOT = (
@@ -73,13 +77,17 @@ def _add_permission(
     package,
     principal_type,
     principal_name,
+    *,
+    user_account=None,
+    team=None,
 ):
-    package.permissions.append(
-        ProjectPackagePermission(
-            principal_type=principal_type,
-            principal_name=principal_name,
-        )
+    permission = ProjectPackagePermission(
+        principal_type=principal_type,
+        principal_name=principal_name,
     )
+    permission.user_account = user_account
+    permission.team = team
+    package.permissions.append(permission)
 
 
 def _add_text_input(
@@ -578,6 +586,43 @@ def seeded_packages(app):
             security_scope="private",
         )
 
+        user_role = (
+            AuthorizationRole.query
+            .filter_by(name=ROLE_USER)
+            .one()
+        )
+
+        alice = UserAccount(
+            username="alice",
+            display_name="Alice",
+            enabled=True,
+            roles=[user_role],
+        )
+        operator = UserAccount(
+            username="operator",
+            display_name="Operator",
+            enabled=True,
+            roles=[user_role],
+        )
+        outsider = UserAccount(
+            username="outsider",
+            display_name="Outsider",
+            enabled=True,
+            roles=[user_role],
+        )
+
+        network_operators = Team.new_local(
+            display_name="Network Operators",
+            description="Package route test Team",
+            created_by="test",
+        )
+        network_operators.members.append(operator)
+
+        db.session.add_all(
+            [alice, operator, outsider, network_operators]
+        )
+        db.session.flush()
+
         disabled_project = Project(
             name="Disabled Route Project",
             description="",
@@ -598,6 +643,7 @@ def seeded_packages(app):
             user_package,
             PACKAGE_PRINCIPAL_USER,
             "alice",
+            user_account=alice,
         )
 
         user_device_input = _add_text_input(
@@ -631,23 +677,46 @@ def seeded_packages(app):
             group_package,
             PACKAGE_PRINCIPAL_GROUP,
             "Network Operators",
+            team=network_operators,
         )
 
+        # Keep the historical fixture key/name because many route tests use it,
+        # but model the v2 behaviour: there is no open "authenticated" access.
+        # This Package is explicitly shared with the test identities instead.
         authenticated_package = (
             _create_package(
                 name="Authenticated Package",
                 project=enabled_project,
                 access_mode=(
-                    PACKAGE_ACCESS_AUTHENTICATED
+                    PACKAGE_ACCESS_RESTRICTED
                 ),
             )
+        )
+
+        _add_permission(
+            authenticated_package,
+            PACKAGE_PRINCIPAL_USER,
+            "alice",
+            user_account=alice,
+        )
+        _add_permission(
+            authenticated_package,
+            PACKAGE_PRINCIPAL_USER,
+            "outsider",
+            user_account=outsider,
+        )
+        _add_permission(
+            authenticated_package,
+            PACKAGE_PRINCIPAL_GROUP,
+            "Network Operators",
+            team=network_operators,
         )
 
         disabled_package = _create_package(
             name="Disabled Package",
             project=enabled_project,
             access_mode=(
-                PACKAGE_ACCESS_AUTHENTICATED
+                PACKAGE_ACCESS_RESTRICTED
             ),
             enabled=False,
         )
@@ -657,7 +726,7 @@ def seeded_packages(app):
                 name="Disabled Project Package",
                 project=disabled_project,
                 access_mode=(
-                    PACKAGE_ACCESS_AUTHENTICATED
+                    PACKAGE_ACCESS_RESTRICTED
                 ),
             )
         )

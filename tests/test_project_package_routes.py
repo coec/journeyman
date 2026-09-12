@@ -716,7 +716,7 @@ def test_launch_token_is_bound_to_requesting_user(
             "confirm_targets": "yes",
         },
         headers=identity_headers(
-            "bob"
+            "outsider"
         ),
         follow_redirects=True,
     )

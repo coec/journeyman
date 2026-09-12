@@ -7,8 +7,8 @@ import yaml
 from app import db
 from app.models import Project, ProjectPackage
 from app.models.project_package import (
+    CONFIGURABLE_PACKAGE_ACCESS_MODES,
     PACKAGE_ACCESS_RESTRICTED,
-    VALID_PACKAGE_ACCESS_MODES,
 )
 from app.services.project_package_inputs import (
     apply_package_input_rows,
@@ -139,7 +139,7 @@ def configure_package(values, *, owner="system"):
         raise PackageConfigurationError('Project "{}" does not exist.'.format(project_name))
 
     access_mode = _clean(values.get("access_mode")) or PACKAGE_ACCESS_RESTRICTED
-    if access_mode not in VALID_PACKAGE_ACCESS_MODES:
+    if access_mode not in CONFIGURABLE_PACKAGE_ACCESS_MODES:
         raise PackageConfigurationError("Package access mode is invalid.")
 
     fixed_vars = values.get("fixed_vars") or {}

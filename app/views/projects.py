@@ -1,5 +1,7 @@
 """Project administration, preview, and launch routes."""
 
+from app.models import Team, UserAccount
+
 from app.services.project_flowchart import (
     build_project_flowchart,
 )
@@ -35,7 +37,8 @@ from app.routes import (
     Repository, _clean, _inventory_id_from_request, _project_steps_for_form,
     _project_steps_from_request, _repository_playbooks, _repository_scripts,
     _validate_project_steps, abort, bp,
-    build_project_execution_preview, current_app, current_user_is_admin,
+    build_project_execution_preview, current_app, current_user_can_access_automation, current_user_can_manage_automation, current_user_can_view_automation,
+    current_user_can_develop_project, current_user_can_run_project, current_user_can_view_project,
     current_username, db, ensure_builtin_environment, flash, json,
     queue_project_execution, redirect, render_template, request, url_for,
  )
@@ -103,8 +106,46 @@ def _credential_ids(name):
     return values
 
 
+def _development_access_ids(name):
+    values = []
+    for value in request.form.getlist(name):
+        try:
+            object_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if object_id > 0 and object_id not in values:
+            values.append(object_id)
+    return values
 
 
+def _development_access_choices():
+    users = (
+        UserAccount.query
+        .filter(UserAccount.enabled.is_(True))
+        .order_by(UserAccount.username.asc())
+        .all()
+    )
+    teams = Team.query.order_by(Team.display_name.asc()).all()
+    return users, teams
+
+
+def _selected_development_access(user_ids, team_ids):
+    users = []
+    teams = []
+
+    if user_ids:
+        users = (
+            UserAccount.query
+            .filter(
+                UserAccount.enabled.is_(True),
+                UserAccount.id.in_(user_ids),
+            )
+            .all()
+        )
+    if team_ids:
+        teams = Team.query.filter(Team.id.in_(team_ids)).all()
+
+    return users, teams
 
 
 def _project_dispatch_readiness_issues(project):
@@ -256,10 +297,9 @@ def _project_ansible_context(project):
 
 @bp.get("/projects/<int:project_id>/ansible")
 def project_show_ansible(project_id):
-    if not current_user_is_admin():
-        abort(403)
-
     project = db.get_or_404(Project, project_id)
+    if not current_user_can_view_project(project):
+        abort(403)
     _project_ansible_context(project)
     return redirect(
         url_for(
@@ -271,10 +311,9 @@ def project_show_ansible(project_id):
 
 @bp.get("/projects/<int:project_id>/ansible/configuration")
 def project_show_ansible_configuration(project_id):
-    if not current_user_is_admin():
-        abort(403)
-
     project = db.get_or_404(Project, project_id)
+    if not current_user_can_view_project(project):
+        abort(403)
     context = _project_ansible_context(project)
     return render_template(
         "show_ansible.html",
@@ -287,10 +326,9 @@ def project_show_ansible_configuration(project_id):
 
 @bp.get("/projects/<int:project_id>/ansible/operation")
 def project_show_ansible_operation(project_id):
-    if not current_user_is_admin():
-        abort(403)
-
     project = db.get_or_404(Project, project_id)
+    if not current_user_can_view_project(project):
+        abort(403)
     context = _project_ansible_context(project)
     return render_template(
         "show_ansible.html",
@@ -303,7 +341,8 @@ def project_show_ansible_operation(project_id):
 
 @bp.get("/projects")
 def projects():
-    is_admin = current_user_is_admin()
+    is_admin = current_user_can_manage_automation()
+    can_view_all = current_user_can_view_automation()
     if is_admin:
         ensure_builtin_admin_automation()
 
@@ -311,10 +350,18 @@ def projects():
     query = Project.query
     if preferences.hide_disabled_projects:
         query = query.filter(Project.enabled.is_(True))
-    if not is_admin:
+    if not can_view_all:
         query = query.filter(Project.builtin_key.is_(None))
 
     rows = query.order_by(Project.name.asc()).all()
+    if not can_view_all:
+        rows = [
+            project
+            for project in rows
+            if project.builtin_key is None
+            and current_user_can_view_project(project)
+        ]
+
     pagination = paginate_list(rows, page_size_for_user(current_username()))
     rows = pagination.items
 
@@ -329,12 +376,17 @@ def projects():
         project.id: _direct_dispatch_block_reason(project)
         for project in rows
     }
+    project_development_access = {
+        project.id: current_user_can_develop_project(project)
+        for project in rows
+    }
 
     return render_template(
         "projects.html",
         projects=rows,
         project_flowcharts=project_flowcharts,
         project_dispatch_block_reasons=project_dispatch_block_reasons,
+        project_development_access=project_development_access,
         disabled_projects_hidden=preferences.hide_disabled_projects,
         pagination=pagination,
     )
@@ -342,7 +394,7 @@ def projects():
 
 @bp.route("/projects/new", methods=["GET", "POST"])
 def project_new():
-    if not current_user_is_admin():
+    if not current_user_can_manage_automation():
         abort(403)
 
     repositories = (
@@ -396,6 +448,8 @@ def project_new():
         .all()
     )
 
+    development_users, development_teams = _development_access_choices()
+
     ansible_files_by_repository = {
         repository.id: _repository_playbooks(repository)
         for repository in repositories
@@ -424,6 +478,8 @@ def project_new():
         "default_runner_id": None,
         "default_runner_crew_id": None,
         "enabled": True,
+        "development_user_ids": [],
+        "development_team_ids": [],
         "steps": [
             {
                 "name": "",
@@ -472,6 +528,8 @@ def project_new():
             "default_runner_id": selected_runner_id,
             "default_runner_crew_id": selected_crew_id,
             "enabled": request.form.get("enabled") == "on",
+            "development_user_ids": _development_access_ids("development_user_ids"),
+            "development_team_ids": _development_access_ids("development_team_ids"),
             "steps": _project_steps_from_request(),
         }
 
@@ -592,6 +650,8 @@ def project_new():
                 environments=environments,
                 remote_runners=remote_runners,
                 runner_crews=runner_crews,
+                development_users=development_users,
+                development_teams=development_teams,
                 playbooks_by_repository=playbooks_by_repository,
                 ansible_files_by_repository=ansible_files_by_repository,
                 shell_files_by_repository=shell_files_by_repository,
@@ -621,6 +681,13 @@ def project_new():
                 if db.session.get(Credential, credential_id) is not None
             ],
             enabled=form_data["enabled"],
+        )
+
+        project.development_users, project.development_teams = (
+            _selected_development_access(
+                form_data["development_user_ids"],
+                form_data["development_team_ids"],
+            )
         )
 
         db.session.add(project)
@@ -697,6 +764,8 @@ def project_new():
                 environments=environments,
                 remote_runners=remote_runners,
                 runner_crews=runner_crews,
+                development_users=development_users,
+                development_teams=development_teams,
                 playbooks_by_repository=playbooks_by_repository,
                 ansible_files_by_repository=ansible_files_by_repository,
                 shell_files_by_repository=shell_files_by_repository,
@@ -723,6 +792,8 @@ def project_new():
         environments=environments,
         remote_runners=remote_runners,
         runner_crews=runner_crews,
+        development_users=development_users,
+        development_teams=development_teams,
         playbooks_by_repository=playbooks_by_repository,
         ansible_files_by_repository=ansible_files_by_repository,
         shell_files_by_repository=shell_files_by_repository,
@@ -734,10 +805,13 @@ def project_new():
     methods=["GET", "POST"],
 )
 def project_edit(project_id):
-    if not current_user_is_admin():
-        abort(403)
-
     project = db.get_or_404(Project, project_id)
+
+    if request.method in {"GET", "HEAD"}:
+        if not current_user_can_view_project(project):
+            abort(403)
+    elif not current_user_can_develop_project(project):
+        abort(403)
 
     repositories = (
         Repository.query
@@ -782,6 +856,8 @@ def project_edit(project_id):
         .order_by(RunnerCrew.name.asc())
         .all()
     )
+
+    development_users, development_teams = _development_access_choices()
 
     # Keep repositories already used by this project available in the
     # edit form even if they are no longer currently synchronized.
@@ -890,6 +966,8 @@ def project_edit(project_id):
         ),
         "default_runner_crew_id": project.default_runner_crew_id,
         "enabled": project.enabled,
+        "development_user_ids": [user.id for user in project.development_users],
+        "development_team_ids": [team.id for team in project.development_teams],
         "steps": _project_steps_for_form(project),
     }
 
@@ -915,6 +993,16 @@ def project_edit(project_id):
             "default_runner_id": selected_runner_id,
             "default_runner_crew_id": selected_crew_id,
             "enabled": request.form.get("enabled") == "on",
+            "development_user_ids": (
+                _development_access_ids("development_user_ids")
+                if current_user_can_manage_automation()
+                else [user.id for user in project.development_users]
+            ),
+            "development_team_ids": (
+                _development_access_ids("development_team_ids")
+                if current_user_can_manage_automation()
+                else [team.id for team in project.development_teams]
+            ),
             "steps": _project_steps_from_request(),
         }
 
@@ -1037,6 +1125,8 @@ def project_edit(project_id):
                 environments=environments,
                 remote_runners=remote_runners,
                 runner_crews=runner_crews,
+                development_users=development_users,
+                development_teams=development_teams,
                 playbooks_by_repository=playbooks_by_repository,
                 ansible_files_by_repository=ansible_files_by_repository,
                 shell_files_by_repository=shell_files_by_repository,
@@ -1073,6 +1163,14 @@ def project_edit(project_id):
             if db.session.get(Credential, credential_id) is not None
         ]
         project.enabled = form_data["enabled"]
+
+        if current_user_can_manage_automation():
+            project.development_users, project.development_teams = (
+                _selected_development_access(
+                    form_data["development_user_ids"],
+                    form_data["development_team_ids"],
+                )
+            )
 
         # Explicitly delete and flush the existing rows before
         # inserting replacements. This avoids collisions with the
@@ -1155,6 +1253,8 @@ def project_edit(project_id):
                 environments=environments,
                 remote_runners=remote_runners,
                 runner_crews=runner_crews,
+                development_users=development_users,
+                development_teams=development_teams,
                 playbooks_by_repository=playbooks_by_repository,
                 ansible_files_by_repository=ansible_files_by_repository,
                 shell_files_by_repository=shell_files_by_repository,
@@ -1183,6 +1283,8 @@ def project_edit(project_id):
         environments=environments,
         remote_runners=remote_runners,
         runner_crews=runner_crews,
+        development_users=development_users,
+        development_teams=development_teams,
         playbooks_by_repository=playbooks_by_repository,
         ansible_files_by_repository=ansible_files_by_repository,
         shell_files_by_repository=shell_files_by_repository,
@@ -1191,7 +1293,7 @@ def project_edit(project_id):
 
 @bp.post("/projects/<int:project_id>/clone")
 def project_clone(project_id):
-    if not current_user_is_admin():
+    if not current_user_can_manage_automation():
         abort(403)
 
     source = db.get_or_404(Project, project_id)
@@ -1222,6 +1324,8 @@ def project_clone(project_id):
         security_scope=source.security_scope,
     )
     cloned.credentials = list(source.credentials)
+    cloned.development_users = list(source.development_users)
+    cloned.development_teams = list(source.development_teams)
 
     for source_step in source.steps:
         cloned.steps.append(
@@ -1282,7 +1386,7 @@ def project_clone(project_id):
 
 @bp.post("/projects/<int:project_id>/delete")
 def project_delete(project_id):
-    if not current_user_is_admin():
+    if not current_user_can_manage_automation():
         abort(403)
 
     project = db.get_or_404(Project, project_id)
@@ -1325,7 +1429,10 @@ def project_run_preview(project_id):
         project_id,
     )
 
-    if is_builtin_project(project) and not current_user_is_admin():
+    if not current_user_can_run_project(project):
+        abort(403)
+
+    if is_builtin_project(project) and not current_user_can_manage_automation():
         abort(403)
 
     dispatch_block_reason = _direct_dispatch_block_reason(project)
@@ -1380,7 +1487,10 @@ def project_run(project_id):
         project_id,
     )
 
-    if is_builtin_project(project) and not current_user_is_admin():
+    if not current_user_can_run_project(project):
+        abort(403)
+
+    if is_builtin_project(project) and not current_user_can_manage_automation():
         abort(403)
 
     dispatch_block_reason = _direct_dispatch_block_reason(project)

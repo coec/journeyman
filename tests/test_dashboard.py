@@ -1,7 +1,17 @@
 from app import db
 from datetime import datetime, timedelta, timezone
 
-from app.models import AuthSession, Job, Project, ProjectPackage
+from app.models import (
+    AuthSession,
+    AuthorizationRole,
+    Job,
+    Project,
+    ProjectPackage,
+    ProjectPackagePermission,
+    UserAccount,
+)
+from app.models.project_package import PACKAGE_PRINCIPAL_USER
+from app.services.authorization import ROLE_USER
 
 
 def _storage_fixture():
@@ -78,6 +88,18 @@ def test_user_dashboard_only_shows_own_jobs_and_launchable_packages(
         db.session.add(project)
         db.session.flush()
 
+        user_role = (
+            AuthorizationRole.query
+            .filter_by(name=ROLE_USER)
+            .one()
+        )
+        user1 = UserAccount(
+            username="user1",
+            display_name="User One",
+            enabled=True,
+            roles=[user_role],
+        )
+
         own_job = Job(
             project_id=project.id,
             project_name=project.name,
@@ -94,9 +116,18 @@ def test_user_dashboard_only_shows_own_jobs_and_launchable_packages(
             name="Open dashboard package",
             project_id=project.id,
             enabled=True,
-            access_mode="authenticated",
+            access_mode="restricted",
         )
-        db.session.add_all([own_job, other_job, open_package])
+        open_package.permissions.append(
+            ProjectPackagePermission(
+                principal_type=PACKAGE_PRINCIPAL_USER,
+                principal_name="user1",
+                user_account=user1,
+            )
+        )
+        db.session.add_all(
+            [user1, own_job, other_job, open_package]
+        )
         db.session.commit()
 
     response = client.get(

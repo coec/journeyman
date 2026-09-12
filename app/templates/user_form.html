@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>{{ page_title }}</h1>
+    <p>Configure Journeyman-local authorization. This does not create or change an Active Directory account or password.</p>
+  </div>
+  <a class="button" href="{{ url_for('main.users') }}">Back to Users</a>
+</div>
+
+{% if errors %}
+  <div class="flash error">
+    {% for error in errors %}<div>{{ error }}</div>{% endfor %}
+  </div>
+{% endif %}
+
+<form method="post" class="panel form-grid user-authorization-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <div class="field">
+    <label for="username">Username</label>
+    <input id="username" name="username" value="{{ form_data.username }}" maxlength="255" {% if account %}readonly{% endif %} required>
+    <small>{% if account %}The directory username is the stable identity for this authorization record.{% else %}Use the user's directory login name. The user still authenticates through AD/LDAP.{% endif %}</small>
+  </div>
+
+  <div class="field">
+    <label for="display_name">Display name</label>
+    <input id="display_name" name="display_name" value="{{ form_data.display_name }}" maxlength="255">
+  </div>
+
+  <div class="field checkbox-field">
+    <label><input type="checkbox" name="enabled" value="1" {% if form_data.enabled %}checked{% endif %}> Enabled</label>
+    <small>A disabled account has no effective local roles or rights.</small>
+  </div>
+
+  <fieldset class="field authorization-options">
+    <legend>Roles</legend>
+    {% for role in roles %}
+      <label class="checkbox-row">
+        <input
+          type="checkbox"
+          name="roles"
+          value="{{ role.name }}"
+          data-authorization-role="{{ role.name }}"
+          {% if role.name in form_data.roles %}checked{% endif %}
+        >
+        <span>
+          <strong>{{ role.name }}</strong>
+          <small>{{ role.description }}</small>
+          {% if role.name == 'User' %}
+            <small class="role-user-required-note" hidden>Required while Admin, Automation Admin, or Resource Admin is selected.</small>
+          {% endif %}
+        </span>
+      </label>
+    {% endfor %}
+  </fieldset>
+
+  <fieldset class="field authorization-options">
+    <legend>Approval rights</legend>
+    {% for right in rights %}
+      <label class="checkbox-row">
+        <input type="checkbox" name="rights" value="{{ right.name }}" {% if right.name in form_data.rights %}checked{% endif %}>
+        <span>
+          <strong>{{ right.name }}</strong>
+          <small>{{ right.description }}</small>
+        </span>
+      </label>
+    {% endfor %}
+  </fieldset>
+
+  {% if account and account.directory_object_guid %}
+    <div class="field">
+      <label>Directory object GUID</label>
+      <code>{{ account.directory_object_guid }}</code>
+    </div>
+  {% endif %}
+
+  <div class="form-actions">
+    <button class="button primary" type="submit">{{ 'Save Changes' if account else 'Create User' }}</button>
+    <a class="button" href="{{ url_for('main.users') }}">Cancel</a>
+  </div>
+</form>
+
+<script nonce="{{ csp_nonce }}">
+(() => {
+  const form = document.querySelector('.user-authorization-form');
+  if (!form) return;
+
+  const impliedBy = ['Admin', 'Automation Admin', 'Resource Admin'];
+  const userRole = form.querySelector('[data-authorization-role="User"]');
+  const note = form.querySelector('.role-user-required-note');
+  if (!userRole) return;
+
+  const syncUserRole = () => {
+    const required = impliedBy.some((name) => {
+      const checkbox = form.querySelector(`[data-authorization-role="${name}"]`);
+      return checkbox && checkbox.checked;
+    });
+
+    if (required) userRole.checked = true;
+    userRole.disabled = required;
+    if (note) note.hidden = !required;
+  };
+
+  impliedBy.forEach((name) => {
+    const checkbox = form.querySelector(`[data-authorization-role="${name}"]`);
+    if (checkbox) checkbox.addEventListener('change', syncUserRole);
+  });
+
+  syncUserRole();
+})();
+</script>
+{% endblock %}

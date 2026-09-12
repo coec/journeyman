@@ -23,7 +23,7 @@ from app.services.costly_operation_rate_limit import (
 
 from app.routes import (
     EnvironmentBuildError, Path, _clean, abort,
-    allowed_python_interpreters, bp, current_user_is_admin, current_username, db,
+    allowed_python_interpreters, bp, current_user_can_access_resources, current_user_can_manage_resources, current_username, db,
     delete_managed_environment_files, ensure_builtin_environment, flash,
     managed_environment_path,
     record_audit_event, redirect, render_template, request, url_for,
@@ -97,7 +97,7 @@ def _proxy_credential_from_form(errors):
 
 @bp.route("/environments", methods=["GET", "POST"])
 def environments():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     ensure_builtin_environment()
@@ -168,7 +168,7 @@ def environments():
 
 @bp.get("/environments/new")
 def environment_new():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     return render_template(
@@ -181,7 +181,7 @@ def environment_new():
 @bp.post("/environments/create")
 @costly_operation_rate_limit("environment_build")
 def environment_create_managed():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     name = _clean(request.form.get("name"))
@@ -257,7 +257,7 @@ def environment_create_managed():
 
 @bp.route("/environments/<int:environment_id>/edit", methods=["GET", "POST"])
 def environment_edit(environment_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     environment = db.get_or_404(Environment, environment_id)
     if environment.is_builtin:
@@ -337,7 +337,7 @@ def environment_edit(environment_id):
 
 @bp.post("/environments/<int:environment_id>/validate")
 def environment_validate(environment_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     environment = db.get_or_404(Environment, environment_id)
     if environment.is_managed and environment.build_status in {"queued", "building"}:
@@ -354,7 +354,7 @@ def environment_validate(environment_id):
 
 @bp.route("/environments/<int:environment_id>/sync", methods=["GET", "POST"])
 def environment_sync(environment_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     environment = db.get_or_404(Environment, environment_id)
@@ -423,7 +423,7 @@ def environment_sync(environment_id):
 
 @bp.post("/environments/<int:environment_id>/default")
 def environment_make_default(environment_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     environment = db.get_or_404(Environment, environment_id)
     if environment.name == APPLICATION_ENVIRONMENT_NAME:
@@ -442,7 +442,7 @@ def environment_make_default(environment_id):
 
 @bp.post("/environments/<int:environment_id>/toggle")
 def environment_toggle(environment_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     environment = db.get_or_404(Environment, environment_id)
     if environment.is_builtin:
@@ -459,7 +459,7 @@ def environment_toggle(environment_id):
 
 @bp.post("/environments/<int:environment_id>/delete")
 def environment_delete(environment_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     environment = db.get_or_404(Environment, environment_id)
     if environment.is_builtin or environment.is_default:

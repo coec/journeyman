@@ -9,11 +9,17 @@ from app import db
 
 
 PACKAGE_ACCESS_RESTRICTED = "restricted"
+# Legacy persistence value retained so old rows can be loaded safely while
+# the v2 migration converts them. It is not a configurable access mode.
 PACKAGE_ACCESS_AUTHENTICATED = "authenticated"
 
 VALID_PACKAGE_ACCESS_MODES = {
     PACKAGE_ACCESS_RESTRICTED,
     PACKAGE_ACCESS_AUTHENTICATED,
+}
+
+CONFIGURABLE_PACKAGE_ACCESS_MODES = {
+    PACKAGE_ACCESS_RESTRICTED,
 }
 
 
@@ -713,6 +719,21 @@ class ProjectPackagePermission(db.Model):
         default="",
     )
 
+    # v2.0 local authorization references.  Legacy directory identity fields
+    # above remain for migration/audit compatibility.
+    user_account_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user_account.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    team_id = db.Column(
+        db.Integer,
+        db.ForeignKey("team.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -723,6 +744,8 @@ class ProjectPackagePermission(db.Model):
         "ProjectPackage",
         back_populates="permissions",
     )
+    user_account = db.relationship("UserAccount")
+    team = db.relationship("Team")
 
     @validates("principal_type")
     def validate_principal_type(

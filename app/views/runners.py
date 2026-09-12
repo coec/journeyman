@@ -19,7 +19,7 @@ from flask import (
 )
 
 from app import csrf, db
-from app.auth import current_user_is_admin
+from app.auth import current_user_can_access_resources, current_user_can_manage_resources
 from app.models import Job, JobStepExecutionSlice, ProjectPackage, Runner, RunnerCrew
 from app.routes import bp
 from app.services.audit import record_audit_event
@@ -202,7 +202,7 @@ def _runner_rows():
 
 @bp.get("/runners")
 def runners():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     package = ProjectPackage.query.filter_by(
@@ -223,7 +223,7 @@ def runners():
 def runner_events():
     """Stream runner heartbeat, capacity, and health changes to the UI."""
 
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     def generate():
@@ -282,7 +282,7 @@ def runner_events():
 
 @bp.get("/runner-crews")
 def runner_crews():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     crews = RunnerCrew.query.order_by(RunnerCrew.name.asc()).all()
@@ -301,7 +301,7 @@ def runner_crews():
 
 @bp.post("/runner-crews/new")
 def runner_crew_create():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     name = str(request.form.get("name") or "").strip()
@@ -341,7 +341,7 @@ def runner_crew_create():
 
 @bp.post("/runner-crews/<int:crew_id>/update")
 def runner_crew_update(crew_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     crew = db.get_or_404(RunnerCrew, crew_id)
     name = str(request.form.get("name") or "").strip()
@@ -381,7 +381,7 @@ def runner_crew_update(crew_id):
 
 @bp.post("/runner-crews/<int:crew_id>/delete")
 def runner_crew_delete(crew_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     crew = db.get_or_404(RunnerCrew, crew_id)
     project_count = len(crew.projects)
@@ -415,7 +415,7 @@ def runner_crew_delete(crew_id):
 
 @bp.post("/runners/new")
 def runner_create():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     name = str(request.form.get("name") or "").strip()
@@ -476,7 +476,7 @@ def runner_create():
 
 @bp.post("/runners/<int:runner_id>/toggle")
 def runner_toggle(runner_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     runner = db.get_or_404(Runner, runner_id)
     if runner.is_local:
@@ -494,7 +494,7 @@ def runner_toggle(runner_id):
 
 @bp.post("/runners/<int:runner_id>/unregister")
 def runner_unregister(runner_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     runner = db.get_or_404(Runner, runner_id)
     runner_name = runner.name
@@ -523,7 +523,7 @@ def runner_unregister(runner_id):
 
 @bp.post("/runners/<int:runner_id>/delete")
 def runner_delete(runner_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     runner = db.get_or_404(Runner, runner_id)
     runner_name = runner.name
@@ -545,7 +545,7 @@ def runner_delete(runner_id):
 
 @bp.post("/runners/<int:runner_id>/new-registration-token")
 def runner_new_registration_token(runner_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     runner = db.get_or_404(Runner, runner_id)
     if runner.is_local:

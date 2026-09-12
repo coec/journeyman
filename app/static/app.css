@@ -2856,3 +2856,48 @@ nav.settings-tabs a.active:hover {
 
 .preference-timeout-control { display: inline-flex; gap: 8px; align-items: center; }
 .preference-timeout-control input { width: 7rem; }
+
+/* Journeyman-local user authorization form. */
+.user-authorization-form .authorization-options {
+  display: block;
+}
+
+.user-authorization-form .authorization-options .checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 0;
+}
+
+.user-authorization-form .authorization-options .checkbox-row + .checkbox-row {
+  border-top: 1px solid var(--border);
+}
+
+.user-authorization-form .authorization-options .checkbox-row input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.user-authorization-form .authorization-options .checkbox-row span,
+.user-authorization-form .authorization-options .checkbox-row small {
+  display: block;
+}
+
+.user-authorization-form .authorization-options .checkbox-row small {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.user-authorization-form .role-user-required-note {
+  font-weight: 650;
+}
+
+.user-authorization-form .form-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.user-authorization-form .form-actions .button {
+  width: 100%;
+}

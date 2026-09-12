@@ -13,6 +13,7 @@ from flask import (
     Blueprint,
     current_app,
     flash,
+    has_app_context,
     g,
     redirect,
     render_template,
@@ -22,6 +23,7 @@ from flask import (
 )
 from werkzeug.security import check_password_hash
 
+from app import db
 from app.services.audit import record_audit_event
 
 
@@ -499,8 +501,205 @@ def current_group_object_guids():
     )
 
 
+def current_user_is_break_glass():
+    """Return True for the explicit break-glass administrator session."""
+
+    return getattr(g, "authenticated_via", None) == "fallback"
+
+
+def _local_authorization_available():
+    """Return whether this Flask app is bound to Journeyman's database.
+
+    A small number of lower-level security tests intentionally use a bare
+    Flask application without calling Journeyman's ``db.init_app``.  Those
+    tests exercise pure authorization helpers and must not accidentally
+    attempt a database query merely because a request context exists.
+    """
+
+    if not has_app_context():
+        return False
+
+    return current_app.extensions.get("sqlalchemy") is db
+
+
+def _development_legacy_admin():
+    """Preserve the authentication-disabled development/test administrator."""
+
+    return bool(
+        current_app.config.get("AUTHENTICATION_DISABLED", False)
+        and getattr(g, "authenticated_role", None) == "Administrator"
+    )
+
+
+def current_user_has_role(role_name):
+    """Return whether the current identity has a Journeyman-local role.
+
+    Break-glass intentionally has all management capabilities so it can recover
+    a damaged authorization configuration.  The authentication-disabled
+    development administrator retains the same behaviour for tests/labs.
+    """
+
+    from app.services.authorization import (
+        ROLE_ADMIN,
+        ROLE_AUTOMATION_ADMIN,
+        ROLE_RESOURCE_ADMIN,
+        ROLE_USER,
+        user_has_role,
+    )
+
+    role_name = str(role_name or "").strip()
+    if not role_name:
+        return False
+
+    if current_user_is_break_glass() or _development_legacy_admin():
+        return role_name in {
+            ROLE_ADMIN,
+            ROLE_AUTOMATION_ADMIN,
+            ROLE_RESOURCE_ADMIN,
+            ROLE_USER,
+        }
+
+    if not _local_authorization_available():
+        # Compatibility for pure helper tests and other deliberately bare
+        # Flask contexts.  Production Journeyman requests always have the
+        # local authorization database available.
+        legacy_role = str(
+            getattr(g, "authenticated_role", "") or ""
+        ).strip()
+        if legacy_role == "Administrator":
+            return role_name in {
+                ROLE_ADMIN,
+                ROLE_AUTOMATION_ADMIN,
+                ROLE_RESOURCE_ADMIN,
+                ROLE_USER,
+            }
+        return role_name == ROLE_USER and bool(current_username())
+
+    return user_has_role(current_username(), role_name)
+
+
+def current_user_has_right(right_name):
+    """Return whether the current identity has a Journeyman-local right."""
+
+    from app.services.authorization import user_has_right
+
+    # Break-glass is for recovery/administration, not an approval-workflow eye.
+    if current_user_is_break_glass():
+        return False
+    if not _local_authorization_available():
+        return False
+    return user_has_right(current_username(), right_name)
+
+
 def current_user_is_admin():
-    return getattr(g, "authenticated_role", None) == "Administrator"
+    """Return whether the current identity may administer Journeyman itself."""
+
+    from app.services.authorization import ROLE_ADMIN
+    return current_user_has_role(ROLE_ADMIN)
+
+
+def current_user_can_manage_automation():
+    """Return whether the current identity may manage automation definitions."""
+
+    from app.services.authorization import ROLE_AUTOMATION_ADMIN
+    return current_user_has_role(ROLE_AUTOMATION_ADMIN)
+
+
+def current_user_can_manage_resources():
+    """Return whether the current identity may manage execution resources."""
+
+    from app.services.authorization import ROLE_RESOURCE_ADMIN
+    return current_user_has_role(ROLE_RESOURCE_ADMIN)
+
+
+def current_user_is_auditor():
+    """Return whether the current identity has the read-only Auditor role."""
+
+    from app.services.authorization import ROLE_AUDITOR
+    return current_user_has_role(ROLE_AUDITOR)
+
+
+def current_user_can_audit():
+    """Return whether the current identity may read the audit log."""
+
+    return (
+        current_user_is_admin()
+        or current_user_is_auditor()
+        or current_user_is_break_glass()
+        or _development_legacy_admin()
+    )
+
+
+def current_user_can_view_platform():
+    """Return whether platform configuration may be viewed."""
+
+    return current_user_is_admin() or current_user_is_auditor()
+
+
+def current_user_can_view_automation():
+    """Return whether automation configuration may be viewed in full."""
+
+    return current_user_can_manage_automation() or current_user_is_auditor()
+
+
+def current_user_can_view_resources():
+    """Return whether execution-resource configuration may be viewed in full."""
+
+    return current_user_can_manage_resources() or current_user_is_auditor()
+
+
+def current_user_can_access_platform():
+    """Allow Auditor read access while preserving Admin-only mutation."""
+
+    if request.method in {"GET", "HEAD"}:
+        return current_user_can_view_platform()
+    return current_user_is_admin()
+
+
+def current_user_can_access_automation():
+    """Allow Auditor read access while preserving Automation Admin mutation."""
+
+    if request.method in {"GET", "HEAD"}:
+        return current_user_can_view_automation()
+    return current_user_can_manage_automation()
+
+
+def current_user_can_develop_project(project):
+    """Return whether the current identity may edit/test one Project."""
+
+    if current_user_can_manage_automation():
+        return True
+    if current_user_is_auditor():
+        return False
+
+    from app.services.project_development_access import (
+        user_can_develop_project,
+    )
+
+    return user_can_develop_project(project, current_username())
+
+
+def current_user_can_view_project(project):
+    """Return whether the current identity may inspect one Project."""
+
+    return (
+        current_user_can_view_automation()
+        or current_user_can_develop_project(project)
+    )
+
+
+def current_user_can_run_project(project):
+    """Return whether the current identity may manually test one Project."""
+
+    return current_user_can_develop_project(project)
+
+
+def current_user_can_access_resources():
+    """Allow Auditor read access while preserving Resource Admin mutation."""
+
+    if request.method in {"GET", "HEAD"}:
+        return current_user_can_view_resources()
+    return current_user_can_manage_resources()
 
 
 def _safe_next_url(value):
@@ -695,6 +894,20 @@ def login():
         return render_template("login.html", next_url=next_url), 401
 
     _clear_login_failures(username)
+
+    # v2.0 authorization groundwork: populate Journeyman's local account and
+    # role model while the existing LDAP-derived role remains authoritative.
+    # The later v2 authorization cut-over will switch runtime decisions to
+    # these local records.
+    from app.services.authorization import sync_legacy_directory_user
+
+    sync_legacy_directory_user(
+        username=authenticated.user.username,
+        display_name=authenticated.user.display_name,
+        directory_object_guid=authenticated.user.object_guid,
+        legacy_role=authenticated.role,
+    )
+
     _store_identity(
         {
             "username": authenticated.user.username,
@@ -746,6 +959,15 @@ def can_launch_package(
     group_object_guids=None,
     is_admin=None,
 ):
+    """Return whether the current local Journeyman identity may launch Package.
+
+    v2.0 Package authorization is local.  Direct grants reference a
+    UserAccount and Team grants are inherited through Journeyman Team
+    membership.  LDAP group membership is intentionally ignored.  The legacy
+    group parameters remain in the signature temporarily for API/test
+    compatibility while the v2 migration is completed.
+    """
+
     if not getattr(package, "enabled", False):
         return False
 
@@ -753,62 +975,134 @@ def can_launch_package(
     if project is None or not getattr(project, "enabled", False):
         return False
 
+    explicit_username = username is not None
     if username is None:
         username = current_username()
-    if group_names is None:
-        group_names = current_group_names()
-    if user_object_guid is None:
-        user_object_guid = current_user_object_guid()
-    if group_object_guids is None:
-        group_object_guids = current_group_object_guids()
-    if is_admin is None:
-        is_admin = current_user_is_admin()
 
+    # Keep the pure lower-level compatibility path used by security unit tests
+    # that construct a bare Flask app without Journeyman's database extension.
+    # Production/runtime authorization never takes this branch.
+    if explicit_username and not _local_authorization_available():
+        if is_admin:
+            return True
+        access_mode = getattr(package, "access_mode", "")
+        if access_mode != "restricted":
+            return False
+        username_key = str(username or "").strip().casefold()
+        group_keys = {
+            str(value).strip().casefold() for value in (group_names or ())
+            if str(value).strip()
+        }
+        user_guid_key = str(user_object_guid or "").strip().lower()
+        group_guid_keys = {
+            str(value).strip().lower() for value in (group_object_guids or ())
+            if str(value).strip()
+        }
+        for permission in getattr(package, "permissions", ()):
+            principal_type = getattr(permission, "principal_type", "")
+            principal_name = str(
+                getattr(permission, "principal_name", "") or ""
+            ).strip().casefold()
+            principal_guid = str(
+                getattr(permission, "principal_object_guid", "") or ""
+            ).strip().lower()
+            if principal_type == "user" and principal_guid and user_guid_key == principal_guid:
+                return True
+            if principal_type == "group" and principal_guid in group_guid_keys:
+                return True
+            if not principal_guid and principal_type == "user" and principal_name == username_key:
+                return True
+            if not principal_guid and principal_type == "group" and principal_name in group_keys:
+                return True
+        return False
+
+    # Explicit override is retained for lower-level tests and the break-glass
+    # recovery path.  A normal platform Admin does not automatically gain
+    # Package execution permission.
+    if is_admin is None:
+        is_admin = current_user_is_break_glass() or _development_legacy_admin()
     if is_admin:
         return True
 
+    from app.models import UserAccount
+    from app.services.authorization import ROLE_USER
+
+    username_key = str(username or "").strip().casefold()
+    if not username_key:
+        return False
+
+    account = (
+        UserAccount.query
+        .filter(db.func.lower(UserAccount.username) == username_key)
+        .one_or_none()
+    )
+    if account is None or not account.enabled or not account.has_role(ROLE_USER):
+        return False
+
     access_mode = getattr(package, "access_mode", "")
-    if access_mode == "authenticated":
-        return True
     if access_mode != "restricted":
         return False
 
-    username_key = str(username or "").strip().casefold()
-    group_keys = {
-        str(group_name).strip().casefold()
-        for group_name in group_names
-        if str(group_name).strip()
+    team_ids = {team.id for team in account.teams}
+    team_names = {
+        str(team.display_name or "").strip().casefold()
+        for team in account.teams
+        if str(team.display_name or "").strip()
     }
-    user_guid_key = str(user_object_guid or "").strip().lower()
-    group_guid_keys = {
-        str(object_guid).strip().lower()
-        for object_guid in group_object_guids
-        if str(object_guid).strip()
+    team_guids = {
+        str(team.object_guid or "").strip().lower()
+        for team in account.teams
+        if str(team.object_guid or "").strip()
     }
+    user_guid = str(account.directory_object_guid or "").strip().lower()
 
     for permission in getattr(package, "permissions", ()):
         principal_type = getattr(permission, "principal_type", "")
-        principal_name = str(getattr(permission, "principal_name", "") or "").strip().casefold()
-        principal_guid = str(getattr(permission, "principal_object_guid", "") or "").strip().lower()
+        principal_name = str(
+            getattr(permission, "principal_name", "") or ""
+        ).strip().casefold()
+        principal_guid = str(
+            getattr(permission, "principal_object_guid", "") or ""
+        ).strip().lower()
 
-        if principal_type == "user" and principal_guid and user_guid_key and principal_guid == user_guid_key:
-            return True
-        if principal_type == "group" and principal_guid and principal_guid in group_guid_keys:
-            return True
-        if not principal_guid and principal_type == "user" and principal_name == username_key:
-            return True
-        if not principal_guid and principal_type == "group" and principal_name in group_keys:
-            return True
+        if principal_type == "user":
+            if permission.user_account_id == account.id:
+                return True
+            if permission.user_account_id is None:
+                if principal_guid and user_guid and principal_guid == user_guid:
+                    return True
+                if not principal_guid and principal_name == username_key:
+                    return True
+
+        if principal_type == "group":
+            if permission.team_id in team_ids:
+                return True
+            if permission.team_id is None:
+                if principal_guid and principal_guid in team_guids:
+                    return True
+                if not principal_guid and principal_name in team_names:
+                    return True
 
     return False
 
 
 def can_administer(resource):
-    return current_user_is_admin() or getattr(resource, "owner", None) == current_username()
+    # Currently used by credential ownership checks. Resource Admins may
+    # administer shared execution resources; owners retain their existing
+    # ability to administer resources they own.
+    return (
+        current_user_is_admin()
+        or current_user_can_manage_resources()
+        or getattr(resource, "owner", None) == current_username()
+    )
 
 
 def can_view_job(job):
-    return current_user_is_admin() or job.requested_by == current_username()
+    return (
+        current_user_is_admin()
+        or current_user_is_auditor()
+        or job.requested_by == current_username()
+    )
 
 
 def can_cancel_job(job):

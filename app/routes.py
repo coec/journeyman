@@ -22,6 +22,11 @@ import yaml
 from . import csrf, db
 from .models.audit_log import AuditLog
 from .services.audit import record_audit_event
+from .services.authorization import (
+    AuthorizationValidationError,
+    create_user_account,
+    update_user_account_authorization,
+)
 from .services.environment_build_settings import (
     EnvironmentBuildSettingsError,
     form_data as environment_build_form_data,
@@ -189,17 +194,31 @@ from .models import (
     Runner,
     RunnerCrew,
     Team,
+    AuthorizationRole,
+    AuthorizationRight,
+    UserAccount,
 )
 from .models.project_package import (
-    PACKAGE_ACCESS_AUTHENTICATED,
+    CONFIGURABLE_PACKAGE_ACCESS_MODES,
     PACKAGE_ACCESS_RESTRICTED,
-    VALID_PACKAGE_ACCESS_MODES,
     VARIABLE_NAME_PATTERN,
 )
 from app.auth import (
     can_administer,
     can_launch_package,
+    current_user_can_audit,
+    current_user_can_access_platform,
+    current_user_can_access_automation,
+    current_user_can_access_resources,
+    current_user_can_manage_automation,
+    current_user_can_manage_resources,
+    current_user_can_develop_project,
+    current_user_can_run_project,
+    current_user_can_view_project,
+    current_user_can_view_automation,
+    current_user_can_view_resources,
     current_user_is_admin,
+    current_user_is_auditor,
     current_username,
     can_cancel_job,
     can_view_job,
@@ -2413,7 +2432,7 @@ def dashboard_events():
     methods=["GET", "POST"],
 )
 def directory_settings():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
     settings = get_or_create_directory_settings()
@@ -2604,231 +2623,401 @@ def test_directory_settings():
     )
 
 
-def _package_grants_by_principal_guid(permissions):
-    """Return Package names keyed by AD object GUID, skipping stale grants."""
-    grants = {}
+def _package_grants_by_local_principal(permissions):
+    """Return Package grant summaries keyed by local user/team ids."""
 
+    grants = {"users": {}, "teams": {}}
     for permission in permissions:
-        if (
-            not permission.principal_object_guid
-            or permission.package is None
-        ):
+        if permission.package is None:
             continue
+        if permission.user_account_id:
+            grants["users"].setdefault(permission.user_account_id, []).append(
+                permission.package.name
+            )
+        if permission.team_id:
+            grants["teams"].setdefault(permission.team_id, []).append(
+                permission.package.name
+            )
 
-        grants.setdefault(
-            permission.principal_object_guid.lower(),
-            [],
-        ).append(permission.package.name)
-
-    for package_names in grants.values():
-        package_names.sort(key=str.casefold)
-
+    for bucket in grants.values():
+        for package_names in bucket.values():
+            package_names.sort(key=str.casefold)
     return grants
 
 
 @bp.get("/users")
 def users():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
-    settings = get_or_create_directory_settings()
-    directory_users = []
-    directory_error = ""
+    local_users = UserAccount.query.order_by(
+        db.func.lower(UserAccount.username),
+        UserAccount.id,
+    ).all()
 
-    if settings.enabled:
-        try:
-            directory_users = get_directory_client(
-                settings
-            ).role_users()
-        except DirectoryError as exc:
-            directory_error = str(exc)
-
-    user_package_grants = _package_grants_by_principal_guid(
-        ProjectPackagePermission.query
-        .filter_by(principal_type="user")
-        .all()
+    package_grants = _package_grants_by_local_principal(
+        ProjectPackagePermission.query.all()
     )
 
     return render_template(
         "users.html",
-        directory_settings=settings,
-        users=directory_users,
-        user_package_grants=user_package_grants,
-        directory_error=directory_error,
+        users=local_users,
+        enabled_count=sum(1 for user in local_users if user.enabled),
+        admin_count=sum(
+            1 for user in local_users
+            if user.enabled and user.has_role("Admin")
+        ),
+        user_package_grants=package_grants["users"],
     )
+
+
+def _authorization_catalogue():
+    roles = AuthorizationRole.query.order_by(
+        AuthorizationRole.name.asc()
+    ).all()
+    rights = AuthorizationRight.query.order_by(
+        AuthorizationRight.name.asc()
+    ).all()
+    return roles, rights
+
+
+@bp.route("/users/new", methods=["GET", "POST"])
+def user_new():
+    if not current_user_is_admin():
+        abort(403)
+
+    roles, rights = _authorization_catalogue()
+    form_data = {
+        "username": "",
+        "display_name": "",
+        "enabled": True,
+        "roles": [],
+        "rights": [],
+    }
+    errors = []
+
+    if request.method == "POST":
+        form_data = {
+            "username": _clean(request.form.get("username")),
+            "display_name": _clean(request.form.get("display_name")),
+            "enabled": request.form.get("enabled") == "1",
+            "roles": request.form.getlist("roles"),
+            "rights": request.form.getlist("rights"),
+        }
+
+        try:
+            account = create_user_account(
+                username=form_data["username"],
+                display_name=form_data["display_name"],
+                enabled=form_data["enabled"],
+                role_names=form_data["roles"],
+                right_names=form_data["rights"],
+            )
+        except AuthorizationValidationError as exc:
+            db.session.rollback()
+            errors = [str(exc)]
+        else:
+            record_audit_event(
+                "user.authorization.create",
+                object_type="user_account",
+                object_id=account.id,
+                object_name=account.username,
+                details={
+                    "enabled": account.enabled,
+                    "roles": [role.name for role in account.roles],
+                    "rights": [right.name for right in account.rights],
+                },
+            )
+            flash("Journeyman user authorization record created.", "success")
+            return redirect(url_for("main.users"))
+
+    return render_template(
+        "user_form.html",
+        page_title="Add User",
+        account=None,
+        roles=roles,
+        rights=rights,
+        form_data=form_data,
+        errors=errors,
+    )
+
+
+@bp.route("/users/<int:user_id>/edit", methods=["GET", "POST"])
+def user_edit(user_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    account = db.session.get(UserAccount, user_id)
+    if account is None:
+        abort(404)
+
+    roles, rights = _authorization_catalogue()
+    form_data = {
+        "username": account.username,
+        "display_name": account.display_name,
+        "enabled": account.enabled,
+        "roles": [role.name for role in account.roles],
+        "rights": [right.name for right in account.rights],
+    }
+    errors = []
+
+    if request.method == "POST":
+        form_data = {
+            "username": account.username,
+            "display_name": _clean(request.form.get("display_name")),
+            "enabled": request.form.get("enabled") == "1",
+            "roles": request.form.getlist("roles"),
+            "rights": request.form.getlist("rights"),
+        }
+
+        before = {
+            "enabled": account.enabled,
+            "roles": [role.name for role in account.roles],
+            "rights": [right.name for right in account.rights],
+        }
+
+        try:
+            update_user_account_authorization(
+                account,
+                display_name=form_data["display_name"],
+                enabled=form_data["enabled"],
+                role_names=form_data["roles"],
+                right_names=form_data["rights"],
+            )
+        except AuthorizationValidationError as exc:
+            db.session.rollback()
+            errors = [str(exc)]
+        else:
+            record_audit_event(
+                "user.authorization.update",
+                object_type="user_account",
+                object_id=account.id,
+                object_name=account.username,
+                details={
+                    "before": before,
+                    "after": {
+                        "enabled": account.enabled,
+                        "roles": [role.name for role in account.roles],
+                        "rights": [right.name for right in account.rights],
+                    },
+                },
+            )
+            flash("Journeyman user authorization updated.", "success")
+            return redirect(url_for("main.users"))
+
+    return render_template(
+        "user_form.html",
+        page_title="Edit User",
+        account=account,
+        roles=roles,
+        rights=rights,
+        form_data=form_data,
+        errors=errors,
+    )
+
+
+def _team_form_members():
+    selected = set()
+    for raw_id in request.form.getlist("member_ids"):
+        try:
+            selected.add(int(raw_id))
+        except (TypeError, ValueError):
+            raise ValueError("Team membership contains an invalid user id.")
+
+    if not selected:
+        return []
+
+    members = UserAccount.query.filter(UserAccount.id.in_(selected)).all()
+    if {member.id for member in members} != selected:
+        raise ValueError("Team membership contains an unknown user.")
+    return members
+
+
+def _team_name_exists(display_name, *, exclude_id=None):
+    query = Team.query.filter(
+        db.func.lower(Team.display_name) == str(display_name).strip().casefold()
+    )
+    if exclude_id is not None:
+        query = query.filter(Team.id != exclude_id)
+    return query.first() is not None
 
 
 @bp.get("/teams")
 def teams():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
-    settings = get_or_create_directory_settings()
-    search_query = _clean(
-        request.args.get("q")
-    )
-    search_results = []
-    directory_error = ""
-
-    if search_query and settings.enabled:
-        try:
-            search_results = get_directory_client(
-                settings
-            ).search_groups(search_query)
-        except DirectoryError as exc:
-            directory_error = str(exc)
-
     registered_teams = Team.query.order_by(
-        Team.display_name.asc()
+        db.func.lower(Team.display_name), Team.id
     ).all()
-
-    registered_guids = {
-        team.object_guid
-        for team in registered_teams
-    }
-
-    team_package_grants = _package_grants_by_principal_guid(
-        ProjectPackagePermission.query
-        .filter_by(principal_type="group")
-        .all()
+    package_grants = _package_grants_by_local_principal(
+        ProjectPackagePermission.query.all()
     )
-
-    selected_team = None
-    team_members = []
-
-    raw_selected_id = _clean(
-        request.args.get("selected")
-    )
-
-    if raw_selected_id:
-        try:
-            selected_id = int(raw_selected_id)
-        except ValueError:
-            abort(400)
-
-        selected_team = db.session.get(
-            Team,
-            selected_id,
-        )
-
-        if selected_team is None:
-            abort(404)
-
-        if settings.enabled:
-            try:
-                team_members = get_directory_client(
-                    settings
-                ).group_users(selected_team)
-            except DirectoryError as exc:
-                directory_error = str(exc)
 
     return render_template(
         "teams.html",
-        directory_settings=settings,
         teams=registered_teams,
-        search_query=search_query,
-        search_results=search_results,
-        registered_guids=registered_guids,
-        team_package_grants=team_package_grants,
-        selected_team=selected_team,
-        team_members=team_members,
-        directory_error=directory_error,
+        team_package_grants=package_grants["teams"],
     )
 
 
-@bp.post("/teams")
+@bp.route("/teams/new", methods=["GET", "POST"])
 def add_team():
     if not current_user_is_admin():
         abort(403)
 
-    settings = get_or_create_directory_settings()
-    distinguished_name = _clean(
-        request.form.get("distinguished_name")
-    )
+    users = UserAccount.query.order_by(
+        db.func.lower(UserAccount.username), UserAccount.id
+    ).all()
+    form_data = {
+        "display_name": "",
+        "description": "",
+        "member_ids": [],
+    }
+    errors = []
 
-    if not distinguished_name:
-        flash(
-            "Select an AD group to add as a Team.",
-            "error",
-        )
-        return redirect(url_for("main.teams"))
+    if request.method == "POST":
+        form_data = {
+            "display_name": _clean(request.form.get("display_name")),
+            "description": _clean(request.form.get("description")),
+            "member_ids": request.form.getlist("member_ids"),
+        }
 
-    try:
-        group = get_directory_client(
-            settings
-        ).find_group_by_dn(distinguished_name)
-    except DirectoryError as exc:
-        flash(
-            "Unable to add Team: {}".format(exc),
-            "error",
-        )
-        return redirect(
-            url_for(
-                "main.teams",
-                q=request.form.get("search_query", ""),
+        if not form_data["display_name"]:
+            errors.append("Team name is required.")
+        elif len(form_data["display_name"]) > 255:
+            errors.append("Team name exceeds 255 characters.")
+        elif _team_name_exists(form_data["display_name"]):
+            errors.append("A Team with that name already exists.")
+
+        if len(form_data["description"]) > 1000:
+            errors.append("Team description exceeds 1000 characters.")
+
+        try:
+            members = _team_form_members()
+        except ValueError as exc:
+            errors.append(str(exc))
+            members = []
+
+        if not errors:
+            team = Team.new_local(
+                display_name=form_data["display_name"],
+                description=form_data["description"],
+                created_by=current_username(),
             )
-        )
+            team.members = members
+            db.session.add(team)
+            db.session.commit()
 
-    existing = Team.query.filter(
-        or_(
-            Team.object_guid == group.object_guid,
-            Team.distinguished_name == (
-                group.distinguished_name
-            ),
-        )
-    ).first()
-
-    if existing is not None:
-        flash(
-            'AD group "{}" is already a Team.'
-            .format(existing.display_name),
-            "error",
-        )
-        return redirect(url_for("main.teams"))
-
-    team = Team(
-        object_guid=group.object_guid,
-        distinguished_name=group.distinguished_name,
-        sam_account_name=group.sam_account_name,
-        display_name=group.display_name,
-        description=group.description,
-        created_by=current_username(),
-    )
-
-    db.session.add(team)
-
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        current_app.logger.exception(
-            "Unable to add AD-backed Team %s",
-            group.object_guid,
-        )
-        flash(
-            "Unable to add the selected Team.",
-            "error",
-        )
-        return redirect(
-            url_for(
-                "main.teams",
-                q=request.form.get("search_query", ""),
+            record_audit_event(
+                "team.create",
+                object_type="team",
+                object_id=team.id,
+                object_name=team.display_name,
+                details={
+                    "member_usernames": [member.username for member in members],
+                    "source_kind": team.source_kind,
+                },
             )
-        )
+            flash('Team "{}" created.'.format(team.display_name), "success")
+            return redirect(url_for("main.teams"))
 
-    record_audit_event(
-        "team.create",
-        object_type="team",
-        object_id=team.id,
-        object_name=team.display_name,
-        details={"ad_object_guid": team.object_guid},
-    )
-    flash(
-        'Team "{}" added.'.format(team.display_name),
-        "success",
+    return render_template(
+        "team_form.html",
+        page_title="Add Team",
+        team=None,
+        users=users,
+        form_data=form_data,
+        errors=errors,
     )
 
-    return redirect(url_for("main.teams"))
+
+@bp.route("/teams/<int:team_id>/edit", methods=["GET", "POST"])
+def edit_team(team_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    team = db.session.get(Team, team_id)
+    if team is None:
+        abort(404)
+
+    users = UserAccount.query.order_by(
+        db.func.lower(UserAccount.username), UserAccount.id
+    ).all()
+    form_data = {
+        "display_name": team.display_name,
+        "description": team.description,
+        "member_ids": [str(member.id) for member in team.members],
+    }
+    errors = []
+
+    if request.method == "POST":
+        form_data = {
+            "display_name": _clean(request.form.get("display_name")),
+            "description": _clean(request.form.get("description")),
+            "member_ids": request.form.getlist("member_ids"),
+        }
+
+        if not form_data["display_name"]:
+            errors.append("Team name is required.")
+        elif len(form_data["display_name"]) > 255:
+            errors.append("Team name exceeds 255 characters.")
+        elif _team_name_exists(form_data["display_name"], exclude_id=team.id):
+            errors.append("A Team with that name already exists.")
+
+        if len(form_data["description"]) > 1000:
+            errors.append("Team description exceeds 1000 characters.")
+
+        try:
+            members = _team_form_members()
+        except ValueError as exc:
+            errors.append(str(exc))
+            members = []
+
+        if not errors:
+            before = {
+                "display_name": team.display_name,
+                "description": team.description,
+                "member_usernames": [member.username for member in team.members],
+            }
+            team.display_name = form_data["display_name"]
+            team.description = form_data["description"]
+            team.members = members
+            db.session.commit()
+
+            # Keep denormalized permission display names current without
+            # changing the stable local Team reference.
+            for permission in ProjectPackagePermission.query.filter_by(
+                team_id=team.id
+            ).all():
+                permission.principal_name = team.display_name
+            db.session.commit()
+
+            record_audit_event(
+                "team.update",
+                object_type="team",
+                object_id=team.id,
+                object_name=team.display_name,
+                details={
+                    "before": before,
+                    "after": {
+                        "display_name": team.display_name,
+                        "description": team.description,
+                        "member_usernames": [member.username for member in members],
+                    },
+                },
+            )
+            flash('Team "{}" updated.'.format(team.display_name), "success")
+            return redirect(url_for("main.teams"))
+
+    return render_template(
+        "team_form.html",
+        page_title="Edit Team",
+        team=team,
+        users=users,
+        form_data=form_data,
+        errors=errors,
+    )
 
 
 @bp.post("/teams/<int:team_id>/delete")
@@ -2837,49 +3026,27 @@ def delete_team(team_id):
         abort(403)
 
     team = db.session.get(Team, team_id)
-
     if team is None:
         abort(404)
 
-    package_grants = (
-        ProjectPackagePermission.query
-        .filter_by(
+    package_grants = ProjectPackagePermission.query.filter_by(team_id=team.id).count()
+    if not package_grants:
+        package_grants = ProjectPackagePermission.query.filter_by(
             principal_type="group",
             principal_object_guid=team.object_guid,
-        )
-        .count()
-    )
+        ).count()
 
     if package_grants:
         flash(
-            'Team "{}" cannot be removed while it has {} '
-            'Package execute grant{}.'
-            .format(
-                team.display_name,
-                package_grants,
-                "" if package_grants == 1 else "s",
-            ),
+            'Team "{}" cannot be removed while it has {} Package execute grant{}.'
+            .format(team.display_name, package_grants, "" if package_grants == 1 else "s"),
             "error",
         )
         return redirect(url_for("main.teams"))
 
     team_name = team.display_name
     db.session.delete(team)
-
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        current_app.logger.exception(
-            "Unable to remove Team %s",
-            team_id,
-        )
-        flash(
-            'Unable to remove Team "{}".'
-            .format(team_name),
-            "error",
-        )
-        return redirect(url_for("main.teams"))
+    db.session.commit()
 
     record_audit_event(
         "team.delete",
@@ -2887,12 +3054,7 @@ def delete_team(team_id):
         object_id=team_id,
         object_name=team_name,
     )
-    flash(
-        'Team "{}" removed. AD was not changed.'
-        .format(team_name),
-        "success",
-    )
-
+    flash('Team "{}" removed.'.format(team_name), "success")
     return redirect(url_for("main.teams"))
 
 

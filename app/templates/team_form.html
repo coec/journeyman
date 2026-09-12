@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>{{ page_title }}</h1>
+    <p>Team membership is managed locally in Journeyman.</p>
+  </div>
+</div>
+
+{% if errors %}
+  <div class="flash error">
+    {% for error in errors %}<div>{{ error }}</div>{% endfor %}
+  </div>
+{% endif %}
+
+<form method="post" class="panel form-grid user-authorization-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <div class="field">
+    <label for="display_name">Team name</label>
+    <input id="display_name" type="text" name="display_name" maxlength="255" required value="{{ form_data.display_name }}">
+  </div>
+
+  <div class="field">
+    <label for="description">Description</label>
+    <textarea id="description" name="description" rows="3" maxlength="1000">{{ form_data.description }}</textarea>
+  </div>
+
+  <fieldset class="field authorization-options">
+    <legend>Members</legend>
+    <p class="muted">Package permissions assigned to this Team are inherited by members who have the User role.</p>
+    {% if users %}
+      {% for user in users %}
+        <label class="checkbox-row">
+          <input type="checkbox" name="member_ids" value="{{ user.id }}"{% if user.id|string in form_data.member_ids %} checked{% endif %}>
+          <span>
+            <strong>{{ user.display_name or user.username }}</strong>
+            <small>{{ user.username }}{% if not user.enabled %} · disabled{% endif %}</small>
+          </span>
+        </label>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No Journeyman users have been created yet.</div>
+    {% endif %}
+  </fieldset>
+
+  <div class="form-actions">
+    <button class="button primary" type="submit">{{ 'Save Team' if team else 'Create Team' }}</button>
+    <a class="button" href="{{ url_for('main.teams') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

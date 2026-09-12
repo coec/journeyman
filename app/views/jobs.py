@@ -23,7 +23,7 @@ from app.services.oversight_display import build_oversight_rows
 from app.services.project_oversight import approve_current_oversight
 from app.routes import (
     Job, _utcnow, abort, bp, can_view_job, current_user_is_admin,
-    current_username, db, flash, record_audit_event, redirect,
+    current_user_is_auditor, current_username, db, flash, record_audit_event, redirect,
     render_template, request, url_for,
 )
 
@@ -32,7 +32,7 @@ def _visible_jobs_query():
 
     query = Job.query
 
-    if not current_user_is_admin():
+    if not (current_user_is_admin() or current_user_is_auditor()):
         query = query.filter(
             Job.requested_by == current_username()
         )
@@ -44,7 +44,7 @@ def _visible_environment_syncs_query():
     """Return Environment synchronization work visible to this subject."""
 
     query = RunnerEnvironmentSync.query
-    if not current_user_is_admin():
+    if not (current_user_is_admin() or current_user_is_auditor()):
         query = query.filter(
             RunnerEnvironmentSync.requested_by == current_username()
         )

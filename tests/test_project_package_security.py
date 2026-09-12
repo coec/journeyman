@@ -272,7 +272,7 @@ def test_package_launch_permission_matrix(flask_app):
             ),
         )
 
-        assert can_launch_package(
+        assert not can_launch_package(
             authenticated_package,
             username="any.user",
             group_names=(),

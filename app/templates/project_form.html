@@ -12,7 +12,9 @@
       {% if project.steps|length > 1 %}
       <a class="button" href="{{ url_for('main.projects', flowchart=project.id) }}#project-{{ project.id }}">Flowchart</a>
       {% endif %}
+      {% if journeyman_can_manage_automation %}
       <a class="button" href="{{ url_for('main.project_notifications', project_id=project.id) }}">Notifications</a>
+      {% endif %}
       <a class="button" href="{{ url_for('main.projects') }}#project-{{ project.id }}">← Back to Projects</a>
     </div>
     {% endif %}
@@ -162,6 +164,63 @@
         <label class="checkbox-label">
             <input type="checkbox" name="enabled" {% if form_data.enabled %}checked{% endif %}> Enabled
         </label>
+
+        <div class="form-subsection">
+            <strong>Development/Test access</strong>
+            <small>
+                Grants Project view, edit, and manual test dispatch access.
+                This does not grant access to any Package that wraps this Project.
+            </small>
+
+            {% if journeyman_can_manage_automation %}
+            <label>
+                Users
+                <select name="development_user_ids" multiple size="6">
+                    {% for user in development_users %}
+                    <option
+                        value="{{ user.id }}"
+                        {% if user.id in form_data.development_user_ids %}selected{% endif %}
+                    >
+                        {{ user.username }}{% if user.display_name and user.display_name != user.username %} — {{ user.display_name }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                <small>Enabled Journeyman accounts. Access is direct and independent of Package grants.</small>
+            </label>
+
+            <label>
+                Teams
+                <select name="development_team_ids" multiple size="6">
+                    {% for team in development_teams %}
+                    <option
+                        value="{{ team.id }}"
+                        {% if team.id in form_data.development_team_ids %}selected{% endif %}
+                    >
+                        {{ team.display_name }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <small>Every enabled Journeyman member of a selected Team inherits development/test access.</small>
+            </label>
+            {% else %}
+            <div class="muted-list-note">
+                Direct users:
+                {% if project and project.development_users %}
+                    {{ project.development_users | map(attribute='username') | join(', ') }}
+                {% else %}
+                    None
+                {% endif %}
+                <br>
+                Teams:
+                {% if project and project.development_teams %}
+                    {{ project.development_teams | map(attribute='display_name') | join(', ') }}
+                {% else %}
+                    None
+                {% endif %}
+            </div>
+            <small>Only an Automation Admin may change Project development/test access.</small>
+            {% endif %}
+        </div>
         </div>
 
         <div id="project-defaults-panel" class="project-tab-panel" role="tabpanel" hidden>

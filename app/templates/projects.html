@@ -10,10 +10,12 @@
     <p>Automation projects.</p>
   </div>
 
+  {% if journeyman_can_manage_automation %}
   <a class="button primary"
      href="{{ url_for('main.project_new') }}">
     ＋ Add Project
   </a>
+  {% endif %}
 </div>
 
 <section class="panel repository-list">
@@ -33,10 +35,16 @@
     {% for project in projects %}
       {%
         set run_state = namespace(
-          can_run=(project.enabled and not project_dispatch_block_reasons.get(project.id)),
+          can_run=(
+            project_development_access.get(project.id, false)
+            and project.enabled
+            and not project_dispatch_block_reasons.get(project.id)
+          ),
           enabled_steps=0,
           reason=(
-            "Project is disabled."
+            "You do not have development/test access to this Project."
+            if not project_development_access.get(project.id, false)
+            else "Project is disabled."
             if not project.enabled
             else project_dispatch_block_reasons.get(project.id, "")
           )
@@ -239,7 +247,9 @@
                 >Dispatch</button>
               </form>
 
+              {% if journeyman_can_manage_automation %}
               <a class="action-menu-item" href="{{ url_for('main.schedule_new', project_id=project.id) }}">Schedule</a>
+              {% endif %}
 
               {% if project.steps|length > 1 %}
                 <button
@@ -253,10 +263,12 @@
                 >{{ project_flowcharts[project.id]|tojson }}</script>
               {% endif %}
 
+              {% if journeyman_can_manage_automation %}
               <form method="post" action="{{ url_for('main.project_clone', project_id=project.id) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="action-menu-item" type="submit">Clone</button>
               </form>
+              {% endif %}
 
               {% if not project.builtin_key %}
                 <details class="action-submenu">
@@ -276,8 +288,11 @@
                 </details>
               {% endif %}
 
-              <a class="action-menu-item" href="{{ url_for('main.project_edit', project_id=project.id) }}">Edit</a>
+              {% if project_development_access.get(project.id, false) or journeyman_is_auditor %}
+              <a class="action-menu-item" href="{{ url_for('main.project_edit', project_id=project.id) }}">{{ "View" if journeyman_is_auditor and not project_development_access.get(project.id, false) else "Edit" }}</a>
+              {% endif %}
 
+              {% if journeyman_can_manage_automation %}
               <form
                 method="post"
                 action="{{ url_for('main.project_delete', project_id=project.id) }}"
@@ -286,6 +301,7 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="action-menu-item danger" type="submit">Delete</button>
               </form>
+              {% endif %}
             </div>
           </details>
         </td>

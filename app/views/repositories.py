@@ -3,7 +3,7 @@ from app.services.ansible_view import repository_configuration_yaml
 
 from app.routes import (
     Credential, GitError, ProjectStep, Repository, _clean, abort, bp, current_app,
-    current_user_is_admin, current_username, datetime, db, flash, or_, redirect,
+    current_user_can_access_resources, current_user_can_manage_resources, current_username, datetime, db, flash, or_, redirect,
     remove_repository_checkout, render_template, request, sync_repository,
     timezone, url_for,
 )
@@ -77,7 +77,7 @@ def _apply_repository_credential_from_form(repository):
 
 @bp.get("/repositories/<int:repository_id>/ansible/configuration")
 def repository_show_ansible_configuration(repository_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     repository = db.get_or_404(Repository, repository_id)
     if repository.url == BUILTIN_REPOSITORY_URL:
@@ -153,7 +153,7 @@ def repositories():
 
 @bp.route("/repositories/new", methods=["GET", "POST"])
 def repository_new():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     if request.method == "POST":
@@ -233,7 +233,7 @@ def repository_new():
     methods=["GET", "POST"],
 )
 def repository_edit(repository_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     repository = db.get_or_404(Repository, repository_id)
@@ -329,7 +329,7 @@ def repository_edit(repository_id):
 @bp.post("/repositories/<int:repository_id>/sync")
 @costly_operation_rate_limit("repository_sync")
 def repository_sync(repository_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     repository = db.get_or_404(Repository, repository_id)
@@ -391,7 +391,7 @@ def repository_delete(repository_id):
     Historical job repository snapshots do not prevent deletion.
     """
 
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     repository = db.get_or_404(

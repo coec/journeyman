@@ -29,13 +29,14 @@ from app.models import Credential, Runner
 from app.services.url_credentials import URLCredentialError, proxy_url_for_credential
 
 from app.routes import (
-    PACKAGE_ACCESS_AUTHENTICATED, PACKAGE_ACCESS_RESTRICTED,
+    CONFIGURABLE_PACKAGE_ACCESS_MODES,
+    PACKAGE_ACCESS_RESTRICTED,
     PackageLaunchError, PackageLaunchTokenError, Project,
     ProjectExecutionPreviewError, ProjectExecutionQueueError,
-    ProjectPackage, VALID_PACKAGE_ACCESS_MODES, VARIABLE_NAME_PATTERN,
+    ProjectPackage, VARIABLE_NAME_PATTERN,
     _clean, abort, apply_package_input_rows, apply_package_permission_rows,
     bp, can_launch_package,
-    create_package_launch_token, current_app, current_user_is_admin,
+    create_package_launch_token, current_app, current_user_can_access_automation, current_user_can_manage_automation, current_user_can_view_automation,
     current_username, db, flash, package_definition_digest,
     package_execution_from_token, package_input_rows_for_form,
     package_input_rows_from_request, package_launch_fields,
@@ -400,11 +401,7 @@ def _validate_managed_runner_target(package):
 PACKAGE_ACCESS_CHOICES = (
     (
         PACKAGE_ACCESS_RESTRICTED,
-        "Restricted",
-    ),
-    (
-        PACKAGE_ACCESS_AUTHENTICATED,
-        "All authenticated users",
+        "Explicit User/Team grants",
     ),
 )
 
@@ -643,7 +640,7 @@ def _validate_project_package_form(
 
     if (
         form_data["access_mode"]
-        not in VALID_PACKAGE_ACCESS_MODES
+        not in CONFIGURABLE_PACKAGE_ACCESS_MODES
     ):
         errors.append(
             "The selected access mode is invalid."
@@ -693,7 +690,8 @@ def _validate_project_package_form(
 
 @bp.get("/packages")
 def packages():
-    is_admin = current_user_is_admin()
+    is_admin = current_user_can_manage_automation()
+    can_view_all = current_user_can_view_automation()
     if is_admin:
         ensure_builtin_admin_automation()
 
@@ -709,7 +707,7 @@ def packages():
         if can_launch_package(package)
     }
 
-    if not is_admin:
+    if not can_view_all:
         rows = [
             package
             for package in rows
@@ -736,7 +734,7 @@ def _launchable_package(package_id):
         package_id,
     )
 
-    if is_builtin_package(package) and not current_user_is_admin():
+    if is_builtin_package(package) and not current_user_can_manage_automation():
         abort(403)
 
     if not can_launch_package(package):
@@ -1128,7 +1126,7 @@ def project_package_run(package_id):
     methods=["GET", "POST"],
 )
 def project_package_new():
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
     projects = (
@@ -1290,7 +1288,7 @@ def _package_ansible_context(package):
 
 @bp.get("/packages/<int:package_id>/ansible")
 def project_package_show_ansible(package_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
     package = db.get_or_404(ProjectPackage, package_id)
@@ -1305,7 +1303,7 @@ def project_package_show_ansible(package_id):
 
 @bp.get("/packages/<int:package_id>/ansible/configuration")
 def project_package_show_ansible_configuration(package_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
     package = db.get_or_404(ProjectPackage, package_id)
@@ -1321,7 +1319,7 @@ def project_package_show_ansible_configuration(package_id):
 
 @bp.get("/packages/<int:package_id>/ansible/operation")
 def project_package_show_ansible_operation(package_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
     package = db.get_or_404(ProjectPackage, package_id)
@@ -1344,7 +1342,7 @@ def project_package_show_ansible_operation(package_id):
     methods=["GET", "POST"],
 )
 def project_package_edit(package_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
     package = db.get_or_404(
@@ -1501,7 +1499,7 @@ def project_package_edit(package_id):
     "/packages/<int:package_id>/delete"
 )
 def project_package_delete(package_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
     package = db.get_or_404(

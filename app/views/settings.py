@@ -3,7 +3,7 @@
 from flask import abort, current_app, flash, redirect, render_template, request, url_for
 
 from app import db
-from app.auth import current_user_is_admin, current_username
+from app.auth import current_user_can_access_platform, current_user_is_admin, current_username
 from app.services.user_preferences import get_or_create_user_preferences
 from app.services.api_tokens import create_api_token
 from app.services.name_ordering import reserved_name_ordering
@@ -43,7 +43,7 @@ from app.services.system_settings_apply import (
 
 @bp.route("/settings/environment-builds", methods=["GET", "POST"])
 def environment_build_settings():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
     settings = get_or_create_environment_build_settings()
@@ -125,7 +125,7 @@ def environment_build_proxy_test():
 
 @bp.route("/settings/data-retention", methods=["GET", "POST"])
 def data_retention_settings():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
     settings = get_or_create_system_settings()
@@ -175,7 +175,7 @@ def data_retention_settings():
 
 @bp.route("/settings", methods=["GET", "POST"])
 def system_settings():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
     settings = get_or_create_system_settings()
@@ -366,7 +366,7 @@ def user_api_token_revoke(token_id):
 
 @bp.route("/settings/release-testing", methods=["GET", "POST"])
 def release_testing_settings():
-    if not current_user_is_admin():
+    if not current_user_can_access_platform():
         abort(403)
 
     from app.credential_types import CREDENTIAL_TYPE_MACHINE

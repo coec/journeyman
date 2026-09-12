@@ -353,7 +353,14 @@ def create_app(config_object=None, *, instance_path=None):
 
     from app.auth import (
         current_display_name,
+        current_user_can_audit,
+        current_user_can_manage_automation,
+        current_user_can_manage_resources,
+        current_user_can_view_automation,
+        current_user_can_view_resources,
+        current_user_can_view_platform,
         current_user_is_admin,
+        current_user_is_auditor,
         current_username,
     )
 
@@ -376,6 +383,14 @@ def create_app(config_object=None, *, instance_path=None):
                 "journeyman_username": "",
                 "journeyman_display_name": "",
                 "journeyman_is_admin": False,
+                "journeyman_can_manage_automation": False,
+                "journeyman_can_manage_resources": False,
+                "journeyman_can_view_automation": False,
+                "journeyman_can_view_resources": False,
+                "journeyman_can_view_platform": False,
+                "journeyman_can_audit": False,
+                "journeyman_is_auditor": False,
+                "journeyman_read_only": False,
                 "journeyman_initials": "",
                 "journeyman_break_glass": False,
                 "journeyman_break_glass_activated_at": "",
@@ -408,6 +423,13 @@ def create_app(config_object=None, *, instance_path=None):
         from app.services.secret_lifecycle import security_notices_for_identity
         from app.services.navigation_status import visible_running_job_count
         is_admin = current_user_is_admin()
+        can_manage_automation = current_user_can_manage_automation()
+        can_manage_resources = current_user_can_manage_resources()
+        can_view_automation = current_user_can_view_automation()
+        can_view_resources = current_user_can_view_resources()
+        can_view_platform = current_user_can_view_platform()
+        can_audit = current_user_can_audit()
+        is_auditor = current_user_is_auditor()
         security_notices = security_notices_for_identity(
             username, is_admin=is_admin
         )
@@ -426,6 +448,14 @@ def create_app(config_object=None, *, instance_path=None):
             "journeyman_username": username,
             "journeyman_display_name": display_name,
             "journeyman_is_admin": is_admin,
+            "journeyman_can_manage_automation": can_manage_automation,
+            "journeyman_can_manage_resources": can_manage_resources,
+            "journeyman_can_view_automation": can_view_automation,
+            "journeyman_can_view_resources": can_view_resources,
+            "journeyman_can_view_platform": can_view_platform,
+            "journeyman_can_audit": can_audit,
+            "journeyman_is_auditor": is_auditor,
+            "journeyman_read_only": is_auditor,
             "journeyman_security_notices": security_notices,
             "journeyman_system_message_count": len(security_notices),
             "journeyman_running_job_count": visible_running_job_count(

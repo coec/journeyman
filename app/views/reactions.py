@@ -14,7 +14,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app import csrf, db
-from app.auth import current_user_is_admin, current_username
+from app.auth import current_user_can_access_automation, current_user_can_manage_automation, current_username
 from app.models import ProjectPackage, Reaction, Reactor, Runner, Signal, SignalSource
 from app.models.reaction import (
     REACTOR_AUTOMATIC,
@@ -49,7 +49,7 @@ ZABBIX_TIMESTAMP_WINDOW_SECONDS = 300
 
 
 def _admin_required():
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
 

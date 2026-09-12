@@ -25,10 +25,18 @@ def _legacy_principal_key(principal_type, principal_name):
 
 
 def _guid_principal_key(principal_type, object_guid):
-    return "{}|{}".format(
+    return "guid|{}|{}".format(
         _clean(principal_type),
         _clean(object_guid).lower(),
     )
+
+
+def _local_principal_key(permission):
+    if permission.user_account_id:
+        return "user|{}".format(permission.user_account_id)
+    if permission.team_id:
+        return "team|{}".format(permission.team_id)
+    return None
 
 
 def package_permission_rows_from_request(form):
@@ -77,12 +85,13 @@ def package_permission_rows_for_form(package):
         package.permissions,
         start=1,
     ):
-        if permission.principal_object_guid:
+        principal_key = _local_principal_key(permission)
+        if principal_key is None and permission.principal_object_guid:
             principal_key = _guid_principal_key(
                 permission.principal_type,
                 permission.principal_object_guid,
             )
-        else:
+        if principal_key is None:
             principal_key = _legacy_principal_key(
                 permission.principal_type,
                 permission.principal_name,
@@ -106,6 +115,8 @@ def package_permission_rows_for_form(package):
                     permission.principal_dn
                     or ""
                 ),
+                "user_account_id": permission.user_account_id,
+                "team_id": permission.team_id,
             }
         )
 
@@ -163,6 +174,8 @@ def _validate_legacy_row(
         "principal_dn": _clean(
             row.get("principal_dn")
         ),
+        "user_account_id": row.get("user_account_id"),
+        "team_id": row.get("team_id"),
     }
 
 
@@ -174,9 +187,9 @@ def validate_package_permission_rows(
     Validate Package execute grants.
 
     When allowed_principals is supplied, every submitted value must be
-    a canonical directory-backed User or registered Team selection.
+    a canonical eligible Journeyman User or Team selection.
     Omitting it retains legacy validation for lower-level unit tests and
-    migration utilities; web routes always supply the directory map.
+    migration utilities; web routes always supply the local principal map.
     """
 
     errors = []
@@ -205,7 +218,7 @@ def validate_package_permission_rows(
             if normalised is None:
                 errors.append(
                     "Permission {} must select an eligible "
-                    "Active Directory user or registered Team."
+                    "Journeyman User or Team."
                     .format(row_number)
                 )
                 normalised = {
@@ -213,6 +226,8 @@ def validate_package_permission_rows(
                     "principal_name": "",
                     "principal_object_guid": None,
                     "principal_dn": "",
+                    "user_account_id": None,
+                    "team_id": None,
                 }
             else:
                 normalised = dict(normalised)
@@ -301,6 +316,8 @@ def apply_package_permission_rows(
                     row.get("principal_dn")
                     or ""
                 ),
+                user_account_id=row.get("user_account_id"),
+                team_id=row.get("team_id"),
             )
         )
 

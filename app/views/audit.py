@@ -14,7 +14,7 @@ from flask import (
 from sqlalchemy import func, or_
 
 from app import db
-from app.auth import current_user_is_admin
+from app.auth import current_user_can_audit
 from app.models.audit_log import AuditLog
 from app.routes import bp
 from app.auth import current_username
@@ -27,7 +27,7 @@ def _clean(value):
 
 @bp.get("/audit-log")
 def audit_log():
-    if not current_user_is_admin():
+    if not current_user_can_audit():
         abort(403)
 
     page = request.args.get("page", 1, type=int)
@@ -83,7 +83,7 @@ def audit_log():
 
 @bp.get("/audit-log/latest-id")
 def audit_log_latest_id():
-    if not current_user_is_admin():
+    if not current_user_can_audit():
         abort(403)
 
     latest_id = db.session.query(
@@ -95,7 +95,7 @@ def audit_log_latest_id():
 
 @bp.get("/audit-log/events")
 def audit_log_events():
-    if not current_user_is_admin():
+    if not current_user_can_audit():
         abort(403)
 
     after_id = max(request.args.get("after_id", 0, type=int), 0)

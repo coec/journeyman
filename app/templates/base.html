@@ -46,7 +46,7 @@
           ▣ Packages
       </a>
 
-      {% if journeyman_is_admin %}
+      {% if journeyman_can_view_automation %}
       <span class="nav-heading">AUTOMATION</span>
         <a
           class="{% if request.path.startswith('/projects') %}active{% endif %}"
@@ -64,7 +64,9 @@
         <a class="{% if request.path.startswith('/signals') %}active{% endif %}" href="{{ url_for('main.signals') }}">⌁ Signals</a>
         <a class="{% if request.path.startswith('/reactors') %}active{% endif %}" href="{{ url_for('main.reactors') }}">⚡ Reactors</a>
         <a class="{% if request.path.startswith('/reactions') %}active{% endif %}" href="{{ url_for('main.reactions') }}">↯ Reactions</a>
+      {% endif %}
 
+      {% if journeyman_can_view_resources %}
         <span class="nav-heading">RESOURCES</span>
         <a
           class="{% if request.path.startswith('/repositories') %}active{% endif %}"
@@ -91,12 +93,14 @@
           ▱ Environments
         </a>
         <a
-          class="{% if request.path.startswith('/notification-targets') %}active{% endif %}"
-          href="{{ url_for('main.notification_targets') }}"
+          class="{% if request.path.startswith('/runners') %}active{% endif %}"
+          href="{{ url_for('main.runners') }}"
         >
-          ✉ Notification Targets
+          ⇆ Runners
         </a>
+      {% endif %}
 
+      {% if journeyman_can_view_platform %}
         <span class="nav-heading">ACCESS CONTROL</span>
         <a
           class="{% if request.path.startswith('/users') %}active{% endif %}"
@@ -119,10 +123,10 @@
           ⚙ Settings
         </a>
         <a
-          class="{% if request.path.startswith('/runners') %}active{% endif %}"
-          href="{{ url_for('main.runners') }}"
+          class="{% if request.path.startswith('/notification-targets') %}active{% endif %}"
+          href="{{ url_for('main.notification_targets') }}"
         >
-          ⇆ Runners
+          ✉ Notification Targets
         </a>
         <a
           class="{% if request.path.startswith('/system-status') %}active{% endif %}"
@@ -130,6 +134,10 @@
         >
           ◉ System Status
         </a>
+      {% endif %}
+
+      {% if journeyman_can_audit %}
+        <span class="nav-heading">AUDIT</span>
         <a
           class="{% if request.path.startswith('/audit-log') %}active{% endif %}"
           href="{{ url_for('main.audit_log') }}"

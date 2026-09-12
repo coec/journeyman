@@ -5,65 +5,75 @@
 <div class="page-heading">
   <div>
     <h1>Users</h1>
-    <p>Read-only Active Directory users eligible to access Journeyman through the configured role groups.</p>
+    <p>Journeyman-local roles and rights. Authentication remains separate; these records do not create passwords or local login credentials.</p>
   </div>
-  <a class="button" href="{{ url_for('main.directory_settings') }}">Directory Settings</a>
+  {% if journeyman_is_admin %}<a class="button primary" href="{{ url_for('main.user_new') }}">Add User</a>{% endif %}
 </div>
 
-{% if not directory_settings.enabled %}
-  <div class="panel placeholder">
-    <h2>Directory integration is disabled</h2>
-    <p>Configure and enable LDAP before Journeyman can list eligible users.</p>
-  </div>
-{% elif directory_error %}
-  <div class="flash error">Unable to read Active Directory: {{ directory_error }}</div>
-{% else %}
-  <div class="stats">
-    <div class="stat"><span>Eligible users</span><strong>{{ users|length }}</strong></div>
-    <div class="stat"><span>Administrators</span><strong>{{ users|selectattr('role', 'equalto', 'Administrator')|list|length }}</strong></div>
-    <div class="stat"><span>Users</span><strong>{{ users|selectattr('role', 'equalto', 'User')|list|length }}</strong></div>
-    <div class="stat"><span>Nested groups</span><strong>{% if directory_settings.include_nested_groups %}On{% else %}Off{% endif %}</strong></div>
-  </div>
+<div class="stats">
+  <div class="stat"><span>Local users</span><strong>{{ users|length }}</strong></div>
+  <div class="stat"><span>Enabled</span><strong>{{ enabled_count }}</strong></div>
+  <div class="stat"><span>Admins</span><strong>{{ admin_count }}</strong></div>
+</div>
 
-  <section class="panel repository-list">
-    {% if users %}
-      <table>
-        <thead>
+<section class="panel repository-list">
+  {% if users %}
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Display name</th>
+          <th>Status</th>
+          <th>Roles</th>
+          <th>Rights</th>
+          <th>Teams</th>
+          <th>Direct Package grants</th>
+          <th>Last login</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
           <tr>
-            <th>Username</th>
-            <th>Display name</th>
-            <th>Role</th>
-            <th>Direct Package grants</th>
-            <th>UPN</th>
-            <th>Email</th>
+            <td class="repository-name">{{ user.username }}</td>
+            <td>{{ user.display_name or '—' }}</td>
+            <td><span class="status {% if user.enabled %}status-successful{% else %}status-failed{% endif %}">{{ 'Enabled' if user.enabled else 'Disabled' }}</span></td>
+            <td>
+              {% if user.roles %}
+                {{ user.roles|map(attribute='name')|join(', ') }}
+              {% else %}
+                <span class="muted">None</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if user.rights %}
+                {{ user.rights|map(attribute='name')|join(', ') }}
+              {% else %}
+                <span class="muted">None</span>
+              {% endif %}
+            </td>
+            <td>{{ user.teams|map(attribute='display_name')|join(', ') if user.teams else '—' }}</td>
+            <td>
+              {% set package_names = user_package_grants.get(user.id, []) %}
+              {{ package_names|join(', ') if package_names else '—' }}
+            </td>
+            <td>{{ user.last_login_at.strftime('%Y-%m-%d %H:%M:%S') if user.last_login_at else 'Never' }}</td>
+            <td>{% if journeyman_is_admin %}<a class="button" href="{{ url_for('main.user_edit', user_id=user.id) }}">Edit</a>{% else %}<span class="muted">Read only</span>{% endif %}</td>
           </tr>
-        </thead>
-        <tbody>
-          {% for user in users %}
-            <tr>
-              <td class="repository-name">{{ user.username }}</td>
-              <td>{{ user.display_name }}</td>
-              <td><span class="status {% if user.role == 'Administrator' %}status-running{% else %}status-successful{% endif %}">{{ user.role }}</span></td>
-              <td>
-                {% set package_names = user_package_grants.get(user.object_guid|lower, []) %}
-                {% if package_names %}
-                  {{ package_names|join(', ') }}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td class="break">{{ user.user_principal_name or '—' }}</td>
-              <td class="break">{{ user.mail or '—' }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% else %}
-      <div class="empty-state">
-        <h2>No eligible users found</h2>
-        <p>Check the configured role group names and LDAP search bases.</p>
-      </div>
-    {% endif %}
-  </section>
-{% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty-state">
+      <h2>No Journeyman users yet</h2>
+      <p>Users will normally appear after their first directory login. You may also pre-provision an authorization record by username.</p>
+    </div>
+  {% endif %}
+</section>
+
+<div class="panel">
+  <h2>Authorization note</h2>
+  <p>Roles, rights, Team membership and Package grants are managed locally by Journeyman. AD/LDAP remains the authentication source.</p>
+  <p>The break-glass administrator is intentionally not represented as a normal user account here.</p>
+</div>
 {% endblock %}

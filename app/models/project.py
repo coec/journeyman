@@ -1,9 +1,44 @@
 from datetime import datetime, timezone
 from app.security_scope import SECURITY_SCOPE_PRIVATE
+from sqlalchemy.orm import validates
 
 from app import db
 
 
+
+
+project_development_user = db.Table(
+    "project_development_user",
+    db.Column(
+        "project_id",
+        db.Integer,
+        db.ForeignKey("project.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    db.Column(
+        "user_account_id",
+        db.Integer,
+        db.ForeignKey("user_account.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
+
+
+project_development_team = db.Table(
+    "project_development_team",
+    db.Column(
+        "project_id",
+        db.Integer,
+        db.ForeignKey("project.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    db.Column(
+        "team_id",
+        db.Integer,
+        db.ForeignKey("team.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 project_credential = db.Table(
     "project_credential",
     db.Column(
@@ -23,6 +58,21 @@ project_credential = db.Table(
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+PROJECT_APPROVAL_DEVELOPMENT = "development"
+PROJECT_APPROVAL_REVIEW_REQUESTED = "review_requested"
+PROJECT_APPROVAL_TECHNICALLY_APPROVED = "technically_approved"
+PROJECT_APPROVAL_APPROVED = "approved"
+PROJECT_APPROVAL_STALE = "stale"
+
+VALID_PROJECT_APPROVAL_STATES = {
+    PROJECT_APPROVAL_DEVELOPMENT,
+    PROJECT_APPROVAL_REVIEW_REQUESTED,
+    PROJECT_APPROVAL_TECHNICALLY_APPROVED,
+    PROJECT_APPROVAL_APPROVED,
+    PROJECT_APPROVAL_STALE,
+}
 
 
 class Project(db.Model):
@@ -57,6 +107,12 @@ class Project(db.Model):
         db.Boolean,
         nullable=False,
         default=True,
+    )
+
+    approval_state = db.Column(
+        db.String(32),
+        nullable=False,
+        default=PROJECT_APPROVAL_DEVELOPMENT,
     )
 
     builtin_key = db.Column(
@@ -211,6 +267,26 @@ class Project(db.Model):
         order_by="ProjectPackage.name",
     )
 
+    revisions = db.relationship(
+        "ProjectRevision",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectRevision.sequence",
+    )
+
+    development_users = db.relationship(
+        "UserAccount",
+        secondary=project_development_user,
+        order_by="UserAccount.username",
+    )
+
+    development_teams = db.relationship(
+        "Team",
+        secondary=project_development_team,
+        order_by="Team.display_name",
+    )
+
     owner = db.Column(
         db.String(255),
         nullable=False,
@@ -222,6 +298,15 @@ class Project(db.Model):
         nullable=False,
         default="private",
     )
+
+    @validates("approval_state")
+    def _validate_approval_state(self, _key, value):
+        value = str(value or "").strip()
+        if value not in VALID_PROJECT_APPROVAL_STATES:
+            raise ValueError(
+                "Invalid Project approval state: {}".format(value)
+            )
+        return value
 
     def __repr__(self):
         return f"<Project {self.name!r}>"

@@ -3,7 +3,14 @@ from .audit_log import AuditLog
 from .auth_session import AuthSession
 from .api_token import ApiToken
 from .credential import Credential
-from .directory import DirectoryServer, DirectorySetting, Team
+from .directory import (
+    DirectoryServer,
+    DirectorySetting,
+    Team,
+    TEAM_SOURCE_DIRECTORY_LEGACY,
+    TEAM_SOURCE_LOCAL,
+    team_user_account,
+)
 from .environment import Environment
 from .environment_build_setting import EnvironmentBuildSetting
 from .release_test_setting import ReleaseTestSetting
@@ -16,7 +23,18 @@ from .job_repository_snapshot import JobRepositorySnapshot
 from .job_credential_snapshot import JobCredentialSnapshot
 from .job_inventory_snapshot import JobInventorySnapshot
 from .job_package_snapshot import JobPackageSnapshot
-from .project import Project
+from .project import (
+    Project,
+    PROJECT_APPROVAL_APPROVED,
+    PROJECT_APPROVAL_DEVELOPMENT,
+    PROJECT_APPROVAL_REVIEW_REQUESTED,
+    PROJECT_APPROVAL_STALE,
+    PROJECT_APPROVAL_TECHNICALLY_APPROVED,
+    VALID_PROJECT_APPROVAL_STATES,
+    project_development_team,
+    project_development_user,
+)
+from .project_revision import ProjectRevision
 from .project_schedule import ProjectSchedule
 from .project_package import (
     ProjectPackage,
@@ -31,6 +49,13 @@ from .runner_environment_sync import RunnerEnvironmentSync
 from .runner_crew import RunnerCrew, runner_crew_member
 from .system_setting import SystemSetting
 from .user_preference import UserPreference
+from .user_account import (
+    AuthorizationRight,
+    AuthorizationRole,
+    UserAccount,
+    user_account_right,
+    user_account_role,
+)
 
 
 __all__ = [
@@ -52,6 +77,15 @@ __all__ = [
     "JobStepHostResult",
     "JobStepExecutionSlice",
     "Project",
+    "ProjectRevision",
+    "PROJECT_APPROVAL_APPROVED",
+    "PROJECT_APPROVAL_DEVELOPMENT",
+    "PROJECT_APPROVAL_REVIEW_REQUESTED",
+    "PROJECT_APPROVAL_STALE",
+    "PROJECT_APPROVAL_TECHNICALLY_APPROVED",
+    "VALID_PROJECT_APPROVAL_STATES",
+    "project_development_team",
+    "project_development_user",
     "ProjectSchedule",
     "ProjectPackagePermission",
     "ProjectPackageInput",
@@ -65,7 +99,15 @@ __all__ = [
     "runner_crew_member",
     "SystemSetting",
     "Team",
+    "TEAM_SOURCE_DIRECTORY_LEGACY",
+    "TEAM_SOURCE_LOCAL",
+    "team_user_account",
     "UserPreference",
+    "AuthorizationRight",
+    "AuthorizationRole",
+    "UserAccount",
+    "user_account_right",
+    "user_account_role",
     "JobInventorySnapshot",
     "JobPackageSnapshot",
     "SignalSource",

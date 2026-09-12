@@ -4,7 +4,7 @@ from app.services.ansible_view import schedule_configuration_yaml
 from datetime import datetime, timezone
 
 from app.routes import (
-    Project, abort, bp, current_user_is_admin, current_username, db, flash,
+    Project, abort, bp, current_user_can_access_automation, current_user_can_manage_automation, current_username, db, flash,
     redirect, render_template, request, url_for,
 )
 from app.models import ProjectSchedule
@@ -21,7 +21,7 @@ from app.services.schedules import (
 
 
 def _require_admin():
-    if not current_user_is_admin():
+    if not current_user_can_access_automation():
         abort(403)
 
 

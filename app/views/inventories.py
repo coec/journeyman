@@ -24,7 +24,7 @@ from app.routes import (
     InventoryCacheError, InventoryDependencyError, InventoryResolutionError,
     Project, ProjectStep, _inventory_config_from_form, _inventory_form_data,
     _inventory_form_from_request, _validate_inventory_form, abort, bp,
-    current_app, current_user_is_admin, current_username, db, delete_inventory_cache,
+    current_app, current_user_can_access_resources, current_user_can_manage_resources, current_username, db, delete_inventory_cache,
     direct_dependants_by_inventory, direct_inventory_dependants, flash,
     inventory_config, inventory_host_count, json, redirect, refresh_inventory,
     render_template, request, resolve_inventory, url_for, jsonify,
@@ -34,7 +34,7 @@ from app.routes import (
 
 @bp.get("/inventories/<int:inventory_id>/ansible/configuration")
 def inventory_show_ansible_configuration(inventory_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     inventory = db.get_or_404(Inventory, inventory_id)
     return render_template(
@@ -49,7 +49,7 @@ def inventory_show_ansible_configuration(inventory_id):
 
 @bp.get("/inventories")
 def inventories():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     rows = Inventory.query.order_by(*reserved_name_ordering(Inventory.name)).all()
@@ -231,7 +231,7 @@ def _inventory_credentials():
 @bp.get("/inventories/<int:inventory_id>/host-variable-paths")
 def inventory_host_variable_paths(inventory_id):
     """Return hostvar paths observed in the cached/resolved inventory."""
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     inventory = db.get_or_404(Inventory, inventory_id)
@@ -252,7 +252,7 @@ def inventory_host_variable_paths(inventory_id):
     methods=["GET", "POST"],
 )
 def inventory_new():
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     credentials = _inventory_credentials()
@@ -371,7 +371,7 @@ def inventory_new():
     methods=["GET", "POST"],
 )
 def inventory_edit(inventory_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     inventory = db.get_or_404(
@@ -521,7 +521,7 @@ def inventory_edit(inventory_id):
 )
 @costly_operation_rate_limit("inventory_refresh")
 def inventory_refresh(inventory_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     inventory = db.get_or_404(
@@ -862,7 +862,7 @@ def _composite_inspection_sources(inventory, *, bindings=None):
     methods=["GET", "POST"],
 )
 def inventory_preview(inventory_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     inventory = db.get_or_404(
@@ -1100,7 +1100,7 @@ def inventory_preview(inventory_id):
     "/inventories/<int:inventory_id>/delete"
 )
 def inventory_delete(inventory_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
 
     inventory = db.get_or_404(

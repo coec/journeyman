@@ -133,8 +133,8 @@
       </select>
 
       <small>
-        Restricted Packages require explicit User or Team
-        permissions before dispatch is enabled.
+        Packages are deny-by-default. Dispatch requires an explicit
+        Journeyman User or Team grant.
       </small>
     </label>
     <label>
@@ -230,7 +230,7 @@
         <h2>Dispatch Permissions</h2>
 
         <p>
-          Select eligible Journeyman users or registered AD Teams.
+          Select eligible Journeyman users or local Teams.
           Users are read from the configured Journeyman role groups.
         </p>
       </div>
@@ -247,7 +247,7 @@
 
     {% if permission_directory_error %}
       <div class="flash error">
-        Active Directory users could not be loaded:
+        Package principals could not be loaded:
         {{ permission_directory_error }}
         Registered Teams remain available, but direct User grants
         cannot be added until the directory is reachable.
@@ -328,7 +328,7 @@
     <div class="package-permission-help">
       <small>
         No explicit permissions means administrators only.
-        Team membership remains authoritative in Active Directory.
+        Team membership is managed locally in Journeyman.
         Submitted permissions are validated server-side; arbitrary
         usernames and group names are not accepted.
       </small>

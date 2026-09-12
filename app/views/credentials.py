@@ -9,7 +9,7 @@ from app.routes import (
     CREDENTIAL_TYPE_SOURCE_CONTROL, CREDENTIAL_TYPE_VAULT,
     CREDENTIAL_TYPE_ZABBIX, CREDENTIAL_TYPE_URL, CREDENTIAL_TYPE_CUSTOM, Credential, ProjectStep, SECURITY_SCOPE_CHOICES,
     VALID_CREDENTIAL_TYPES, VALID_SECURITY_SCOPES, _clean, abort, bp,
-    can_administer, current_app, current_user_is_admin, current_username, db, flash, jsonify, or_,
+    can_administer, current_app, current_user_can_access_resources, current_user_can_manage_resources, current_username, db, flash, jsonify, or_,
     record_audit_event, redirect, render_template, request, url_for,
     validate_credential_environment_variables,
 )
@@ -168,7 +168,7 @@ def _revealed_credential_values(credential, credential_data):
 
 @bp.get("/credentials/<int:credential_id>/ansible/configuration")
 def credential_show_ansible_configuration(credential_id):
-    if not current_user_is_admin():
+    if not current_user_can_access_resources():
         abort(403)
     credential = db.get_or_404(Credential, credential_id)
     return render_template(

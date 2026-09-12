@@ -49,6 +49,9 @@ _MULTI_VALUE_FORM_FIELDS = frozenset({
     "server_port",
     "server_use_ssl",
     "server_enabled",
+    "roles",
+    "rights",
+    "member_ids",
 })
 
 _MULTI_VALUE_FORM_PATTERNS = (

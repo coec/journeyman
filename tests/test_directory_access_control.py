@@ -282,106 +282,43 @@ def test_blank_bind_password_preserves_existing_secret(
         )
 
 
-def test_users_page_reads_role_users_from_directory(
-    app,
+def test_users_page_no_longer_reads_authorization_from_directory(
     client,
-    monkeypatch,
 ):
-    client.post(
-        "/settings/directory",
-        data=directory_form_data(),
-        headers=identity_headers("admin"),
-    )
-
-    fake_users = [
-        SimpleNamespace(
-            object_guid=(
-                "11111111-1111-1111-1111-111111111111"
-            ),
-            distinguished_name=(
-                "CN=Alice,OU=Users,DC=example,DC=com"
-            ),
-            username="alice",
-            display_name="Alice Example",
-            user_principal_name="alice@example.com",
-            mail="alice@example.com",
-            role="User",
-        ),
-        SimpleNamespace(
-            object_guid=(
-                "22222222-2222-2222-2222-222222222222"
-            ),
-            distinguished_name=(
-                "CN=Admin,OU=Users,DC=example,DC=com"
-            ),
-            username="admin",
-            display_name="Admin Example",
-            user_principal_name="admin@example.com",
-            mail="admin@example.com",
-            role="Administrator",
-        ),
-    ]
-
-    fake_client = SimpleNamespace(
-        role_users=lambda: fake_users,
-    )
-
-    monkeypatch.setattr(
-        routes,
-        "get_directory_client",
-        lambda settings: fake_client,
-    )
-
     response = client.get(
         "/users",
         headers=identity_headers("admin"),
     )
 
     assert response.status_code == 200
-    assert b"Alice Example" in response.data
-    assert b"Administrator" in response.data
+    assert b"Journeyman-local roles and rights" in response.data
 
 
-def test_team_is_revalidated_and_stored_by_guid(
+def test_admin_can_create_local_team_with_local_members(
     app,
     client,
-    monkeypatch,
 ):
-    client.post(
-        "/settings/directory",
-        data=directory_form_data(),
-        headers=identity_headers("admin"),
-    )
+    from app.models import AuthorizationRole, UserAccount
+    from app.services.authorization import ROLE_USER
 
-    group = SimpleNamespace(
-        object_guid=(
-            "33333333-3333-3333-3333-333333333333"
-        ),
-        distinguished_name=(
-            "CN=Network Operations,OU=Groups,"
-            "DC=example,DC=com"
-        ),
-        sam_account_name="Network Operations",
-        display_name="Network Operations",
-        description="Network operations team.",
-    )
-
-    fake_client = SimpleNamespace(
-        find_group_by_dn=lambda dn: group,
-    )
-
-    monkeypatch.setattr(
-        routes,
-        "get_directory_client",
-        lambda settings: fake_client,
-    )
+    with app.app_context():
+        user_role = AuthorizationRole.query.filter_by(name=ROLE_USER).one()
+        account = UserAccount(
+            username="alice",
+            display_name="Alice Example",
+            enabled=True,
+        )
+        db.session.add(account)
+        account.roles.append(user_role)
+        db.session.commit()
+        user_id = account.id
 
     response = client.post(
-        "/teams",
+        "/teams/new",
         data={
-            "distinguished_name": (
-                group.distinguished_name
-            ),
+            "display_name": "Network Operations",
+            "description": "Network operations team.",
+            "member_ids": [str(user_id)],
         },
         headers=identity_headers("admin"),
         follow_redirects=False,
@@ -391,120 +328,72 @@ def test_team_is_revalidated_and_stored_by_guid(
 
     with app.app_context():
         team = Team.query.one()
-        assert team.object_guid == group.object_guid
-        assert team.display_name == (
-            "Network Operations"
-        )
+        assert team.display_name == "Network Operations"
+        assert team.source_kind == "local"
         assert team.created_by == "admin"
+        assert [member.username for member in team.members] == ["alice"]
 
 
-def test_directory_backed_permission_validation_rejects_free_text():
+def test_local_permission_validation_rejects_free_text():
     from app.services.project_package_permissions import (
         validate_package_permission_rows,
     )
 
     errors, rows = validate_package_permission_rows(
-        [
-            {
-                "principal_key": (
-                    "legacy|user|made.up.user"
-                ),
-            }
-        ],
+        [{"principal_key": "legacy|user|made.up.user"}],
         allowed_principals={},
     )
 
     assert errors
-    assert "eligible Active Directory user" in errors[0]
+    assert "eligible Journeyman User or Team" in errors[0]
     assert rows[0]["principal_name"] == ""
 
 
-def test_directory_backed_permission_uses_canonical_guid():
+def test_local_permission_uses_canonical_local_reference():
     from app.services.project_package_permissions import (
         validate_package_permission_rows,
     )
 
-    object_guid = (
-        "44444444-4444-4444-4444-444444444444"
-    )
-    key = "user|{}".format(object_guid)
+    key = "user|7"
     canonical = {
         "principal_type": "user",
         "principal_name": "alice",
-        "principal_object_guid": object_guid,
-        "principal_dn": (
-            "CN=Alice,OU=Users,DC=example,DC=com"
-        ),
+        "principal_object_guid": None,
+        "principal_dn": "",
+        "user_account_id": 7,
+        "team_id": None,
     }
 
     errors, rows = validate_package_permission_rows(
-        [
-            {
-                "principal_key": key,
-            }
-        ],
-        allowed_principals={
-            key: canonical,
-        },
+        [{"principal_key": key}],
+        allowed_principals={key: canonical},
     )
 
     assert errors == []
     assert rows == [canonical]
 
 
-def test_package_team_permission_is_selected_from_registered_team(
+def test_package_team_permission_is_selected_from_local_team(
     app,
     client,
     seeded_packages,
-    monkeypatch,
 ):
-    import app.services.package_principals as package_principals
-
-    client.post(
-        "/settings/directory",
-        data=directory_form_data(),
-        headers=identity_headers("admin"),
-    )
-
-    team_guid = (
-        "55555555-5555-5555-5555-555555555555"
-    )
-
     with app.app_context():
-        team = Team(
-            object_guid=team_guid,
-            distinguished_name=(
-                "CN=Automation Support,OU=Groups,"
-                "DC=example,DC=com"
-            ),
-            sam_account_name="Automation Support",
+        team = Team.new_local(
             display_name="Automation Support",
             description="",
             created_by="admin",
         )
         db.session.add(team)
         db.session.commit()
-
-    fake_client = SimpleNamespace(
-        role_users=lambda: [],
-    )
-
-    monkeypatch.setattr(
-        package_principals,
-        "get_directory_client",
-        lambda settings: fake_client,
-    )
+        team_id = team.id
 
     response = client.post(
         "/packages/new",
         data={
             "name": "Team Permission Package",
             "description": "",
-            "project_id": str(
-                seeded_packages[
-                    "enabled_project"
-                ]
-            ),
+            "project_id": str(seeded_packages["enabled_project"]),
             "enabled": "on",
             "access_mode": "restricted",
             "warning_message": "",
@@ -512,9 +401,7 @@ def test_package_team_permission_is_selected_from_registered_team(
             "confirmation_message": "",
             "fixed_vars_yaml": "{}",
             "package_permission_row": ["1"],
-            "package_permission_1_principal_key": (
-                "group|{}".format(team_guid)
-            ),
+            "package_permission_1_principal_key": "team|{}".format(team_id),
         },
         headers=identity_headers("admin"),
         follow_redirects=False,
@@ -526,16 +413,11 @@ def test_package_team_permission_is_selected_from_registered_team(
         package = ProjectPackage.query.filter_by(
             name="Team Permission Package"
         ).one()
-
         assert len(package.permissions) == 1
         permission = package.permissions[0]
         assert permission.principal_type == "group"
-        assert permission.principal_name == (
-            "Automation Support"
-        )
-        assert permission.principal_object_guid == (
-            team_guid
-        )
+        assert permission.principal_name == "Automation Support"
+        assert permission.team_id == team_id
 
 
 def test_admin_and_user_role_groups_must_differ(app):
@@ -553,34 +435,27 @@ def test_admin_and_user_role_groups_must_differ(app):
 
 def test_package_grant_summary_skips_orphaned_permissions():
     """Stale permission rows must never crash the Users/Teams pages."""
-    from checks import assert_output_equal
-
     valid_permission = SimpleNamespace(
-        principal_object_guid=(
-            "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
-        ),
+        user_account_id=4,
+        team_id=None,
         package=SimpleNamespace(name="Valid Package"),
     )
+    team_permission = SimpleNamespace(
+        user_account_id=None,
+        team_id=7,
+        package=SimpleNamespace(name="Team Package"),
+    )
     orphaned_permission = SimpleNamespace(
-        principal_object_guid=(
-            "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
-        ),
+        user_account_id=5,
+        team_id=None,
         package=None,
     )
 
-    grants = routes._package_grants_by_principal_guid(
-        [valid_permission, orphaned_permission]
+    grants = routes._package_grants_by_local_principal(
+        [valid_permission, team_permission, orphaned_permission]
     )
 
-    assert_output_equal(
-        grants,
-        {
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa": [
-                "Valid Package"
-            ]
-        },
-        purpose=(
-            "Users and Teams grant summaries ignore a stale Package "
-            "permission whose Package has already been deleted"
-        ),
-    )
+    assert grants == {
+        "users": {4: ["Valid Package"]},
+        "teams": {7: ["Team Package"]},
+    }

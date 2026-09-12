@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 
 from sqlalchemy.orm import validates
 
@@ -13,6 +14,27 @@ DIRECTORY_SETTING_ID = 1
 
 DEFAULT_ADMIN_GROUP_NAME = "Journeyman Admins"
 DEFAULT_USER_GROUP_NAME = "Journeyman Users"
+
+
+TEAM_SOURCE_LOCAL = "local"
+TEAM_SOURCE_DIRECTORY_LEGACY = "directory_legacy"
+
+
+team_user_account = db.Table(
+    "team_user_account",
+    db.Column(
+        "team_id",
+        db.Integer,
+        db.ForeignKey("team.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    db.Column(
+        "user_account_id",
+        db.Integer,
+        db.ForeignKey("user_account.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 def utcnow():
@@ -307,60 +329,44 @@ class DirectoryServer(db.Model):
 
 
 class Team(db.Model):
-    """
-    A Journeyman Team backed by an existing Active Directory group.
+    """Journeyman-local authorization team.
 
-    Membership remains authoritative in AD; Journeyman stores only a
-    stable reference and current display metadata.
+    Existing v1.x Active Directory-backed Teams are retained during the
+    v2.0 migration, but membership becomes authoritative in Journeyman.
+    Directory metadata is preserved for audit/reference only.
     """
 
     __tablename__ = "team"
 
-    id = db.Column(
-        db.Integer,
-        primary_key=True,
-    )
+    id = db.Column(db.Integer, primary_key=True)
 
+    # Stable Team identity used by existing Package permission rows.  New
+    # local Teams receive a Journeyman-generated UUID.
     object_guid = db.Column(
         db.String(36),
         nullable=False,
         unique=True,
+        default=lambda: str(uuid.uuid4()),
     )
 
+    # Legacy directory metadata.  New local Teams use an internal URI so the
+    # existing non-null/unique schema remains compatible during migration.
     distinguished_name = db.Column(
         db.String(1000),
         nullable=False,
         unique=True,
-    )
-
-    sam_account_name = db.Column(
-        db.String(255),
-        nullable=False,
         default="",
     )
-
-    display_name = db.Column(
-        db.String(255),
+    sam_account_name = db.Column(db.String(255), nullable=False, default="")
+    display_name = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.String(1000), nullable=False, default="")
+    source_kind = db.Column(
+        db.String(32),
         nullable=False,
+        default=TEAM_SOURCE_LOCAL,
     )
-
-    description = db.Column(
-        db.String(1000),
-        nullable=False,
-        default="",
-    )
-
-    created_by = db.Column(
-        db.String(255),
-        nullable=False,
-    )
-
-    created_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        default=utcnow,
-    )
-
+    created_by = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -368,12 +374,28 @@ class Team(db.Model):
         onupdate=utcnow,
     )
 
+    members = db.relationship(
+        "UserAccount",
+        secondary=team_user_account,
+        back_populates="teams",
+        order_by="UserAccount.username",
+    )
+
+    @classmethod
+    def new_local(cls, *, display_name, description, created_by):
+        object_guid = str(uuid.uuid4())
+        return cls(
+            object_guid=object_guid,
+            distinguished_name="journeyman://team/{}".format(object_guid),
+            sam_account_name="",
+            display_name=str(display_name or "").strip(),
+            description=str(description or "").strip(),
+            source_kind=TEAM_SOURCE_LOCAL,
+            created_by=created_by,
+        )
+
     def __repr__(self):
         return (
-            "<Team id={} display_name={!r} object_guid={!r}>"
-            .format(
-                self.id,
-                self.display_name,
-                self.object_guid,
-            )
+            "<Team id={} display_name={!r} source_kind={!r}>"
+            .format(self.id, self.display_name, self.source_kind)
         )
