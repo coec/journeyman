@@ -115,6 +115,12 @@ class Project(db.Model):
         default=PROJECT_APPROVAL_DEVELOPMENT,
     )
 
+    approval_required = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+    )
+
     builtin_key = db.Column(
         db.String(120),
         nullable=True,
@@ -273,6 +279,22 @@ class Project(db.Model):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ProjectRevision.sequence",
+    )
+
+    reviews = db.relationship(
+        "ProjectReview",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectReview.id",
+    )
+
+    management_approvals = db.relationship(
+        "ProjectManagementApproval",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectManagementApproval.id",
     )
 
     development_users = db.relationship(

@@ -103,12 +103,15 @@ is printed to the container log on first start.
   see [`docs/CUSTOM_CREDENTIALS.md`](docs/CUSTOM_CREDENTIALS.md).
 - **Environments** select System Ansible or a managed Python virtual environment.
 - **Jobs** are immutable execution records.
+- **Approvals** can enforce technical review plus independent management approval on an immutable Project revision before operational Package or Schedule execution; see [`docs/APPROVALS.md`](docs/APPROVALS.md).
 - **Teams** map Active Directory groups to Package execution permissions.
 - **Runners** execute queued Jobs locally and on remote nodes.
 
 ## Projects and Packages
 
 For development or controlled execution of multi-step workflows, Projects can optionally require **Oversight between all steps**. Journeyman pauses between resolved execution batches and presents the next step(s), inventory, repository commit and runner destinations before continuing. See `docs/OVERSIGHT.md`.
+
+Journeyman can also enforce a system-wide **4-eyes approval workflow**. When enabled, ordinary Projects require technical review and independent management approval of an immutable executable revision before Package or Schedule execution. Manual development/test execution remains separate, and approval-relevant edits make the Project stale. Per-Project exemptions are available for explicitly approved exceptions. See [`docs/APPROVALS.md`](docs/APPROVALS.md).
 
 Projects define **how automation runs**: workflow steps, dependencies,
 repositories, inventories, credentials, execution environments, routing, and

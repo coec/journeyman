@@ -26,6 +26,7 @@
       <th>Name</th>
       <th>Enabled</th>
       <th>Routing</th>
+      {% if four_eyes_enabled %}<th>Approval</th>{% endif %}
       <th>Workflow steps</th>
       <th></th>
     </tr>
@@ -123,6 +124,20 @@
             Built-in local
           {% endif %}
         </td>
+
+        {% if four_eyes_enabled %}
+        <td>
+          {% if not project.approval_required %}
+            Not required
+          {% else %}
+            {{ project.approval_state | replace('_', ' ') | title }}
+          {% endif %}
+          {% set latest_review = project_latest_reviews.get(project.id) %}
+          {% if latest_review %}
+            <small>Latest review: {{ latest_review.status | replace('_', ' ') | title }}</small>
+          {% endif %}
+        </td>
+        {% endif %}
 
         <td class="project-steps-cell">
           {% if project.steps %}
@@ -251,6 +266,10 @@
               <a class="action-menu-item" href="{{ url_for('main.schedule_new', project_id=project.id) }}">Schedule</a>
               {% endif %}
 
+              {% if four_eyes_enabled and project_review_access.get(project.id, false) and not project.builtin_key %}
+              <a class="action-menu-item" href="{{ url_for('main.project_review', project_id=project.id) }}">Review &amp; Approval</a>
+              {% endif %}
+
               {% if project.steps|length > 1 %}
                 <button
                   class="action-menu-item project-flowchart-open"
@@ -309,7 +328,7 @@
       </tr>
     {% else %}
       <tr>
-        <td colspan="4" class="empty">
+        <td colspan="{{ 6 if four_eyes_enabled else 5 }}" class="empty">
           No projects defined.
         </td>
       </tr>

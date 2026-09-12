@@ -3064,6 +3064,7 @@ def delete_team(team_id):
 from .views import jobs as _job_routes  # noqa: E402,F401
 from .views import packages as _package_routes  # noqa: E402,F401
 from .views import projects as _project_routes  # noqa: E402,F401
+from .views import project_reviews as _project_review_routes  # noqa: E402,F401
 from .views import audit as _audit_routes  # noqa: E402,F401
 from .views import credentials as _credential_routes  # noqa: E402,F401
 from .views import environments as _environment_routes  # noqa: E402,F401

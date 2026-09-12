@@ -11,6 +11,11 @@ from app.models import ApiToken
 from app.models.system_setting import APPLY_STATUS_APPLIED, APPLY_STATUS_FAILED, utcnow
 from app.routes import bp
 from app.services.audit import record_audit_event
+from app.services.approval_workflow import (
+    ApprovalWorkflowSettingsError,
+    directory_authentication_is_enabled,
+    set_four_eyes_enabled,
+)
 from app.services.data_retention import (
     DataRetentionValidationError,
     retention_settings_form_data,
@@ -217,6 +222,61 @@ def system_settings():
         settings=settings,
         form_data=settings_to_form_data(settings),
         errors=errors,
+    )
+
+@bp.route("/settings/approvals", methods=["GET", "POST"])
+def approval_workflow_settings():
+    if not current_user_can_access_platform():
+        abort(403)
+
+    settings = get_or_create_system_settings()
+    directory_enabled = directory_authentication_is_enabled()
+
+    if request.method == "POST":
+        if not current_user_is_admin():
+            abort(403)
+
+        requested_enabled = request.form.get("four_eyes_enabled") == "on"
+        try:
+            settings, previous = set_four_eyes_enabled(
+                requested_enabled,
+                updated_by=current_username(),
+            )
+        except ApprovalWorkflowSettingsError as exc:
+            flash(str(exc), "error")
+            return (
+                render_template(
+                    "approval_workflow_settings.html",
+                    settings=settings,
+                    directory_enabled=directory_enabled,
+                ),
+                400,
+            )
+
+        record_audit_event(
+            "approval_workflow.updated",
+            object_type="system_setting",
+            object_id=str(settings.id),
+            object_name="4-eyes approval",
+            details={
+                "before": {"four_eyes_enabled": previous},
+                "after": {"four_eyes_enabled": bool(settings.four_eyes_enabled)},
+            },
+        )
+
+        if settings.four_eyes_enabled:
+            flash("4-eyes approval enabled.", "success")
+        else:
+            flash(
+                "4-eyes approval suspended. Existing review and approval history has been retained.",
+                "success",
+            )
+        return redirect(url_for("main.approval_workflow_settings"))
+
+    return render_template(
+        "approval_workflow_settings.html",
+        settings=settings,
+        directory_enabled=directory_enabled,
     )
 
 

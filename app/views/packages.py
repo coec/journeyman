@@ -15,6 +15,9 @@ from app.services.ansible_view import package_configuration_yaml, dispatch_yaml
 from app.services.pagination import paginate_list, page_size_for_user
 from app.services.directory import DirectoryError, get_directory_client
 from app.services.directory_settings import get_or_create_directory_settings
+from app.services.project_operational_approval import (
+    project_operational_approval_error,
+)
 
 from app.services.name_ordering import (
     reserved_name_validation_error,
@@ -706,6 +709,15 @@ def packages():
         for package in rows
         if can_launch_package(package)
     }
+    operational_approval_errors = {
+        package.id: error
+        for package in rows
+        if package.id in launchable_package_ids
+        for error in [
+            project_operational_approval_error(package.project)
+        ]
+        if error
+    }
 
     if not can_view_all:
         rows = [
@@ -723,6 +735,7 @@ def packages():
         packages=rows,
         is_admin=is_admin,
         launchable_package_ids=(launchable_package_ids),
+        operational_approval_errors=operational_approval_errors,
         disabled_packages_hidden=preferences.hide_disabled_packages,
         pagination=pagination,
     )
@@ -755,6 +768,10 @@ def project_package_launch(package_id):
     if package.builtin_key == REMOTE_RUNNER_BUILTIN_KEY:
         ensure_builtin_admin_automation()
         package = db.session.get(ProjectPackage, package.id)
+    approval_error = project_operational_approval_error(package.project)
+    if approval_error:
+        flash(approval_error, "error")
+        return redirect(url_for("main.packages"))
     inventory_hostvars = _package_inventory_hostvars(package)
 
     try:
@@ -918,6 +935,10 @@ def project_package_run(package_id):
     if package.builtin_key == REMOTE_RUNNER_BUILTIN_KEY:
         ensure_builtin_admin_automation()
         package = db.session.get(ProjectPackage, package.id)
+    approval_error = project_operational_approval_error(package.project)
+    if approval_error:
+        flash(approval_error, "error")
+        return redirect(url_for("main.packages"))
 
     username = current_username()
     progress = dispatch_progress_reporter(

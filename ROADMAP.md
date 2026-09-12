@@ -13,6 +13,11 @@ Target: v1.9.0
 ## v2.0.0
 
 - Redesign encryption key handling to use X.509 keys and certificates
+- Local authorization model with separate administration roles and Reviewer /
+  Approver workflow rights
+- Optional system-wide 4-eyes Project approval with immutable revisions,
+  technical review, management approval, staleness enforcement, per-Project
+  exemption, operational Package/Schedule gating, and Job approval provenance
 
 ## Future
 

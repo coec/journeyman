@@ -34,7 +34,13 @@ Journeyman does not implement user-reservable scarce business resources such as 
 
 ## High-value approvals
 
-Journeyman can execute operationally high-impact automation. It currently supports warnings, confirmation, permissions and audit logging, but does not implement mandatory two-person/four-eyes approval for high-value flows. This remains deferred rather than being represented as satisfied by a single-user confirmation dialog.
+Journeyman can execute operationally high-impact automation and supports an optional system-wide 4-eyes Project approval workflow.
+
+When enabled, ordinary Projects require technical review by an assigned user with the Reviewer right and independent management approval by an assigned user with the Approver right before Package or scheduled operational execution. Both decisions are bound to an immutable Project revision. Separation-of-duty checks prevent the requester from approving their own submission and prevent the technical Reviewer from also satisfying management approval for the same revision.
+
+Approval-relevant Project changes make the approval stale and operational execution fails closed. Manual Project development/test execution remains separately authorized. Explicit per-Project exemptions are available, require elevated approval authority, and are audited.
+
+Queued Jobs retain approval provenance so the historical execution record identifies the approval context and revision used at dispatch time. See `docs/APPROVALS.md`.
 
 ## Anti-automation
 

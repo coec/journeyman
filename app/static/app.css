@@ -2901,3 +2901,45 @@ nav.settings-tabs a.active:hover {
 .user-authorization-form .form-actions .button {
   width: 100%;
 }
+
+/* Project technical review */
+.project-review-summary,
+.project-review-panel {
+  max-width: 980px;
+  margin-bottom: 18px;
+}
+
+.project-review-blurb,
+.project-review-step {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.project-review-step span,
+.project-review-blurb span {
+  display: block;
+}
+
+.project-review-exact-definition {
+  margin-top: 16px;
+}
+
+.project-review-exact-definition pre {
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.review-form-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+}

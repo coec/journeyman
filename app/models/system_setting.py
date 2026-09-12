@@ -80,6 +80,12 @@ class SystemSetting(db.Model):
         default=True,
     )
 
+    four_eyes_enabled = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+    )
+
     job_retention_days = db.Column(
         db.Integer,
         nullable=False,

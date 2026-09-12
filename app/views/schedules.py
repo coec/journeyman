@@ -10,6 +10,9 @@ from app.routes import (
 from app.models import ProjectSchedule
 from app.services.audit import record_audit_event
 from app.services.project_execution import ProjectExecutionQueueError, queue_project_execution
+from app.services.project_operational_approval import (
+    project_operational_approval_error,
+)
 from app.services.name_ordering import reserved_name_ordering
 from app.services.pagination import paginate_list, page_size_for_user
 from app.services.schedules import (
@@ -138,7 +141,21 @@ def schedules():
     _require_admin()
     rows = ProjectSchedule.query.order_by(*reserved_name_ordering(ProjectSchedule.name)).all()
     pagination = paginate_list(rows, page_size_for_user(current_username()))
-    return render_template("schedules.html", schedules=pagination.items, pagination=pagination)
+    page_rows = pagination.items
+    operational_approval_errors = {
+        schedule.id: error
+        for schedule in page_rows
+        for error in [
+            project_operational_approval_error(schedule.project)
+        ]
+        if error
+    }
+    return render_template(
+        "schedules.html",
+        schedules=page_rows,
+        operational_approval_errors=operational_approval_errors,
+        pagination=pagination,
+    )
 
 
 @bp.route("/schedules/new", methods=["GET", "POST"])
@@ -155,6 +172,10 @@ def schedule_new():
         project = db.session.get(Project, values["project_id"]) if values["project_id"] else None
         if project is None:
             errors.append("Project is required.")
+        elif values["enabled"]:
+            approval_error = project_operational_approval_error(project)
+            if approval_error:
+                errors.append(approval_error)
         start_at = None
         end_at = None
         try:
@@ -200,8 +221,13 @@ def schedule_edit(schedule_id):
         errors = []
         if not values["name"]:
             errors.append("Name is required.")
-        if db.session.get(Project, values["project_id"]) is None:
+        project = db.session.get(Project, values["project_id"]) if values["project_id"] else None
+        if project is None:
             errors.append("Project is required.")
+        elif values["enabled"]:
+            approval_error = project_operational_approval_error(project)
+            if approval_error:
+                errors.append(approval_error)
         start_at = None
         end_at = None
         try:
@@ -239,6 +265,11 @@ def schedule_toggle(schedule_id):
     _require_admin()
     schedule = db.get_or_404(ProjectSchedule, schedule_id)
     requested_enabled = not schedule.enabled
+    if requested_enabled:
+        approval_error = project_operational_approval_error(schedule.project)
+        if approval_error:
+            flash(approval_error, "error")
+            return redirect(url_for("main.schedules"))
     schedule.next_run_at = calculate_next_run(schedule) if requested_enabled else None
     schedule.enabled = requested_enabled and schedule.next_run_at is not None
     schedule.claimed_at = None
@@ -255,8 +286,12 @@ def schedule_toggle(schedule_id):
 def schedule_run_now(schedule_id):
     _require_admin()
     schedule = db.get_or_404(ProjectSchedule, schedule_id)
+    approval_error = project_operational_approval_error(schedule.project)
+    if approval_error:
+        flash(approval_error, "error")
+        return redirect(url_for("main.schedules"))
     try:
-        job = queue_project_execution(project=schedule.project, requested_by=current_username(), message='Dispatch now from schedule "{}".'.format(schedule.name))
+        job = queue_project_execution(project=schedule.project, requested_by=current_username(), message='Dispatch now from schedule "{}".'.format(schedule.name), launch_source="schedule")
     except ProjectExecutionQueueError as exc:
         flash(str(exc), "error")
         return redirect(url_for("main.schedules"))

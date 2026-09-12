@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+{% block title %}Review & Approval · {{ project.name }} · Journeyman{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Review & Approval</h1>
+    <p>{{ project.name }}</p>
+  </div>
+  <a class="button" href="{{ url_for('main.projects') }}#project-{{ project.id }}">Back to Projects</a>
+</div>
+
+<section class="panel project-review-summary">
+  <dl class="detail-grid">
+    <div><dt>Project state</dt><dd>{{ project.approval_state | replace('_', ' ') | title }}</dd></div>
+    <div><dt>Pending technical review</dt><dd>{% if pending_review %}Revision {{ pending_review.revision.sequence }}{% else %}None{% endif %}</dd></div>
+    <div><dt>Pending management approval</dt><dd>{% if pending_management_approval %}Revision {{ pending_management_approval.revision.sequence }}{% else %}None{% endif %}</dd></div>
+
+    {% if pending_review %}
+      <div><dt>Technical review requested by</dt><dd>{{ pending_review.requested_by }}</dd></div>
+      <div><dt>Reviewer</dt><dd>{{ pending_review.reviewer_username }}</dd></div>
+      <div><dt>Revision digest</dt><dd><code>{{ pending_review.revision.digest }}</code></dd></div>
+    {% elif pending_management_approval %}
+      <div><dt>Management approval requested by</dt><dd>{{ pending_management_approval.requested_by }}</dd></div>
+      <div><dt>Technical Reviewer</dt><dd>{{ pending_management_approval.technical_review.reviewer_username }}</dd></div>
+      <div><dt>Approver</dt><dd>{{ pending_management_approval.approver_username }}</dd></div>
+      <div><dt>Revision digest</dt><dd><code>{{ pending_management_approval.revision.digest }}</code></dd></div>
+    {% elif latest_approved_review %}
+      <div><dt>Technical Reviewer</dt><dd>{{ latest_approved_review.reviewer_username }}</dd></div>
+      <div><dt>Reviewed revision</dt><dd>{{ latest_approved_review.revision.sequence }}</dd></div>
+      <div><dt>Revision digest</dt><dd><code>{{ latest_approved_review.revision.digest }}</code></dd></div>
+    {% endif %}
+  </dl>
+</section>
+
+{% if not approval_required %}
+<section class="panel project-review-panel">
+  <h2>Approval not required</h2>
+  <p>This Project is exempt from the system-wide 4-eyes approval workflow. Package and scheduled execution do not require Reviewer or Approver decisions.</p>
+</section>
+{% endif %}
+
+{% if can_manage_approval_requirement %}
+<section class="panel form-panel project-review-panel">
+  <h2>Project approval requirement</h2>
+  <form method="post" action="{{ url_for('main.project_approval_requirement', project_id=project.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="checkbox-label">
+      <input type="checkbox" name="approval_required" {% if approval_required %}checked{% endif %}>
+      Require 4-eyes approval for this Project
+    </label>
+    <small>Changing this policy is restricted to an Automation Admin who also holds the Approver right. Disabling it closes any pending decisions as stale but preserves approval history.</small>
+    <div class="review-form-actions">
+      <button class="button primary" type="submit">Save approval requirement</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{% if display_review %}
+<section class="panel project-review-panel">
+  <h2>Reviewed revision</h2>
+  <p>
+    Revision {{ display_review.revision.sequence }} is the immutable executable definition used by this approval workflow.
+    {% if pending_review and not pending_review_is_current %}
+      <strong>This Project has changed since technical review was requested and cannot be approved as submitted.</strong>
+    {% elif pending_management_approval and not pending_management_approval_is_current %}
+      <strong>This Project has changed since technical approval and cannot receive management approval as submitted.</strong>
+    {% endif %}
+  </p>
+
+  {% if submitted_snapshot %}
+    {% set project_snapshot = submitted_snapshot.project %}
+    <div class="project-review-blurb">
+      <strong>{{ project_snapshot.name }}</strong>
+      <span>{{ submitted_snapshot.steps | length }} executable step{% if submitted_snapshot.steps | length != 1 %}s{% endif %}</span>
+      <span>Execution type: {{ project_snapshot.execution_type }}</span>
+      <span>Routing: {{ project_snapshot.runner_routing }}</span>
+    </div>
+
+    {% for step in submitted_snapshot.steps %}
+      <div class="project-review-step">
+        <strong>Step {{ step.position }} — {{ step.name or 'Unnamed step' }}</strong>
+        <span>Type: {{ step.execution_type or project_snapshot.execution_type }}</span>
+        <span>Artifact: <code>{{ step.playbook }}</code></span>
+        {% if step.effective_repository %}
+          <span>
+            Repository: {{ step.effective_repository.name }}
+            {% if step.effective_repository.last_commit %}
+              @ <code>{{ step.effective_repository.last_commit }}</code>
+            {% endif %}
+          </span>
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  <details class="project-review-exact-definition">
+    <summary>Exact submitted definition</summary>
+    <pre>{{ submitted_snapshot_json }}</pre>
+  </details>
+</section>
+{% endif %}
+
+{% if approval_required and can_develop_project and not pending_review and project.approval_state in ["development", "stale"] %}
+<section class="panel form-panel project-review-panel">
+  <h2>Request technical review</h2>
+  {% if reviewers %}
+    <form method="post" action="{{ url_for('main.project_review_request', project_id=project.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>
+        Reviewer
+        <select name="reviewer_username" required>
+          <option value="">Select a Reviewer</option>
+          {% for reviewer in reviewers %}
+            <option value="{{ reviewer.username }}">{{ reviewer.display_name }} — {{ reviewer.username }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="review-form-actions">
+        <button class="button primary" type="submit">Request Review</button>
+      </div>
+    </form>
+  {% else %}
+    <p>No eligible Reviewer is currently available.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if approval_required and pending_review and pending_review.reviewer_username | lower == journeyman_username | lower %}
+<section class="panel form-panel project-review-panel">
+  <h2>Reviewer decision</h2>
+  <form method="post" action="{{ url_for('main.project_review_decision', project_id=project.id, review_id=pending_review.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>
+      Comment
+      <textarea name="comment" rows="5" maxlength="4000" placeholder="Optional review notes"></textarea>
+    </label>
+    <div class="review-form-actions">
+      <button class="button primary" type="submit" name="decision" value="approve" {% if not pending_review_is_current %}disabled{% endif %}>Approve</button>
+      <button class="button danger" type="submit" name="decision" value="reject">Reject</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{% if approval_required and can_request_management_approval %}
+<section class="panel form-panel project-review-panel">
+  <h2>Request management approval</h2>
+  <p>
+    Technical review for revision {{ latest_approved_review.revision.sequence }}
+    was approved by {{ latest_approved_review.reviewer_username }}.
+  </p>
+  {% if approvers %}
+    <form method="post" action="{{ url_for('main.project_management_approval_request', project_id=project.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>
+        Approver
+        <select name="approver_username" required>
+          <option value="">Select an Approver</option>
+          {% for approver in approvers %}
+            <option value="{{ approver.username }}">{{ approver.display_name }} — {{ approver.username }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="review-form-actions">
+        <button class="button primary" type="submit">Request Management Approval</button>
+      </div>
+    </form>
+  {% else %}
+    <p>No eligible Approver is currently available.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if approval_required and pending_management_approval and pending_management_approval.approver_username | lower == journeyman_username | lower %}
+<section class="panel form-panel project-review-panel">
+  <h2>Management decision</h2>
+  <p>
+    Revision {{ pending_management_approval.revision.sequence }} was technically
+    approved by {{ pending_management_approval.technical_review.reviewer_username }}.
+  </p>
+  <form method="post" action="{{ url_for('main.project_management_approval_decision', project_id=project.id, approval_id=pending_management_approval.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>
+      Comment
+      <textarea name="comment" rows="5" maxlength="4000" placeholder="Optional management approval notes"></textarea>
+    </label>
+    <div class="review-form-actions">
+      <button class="button primary" type="submit" name="decision" value="approve" {% if not pending_management_approval_is_current %}disabled{% endif %}>Approve</button>
+      <button class="button danger" type="submit" name="decision" value="reject">Reject</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel project-review-panel">
+  <h2>Technical review history</h2>
+  {% if reviews %}
+    <table>
+      <thead>
+        <tr>
+          <th>Revision</th>
+          <th>Status</th>
+          <th>Requester</th>
+          <th>Reviewer</th>
+          <th>Requested</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for review in reviews %}
+          <tr>
+            <td>{{ review.revision.sequence }}</td>
+            <td>{{ review.status | replace('_', ' ') | title }}</td>
+            <td>{{ review.requested_by }}</td>
+            <td>{{ review.reviewer_username }}</td>
+            <td>{{ review.requested_at }}</td>
+            <td>
+              {% if review.decided_at %}{{ review.decided_at }}{% else %}Pending{% endif %}
+              {% if review.decision_comment %}<small>{{ review.decision_comment }}</small>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No technical reviews have been requested.</p>
+  {% endif %}
+</section>
+
+<section class="panel project-review-panel">
+  <h2>Management approval history</h2>
+  {% if management_approvals %}
+    <table>
+      <thead>
+        <tr>
+          <th>Revision</th>
+          <th>Status</th>
+          <th>Requester</th>
+          <th>Technical Reviewer</th>
+          <th>Approver</th>
+          <th>Requested</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for approval in management_approvals %}
+          <tr>
+            <td>{{ approval.revision.sequence }}</td>
+            <td>{{ approval.status | replace('_', ' ') | title }}</td>
+            <td>{{ approval.requested_by }}</td>
+            <td>{{ approval.technical_review.reviewer_username }}</td>
+            <td>{{ approval.approver_username }}</td>
+            <td>{{ approval.requested_at }}</td>
+            <td>
+              {% if approval.decided_at %}{{ approval.decided_at }}{% else %}Pending{% endif %}
+              {% if approval.decision_comment %}<small>{{ approval.decision_comment }}</small>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No management approvals have been requested.</p>
+  {% endif %}
+</section>
+{% endblock %}

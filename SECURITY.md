@@ -28,6 +28,7 @@ See:
 - `docs/security/SECURE_CODING_ARCHITECTURE.md`
 - `docs/security/WEB_FRONTEND_SECURITY.md`
 - `docs/security/API_WEB_SERVICE.md`
+- `docs/APPROVALS.md`
 
 ## Security principles
 
@@ -56,6 +57,7 @@ Security-sensitive Journeyman code should follow these rules:
   fall back to a different runner/site, replay uncertain work, or continue with
   stale/invalid security-sensitive state merely to complete a Job.
 - Security-relevant actions should be auditable without recording secret values.
+- Where 4-eyes approval is enabled, operational execution must remain bound to the exact approved Project revision; stale or unapproved definitions must fail closed rather than inherit historical approval.
 
 ## Security regression tests
 

@@ -104,7 +104,14 @@ Packages · Journeyman
                   Actions <span aria-hidden="true">▾</span>
                 </summary>
                 <div class="action-menu-items">
-                  {% if package.id in launchable_package_ids %}
+                  {% if package.id in operational_approval_errors %}
+                    <button
+                      class="action-menu-item"
+                      type="button"
+                      disabled
+                      title="{{ operational_approval_errors[package.id] }}"
+                    >Dispatch</button>
+                  {% elif package.id in launchable_package_ids %}
                     <a
                       class="action-menu-item"
                       href="{{ url_for('main.project_package_launch', package_id=package.id) }}"
@@ -151,6 +158,13 @@ Packages · Journeyman
                   </form>
                 </div>
               </details>
+            {% elif package.id in operational_approval_errors %}
+              <button
+                class="button"
+                type="button"
+                disabled
+                title="{{ operational_approval_errors[package.id] }}"
+              >Approval required</button>
             {% elif package.id in launchable_package_ids %}
               <a
                 class="button primary"

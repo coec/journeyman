@@ -215,6 +215,7 @@ def dispatch_project(project_id):
             project=project,
             requested_by=g.authenticated_username,
             message="Dispatched through Journeyman API.",
+            launch_source="api_project",
         )
     except ProjectExecutionQueueError as exc:
         return _error(409, "dispatch_rejected", str(exc))
@@ -277,6 +278,7 @@ def dispatch_package(package_id):
             message='Dispatched from Package "{}" through Journeyman API.'.format(package.name),
             resolved_inventory_data=preview.resolved_inventory_data,
             package_execution=prepared.execution_data,
+            launch_source="api_package",
         )
     except (PackageLaunchError, ProjectExecutionPreviewError, ProjectExecutionQueueError) as exc:
         return _error(409, "dispatch_rejected", str(exc))

@@ -225,6 +225,13 @@ class Job(db.Model):
         uselist=False,
     )
 
+    approval_provenance = db.relationship(
+        "JobApprovalProvenance",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
     @property
     def duration_seconds(self):
         if self.started_at is None:

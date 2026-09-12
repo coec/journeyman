@@ -431,6 +431,7 @@ def _queue_reaction(reaction, execution_data):
         message='Reaction from Reactor "{}" for Signal #{}.'.format(reactor.name, signal.id),
         resolved_inventory_data=preview.resolved_inventory_data,
         package_execution=execution_data,
+        launch_source="reaction",
     )
     reaction.job = job
     reaction.execute_after = None

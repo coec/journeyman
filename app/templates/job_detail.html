@@ -312,6 +312,23 @@
   </section>
 {% endif %}
 
+{% if job.approval_provenance %}
+<section class="panel">
+  <h2>Approval Provenance</h2>
+  <dl class="detail-grid">
+    <div><dt>Launch source</dt><dd>{{ job.approval_provenance.launch_source | replace('_', ' ') | title }}</dd></div>
+    <div><dt>Execution context</dt><dd>{{ job.approval_provenance.execution_context | replace('_', ' ') | title }}</dd></div>
+    <div><dt>4-eyes</dt><dd>{{ 'Enabled' if job.approval_provenance.four_eyes_enabled else 'Disabled' }}</dd></div>
+    <div><dt>Approval mode</dt><dd>{{ job.approval_provenance.approval_mode | replace('_', ' ') | title }}</dd></div>
+    <div><dt>Project approval state</dt><dd>{{ job.approval_provenance.project_approval_state | replace('_', ' ') | title }}</dd></div>
+    <div><dt>Revision</dt><dd>{% if job.approval_provenance.revision_sequence %}#{{ job.approval_provenance.revision_sequence }}{% else %}Live definition{% endif %}</dd></div>
+    <div><dt>Revision digest</dt><dd><code>{{ job.approval_provenance.revision_digest }}</code></dd></div>
+    <div><dt>Technical review</dt><dd>{% if job.approval_provenance.technical_reviewer %}{{ job.approval_provenance.technical_reviewer }} — {{ job.approval_provenance.technical_review_status | title }}{% else %}Not applicable{% endif %}</dd></div>
+    <div><dt>Management approval</dt><dd>{% if job.approval_provenance.management_approver %}{{ job.approval_provenance.management_approver }} — {{ job.approval_provenance.management_approval_status | title }}{% else %}Not applicable{% endif %}</dd></div>
+  </dl>
+</section>
+{% endif %}
+
 <section>
     <h2>Workflow</h2>
 

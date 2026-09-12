@@ -23,6 +23,7 @@ from .job_repository_snapshot import JobRepositorySnapshot
 from .job_credential_snapshot import JobCredentialSnapshot
 from .job_inventory_snapshot import JobInventorySnapshot
 from .job_package_snapshot import JobPackageSnapshot
+from .job_approval_provenance import JobApprovalProvenance
 from .project import (
     Project,
     PROJECT_APPROVAL_APPROVED,
@@ -35,6 +36,22 @@ from .project import (
     project_development_user,
 )
 from .project_revision import ProjectRevision
+from .project_review import (
+    ProjectReview,
+    PROJECT_REVIEW_APPROVED,
+    PROJECT_REVIEW_PENDING,
+    PROJECT_REVIEW_REJECTED,
+    PROJECT_REVIEW_STALE,
+    VALID_PROJECT_REVIEW_STATUSES,
+)
+from .project_management_approval import (
+    ProjectManagementApproval,
+    PROJECT_MANAGEMENT_APPROVAL_APPROVED,
+    PROJECT_MANAGEMENT_APPROVAL_PENDING,
+    PROJECT_MANAGEMENT_APPROVAL_REJECTED,
+    PROJECT_MANAGEMENT_APPROVAL_STALE,
+    VALID_PROJECT_MANAGEMENT_APPROVAL_STATUSES,
+)
 from .project_schedule import ProjectSchedule
 from .project_package import (
     ProjectPackage,
@@ -78,6 +95,18 @@ __all__ = [
     "JobStepExecutionSlice",
     "Project",
     "ProjectRevision",
+    "ProjectReview",
+    "PROJECT_REVIEW_APPROVED",
+    "PROJECT_REVIEW_PENDING",
+    "PROJECT_REVIEW_REJECTED",
+    "PROJECT_REVIEW_STALE",
+    "VALID_PROJECT_REVIEW_STATUSES",
+    "ProjectManagementApproval",
+    "PROJECT_MANAGEMENT_APPROVAL_APPROVED",
+    "PROJECT_MANAGEMENT_APPROVAL_PENDING",
+    "PROJECT_MANAGEMENT_APPROVAL_REJECTED",
+    "PROJECT_MANAGEMENT_APPROVAL_STALE",
+    "VALID_PROJECT_MANAGEMENT_APPROVAL_STATUSES",
     "PROJECT_APPROVAL_APPROVED",
     "PROJECT_APPROVAL_DEVELOPMENT",
     "PROJECT_APPROVAL_REVIEW_REQUESTED",
@@ -110,6 +139,7 @@ __all__ = [
     "user_account_role",
     "JobInventorySnapshot",
     "JobPackageSnapshot",
+    "JobApprovalProvenance",
     "SignalSource",
     "Signal",
     "Reactor",

@@ -6,7 +6,7 @@ import json
 from sqlalchemy import func
 
 from app import db
-from app.models import ProjectRevision
+from app.models import ProjectRevision, ProjectStep
 
 
 def _reference(item):
@@ -108,6 +108,26 @@ def _step_snapshot(step):
     }
 
 
+def _project_steps_for_snapshot(project):
+    """Return the persisted executable step set for a Project snapshot.
+
+    Project editing replaces ProjectStep rows in the same SQLAlchemy session.
+    A relationship collection can continue to contain an object that has just
+    been deleted, even after flush.  For persisted Projects, query the current
+    database-visible rows instead so snapshots represent the executable state,
+    not stale relationship membership.
+    """
+    if project.id is None:
+        return sorted(project.steps, key=lambda item: item.position)
+
+    return (
+        ProjectStep.query
+        .filter_by(project_id=project.id)
+        .order_by(ProjectStep.position.asc(), ProjectStep.id.asc())
+        .all()
+    )
+
+
 def build_project_revision_snapshot(project):
     """Return the canonical executable definition used for approval hashing."""
     return {
@@ -141,7 +161,7 @@ def build_project_revision_snapshot(project):
         },
         "steps": [
             _step_snapshot(step)
-            for step in sorted(project.steps, key=lambda item: item.position)
+            for step in _project_steps_for_snapshot(project)
         ],
     }
 
@@ -158,6 +178,36 @@ def canonical_project_revision_json(snapshot):
 def project_revision_digest(snapshot):
     payload = canonical_project_revision_json(snapshot).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def project_revision_semantic_snapshot(snapshot):
+    """Return the approval-relevant portion of a revision snapshot.
+
+    Database row identifiers are retained in the immutable stored revision for
+    audit, but they are not part of the approval meaning.  Project edits replace
+    ProjectStep rows, so step ids must not make an otherwise identical definition
+    appear stale.
+    """
+    normalized = json.loads(json.dumps(snapshot))
+    project_data = normalized.get("project") or {}
+    for key in ("id",):
+        project_data.pop(key, None)
+    for step in normalized.get("steps") or []:
+        step.pop("id", None)
+    return normalized
+
+
+def project_revision_semantic_digest(snapshot):
+    return project_revision_digest(
+        project_revision_semantic_snapshot(snapshot)
+    )
+
+
+def project_revision_matches_project(revision, project):
+    """Return whether Project execution still matches an immutable revision."""
+    return project_revision_semantic_digest(
+        build_project_revision_snapshot(project)
+    ) == project_revision_semantic_digest(revision.snapshot())
 
 
 def capture_project_revision(project, *, created_by):

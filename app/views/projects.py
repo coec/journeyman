@@ -5,6 +5,8 @@ from app.models import Team, UserAccount
 from app.services.project_flowchart import (
     build_project_flowchart,
 )
+from app.services.approval_workflow import four_eyes_enabled
+from app.services.project_approval_staleness import refresh_project_approval_staleness
 from app.services.builtin_automation import (
     ensure_builtin_admin_automation,
     is_builtin_project,
@@ -343,6 +345,7 @@ def project_show_ansible_operation(project_id):
 def projects():
     is_admin = current_user_can_manage_automation()
     can_view_all = current_user_can_view_automation()
+    approval_workflow_enabled = four_eyes_enabled()
     if is_admin:
         ensure_builtin_admin_automation()
 
@@ -355,11 +358,28 @@ def projects():
 
     rows = query.order_by(Project.name.asc()).all()
     if not can_view_all:
+        username_key = current_username().casefold()
         rows = [
             project
             for project in rows
             if project.builtin_key is None
-            and current_user_can_view_project(project)
+            and (
+                current_user_can_view_project(project)
+                or (
+                    approval_workflow_enabled
+                    and any(
+                        str(review.reviewer_username or "").casefold() == username_key
+                        for review in project.reviews
+                    )
+                )
+                or (
+                    approval_workflow_enabled
+                    and any(
+                        str(approval.approver_username or "").casefold() == username_key
+                        for approval in project.management_approvals
+                    )
+                )
+            )
         ]
 
     pagination = paginate_list(rows, page_size_for_user(current_username()))
@@ -380,6 +400,32 @@ def projects():
         project.id: current_user_can_develop_project(project)
         for project in rows
     }
+    username_key = current_username().casefold()
+    project_review_access = {
+        project.id: (
+            approval_workflow_enabled
+            and (
+                current_user_can_view_project(project)
+                or any(
+                    str(review.reviewer_username or "").casefold() == username_key
+                    for review in project.reviews
+                )
+                or any(
+                    str(approval.approver_username or "").casefold() == username_key
+                    for approval in project.management_approvals
+                )
+            )
+        )
+        for project in rows
+    }
+    project_latest_reviews = {
+        project.id: (
+            max(project.reviews, key=lambda review: review.id or 0)
+            if project.reviews
+            else None
+        )
+        for project in rows
+    }
 
     return render_template(
         "projects.html",
@@ -387,6 +433,9 @@ def projects():
         project_flowcharts=project_flowcharts,
         project_dispatch_block_reasons=project_dispatch_block_reasons,
         project_development_access=project_development_access,
+        project_review_access=project_review_access,
+        project_latest_reviews=project_latest_reviews,
+        four_eyes_enabled=approval_workflow_enabled,
         disabled_projects_hidden=preferences.hide_disabled_projects,
         pagination=pagination,
     )
@@ -1228,6 +1277,12 @@ def project_edit(project_id):
                 )
             )
 
+        # ProjectStep rows are replaced on edit.  Compare the resulting
+        # executable definition with the immutable submitted/approved revision
+        # before committing so approval state changes are immediate.
+        db.session.flush()
+        approval_became_stale = refresh_project_approval_staleness(project)
+
         try:
             db.session.commit()
         except Exception:
@@ -1263,6 +1318,11 @@ def project_edit(project_id):
 
         readiness_issues = _project_dispatch_readiness_issues(project)
         flash("Project updated.", "success")
+        if approval_became_stale:
+            flash(
+                "Project executable definition changed. Existing approval is now stale.",
+                "warning",
+            )
         if readiness_issues:
             flash(
                 "Project saved, but it is not ready to dispatch: "

@@ -27,6 +27,7 @@ from app.services.runner_environments import (
     job_step_environment_requirement,
     runner_environment_state,
 )
+from app.services.job_approval_provenance import copy_job_approval_provenance
 from app.services.project_concurrency import (
     launch_blocking_job,
     locked_project,
@@ -357,6 +358,7 @@ def rerun_job(source_job, *, requested_by, source="Journeyman API", scope=RERUN_
         required_runner_capabilities_json=source_job.required_runner_capabilities_json,
     )
     job.package_snapshot = _copy_package_snapshot(source_job.package_snapshot)
+    copy_job_approval_provenance(source_job, job)
 
     repository_map = {}
     for source in source_job.repository_snapshots:

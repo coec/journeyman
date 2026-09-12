@@ -10,6 +10,9 @@ from app import db
 from app.models import ProjectSchedule
 from app.services.audit import record_audit_event
 from app.services.project_execution import ProjectExecutionQueueError, queue_project_execution
+from app.services.project_operational_approval import (
+    project_operational_approval_error,
+)
 
 VALID_SCHEDULE_TYPES = frozenset({"once", "daily", "weekly", "interval"})
 WEEKDAY_VALUES = frozenset(range(7))
@@ -125,11 +128,38 @@ def run_claimed_schedule(schedule_id, now=None):
     schedule = db.session.get(ProjectSchedule, schedule_id)
     if schedule is None or schedule.claimed_at is None:
         return None
+
+    approval_error = project_operational_approval_error(schedule.project)
+    if approval_error:
+        schedule.last_error = approval_error
+        schedule.enabled = False
+        schedule.next_run_at = None
+        schedule.claimed_at = None
+        db.session.commit()
+        record_audit_event(
+            "schedule.launch",
+            result="failure",
+            object_type="project_schedule",
+            object_id=schedule.id,
+            object_name=schedule.name,
+            actor_username=schedule.created_by,
+            details={
+                "project_id": schedule.project_id,
+                "error": approval_error,
+            },
+        )
+        current_app.logger.warning(
+            "Scheduled Project launch blocked: %s",
+            approval_error,
+        )
+        return None
+
     try:
         job = queue_project_execution(
             project=schedule.project,
             requested_by=schedule.created_by,
             message='Queued by schedule "{}".'.format(schedule.name),
+            launch_source="schedule",
         )
         schedule.last_run_at = now
         schedule.last_job_id = job.id

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Approval Workflow — Journeyman{% endblock %}
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .approval-settings-page { max-width: 1180px; }
+  .settings-tabs { display:flex; gap:8px; margin:18px 0; flex-wrap:wrap; }
+  .settings-tabs a { padding:9px 13px; border:1px solid var(--border); border-radius:6px; background:#fff; }
+  .settings-tabs a.active { color:#fff; background:var(--blue); border-color:var(--blue); }
+  .settings-card { background:#fff; border:1px solid var(--border); border-radius:8px; padding:20px; margin-bottom:16px; }
+  .settings-toggle { display:flex; align-items:flex-start; gap:10px; padding:14px; border:1px solid var(--border); border-radius:7px; background:#f8fafc; }
+  .settings-toggle input { margin-top:3px; }
+  .settings-toggle strong { display:block; margin-bottom:4px; }
+  .settings-toggle small { display:block; color:var(--muted); line-height:1.45; }
+  .settings-actions { display:flex; flex-direction:column; align-items:flex-start; gap:10px; margin-top:18px; }
+  .settings-note { margin-top:16px; padding:12px 14px; border-left:4px solid var(--border); background:#f8fafc; }
+  .settings-note.warning { border-left-color:#b7791f; }
+  .settings-note p { margin:0; }
+</style>
+
+<div class="approval-settings-page">
+  <header>
+    <h1>System Settings</h1>
+    <p>Control the system-wide Project review and management approval workflow.</p>
+  </header>
+
+  <nav class="settings-tabs" aria-label="Settings sections">
+    <a href="{{ url_for('main.system_settings') }}">Web and TLS</a>
+    <a href="{{ url_for('main.directory_settings') }}">Directory and Authentication</a>
+    <a class="active" href="{{ url_for('main.approval_workflow_settings') }}">Approval Workflow</a>
+    <a href="{{ url_for('main.environment_build_settings') }}">Environment Builds</a>
+    <a href="{{ url_for('main.data_retention_settings') }}">Data Retention</a>
+    <a href="{{ url_for('main.release_testing_settings') }}">Release Testing</a>
+  </nav>
+
+  <section class="settings-card">
+    <h2>4-eyes approval</h2>
+    <p>
+      When enabled, ordinary Projects must pass technical review and management approval before Package or scheduled operational execution.
+      Manual Project development and testing remains governed by Project development access.
+    </p>
+
+    {% if not directory_enabled %}
+      <div class="settings-note warning">
+        <p>Directory and Authentication must be enabled before 4-eyes approval can be enabled.</p>
+      </div>
+    {% endif %}
+
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <label class="settings-toggle" for="four_eyes_enabled">
+        <input
+          id="four_eyes_enabled"
+          type="checkbox"
+          name="four_eyes_enabled"
+          {% if settings.four_eyes_enabled %}checked{% endif %}
+          {% if not directory_enabled and not settings.four_eyes_enabled %}disabled{% endif %}
+        >
+        <span>
+          <strong>Require 4-eyes approval for operational Projects</strong>
+          <small>
+            Disabling this setting suspends approval enforcement and hides the approval workflow. Existing review and approval history is retained and becomes active again if the workflow is re-enabled.
+          </small>
+        </span>
+      </label>
+
+      <div class="settings-actions">
+        <button class="button primary" type="submit">Save approval workflow</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

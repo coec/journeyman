@@ -64,6 +64,7 @@ from .project_repositories import (
     ProjectRepositoryRefreshError,
     refresh_project_repositories,
 )
+from .job_approval_provenance import build_job_approval_provenance
 from .project_concurrency import (
     launch_blocking_job,
     locked_project,
@@ -139,6 +140,7 @@ def queue_project_execution(
     resolved_inventory_data=None,
     package_execution=None,
     progress=None,
+    launch_source=None,
 ):
     """
     Create and commit one immutable queued Job for a Project.
@@ -617,6 +619,9 @@ def queue_project_execution(
     if progress is not None:
         progress("snapshot", "Snapshotting execution configuration")
 
+    if launch_source is None:
+        launch_source = "package" if package_execution is not None else "manual"
+
     job = Job(
         project_id=project.id,
         project_name=project.name,
@@ -638,6 +643,11 @@ def queue_project_execution(
             default_runner_crew.id if default_runner_crew is not None else None
         ),
         required_runner_capabilities_json=required_capabilities,
+    )
+
+    job.approval_provenance = build_job_approval_provenance(
+        project,
+        launch_source=launch_source,
     )
 
     if package_execution is not None:

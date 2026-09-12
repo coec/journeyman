@@ -13,10 +13,15 @@ import app.auth as auth
 import app.routes as routes
 from app.models import (
     AuthorizationRole,
+    PROJECT_APPROVAL_APPROVED,
+    PROJECT_MANAGEMENT_APPROVAL_APPROVED,
+    PROJECT_REVIEW_APPROVED,
     Job,
     JobPackageSnapshot,
     Project,
+    ProjectManagementApproval,
     ProjectPackage,
+    ProjectReview,
     ProjectPackageInput,
     ProjectPackagePermission,
     Team,
@@ -34,6 +39,7 @@ from app.models.project_package import (
     PACKAGE_PRINCIPAL_USER,
 )
 from app.services.authorization import ROLE_USER
+from app.services.project_revisions import capture_project_revision
 
 
 PROJECT_ROOT = (
@@ -742,6 +748,33 @@ def seeded_packages(app):
                 disabled_project_package,
             ]
         )
+        db.session.flush()
+
+        # Package route tests exercise operational dispatch. Model the exact
+        # v2 production condition rather than bypassing the approval gate.
+        revision = capture_project_revision(
+            enabled_project,
+            created_by="fixture.author",
+        )
+        review = ProjectReview(
+            project=enabled_project,
+            revision=revision,
+            requested_by="fixture.author",
+            reviewer_username="fixture.reviewer",
+            status=PROJECT_REVIEW_APPROVED,
+        )
+        db.session.add(review)
+        db.session.flush()
+        approval = ProjectManagementApproval(
+            project=enabled_project,
+            revision=revision,
+            technical_review=review,
+            requested_by="fixture.author",
+            approver_username="fixture.approver",
+            status=PROJECT_MANAGEMENT_APPROVAL_APPROVED,
+        )
+        enabled_project.approval_state = PROJECT_APPROVAL_APPROVED
+        db.session.add(approval)
 
         db.session.commit()
 
