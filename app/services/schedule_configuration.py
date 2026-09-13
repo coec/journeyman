@@ -5,7 +5,7 @@ from datetime import timezone
 from zoneinfo import ZoneInfo
 
 from app import db
-from app.models import Project, ProjectSchedule
+from app.models import Project, ProjectPackage, ProjectSchedule
 from app.services.schedules import (
     ScheduleValidationError,
     calculate_next_run,
@@ -72,7 +72,9 @@ def schedule_configuration_document(schedule):
     return {
         "id": schedule.id,
         "name": schedule.name,
+        "target_type": schedule.target_type,
         "project": schedule.project.name if schedule.project else "",
+        "package": schedule.package.name if schedule.package else "",
         "schedule_type": schedule.schedule_type,
         "timezone": schedule.timezone_name,
         "start_at": _local_text(schedule.start_at, schedule.timezone_name),
@@ -98,6 +100,8 @@ def _normalise(values):
 
     name = _clean(values.get("name"))
     project_name = _clean(values.get("project"))
+    package_name = _clean(values.get("package"))
+    target_type = _clean(values.get("target_type")).lower() or ("package" if package_name else "project")
     schedule_type = _clean(values.get("schedule_type")) or "once"
     timezone_name = _clean(values.get("timezone") or values.get("timezone_name")) or "UTC"
     start_text = _clean(values.get("start_at"))
@@ -105,14 +109,31 @@ def _normalise(values):
 
     if not name:
         raise ScheduleConfigurationError("Schedule name is required.")
-    if not project_name:
+    if target_type not in {"project", "package"}:
+        raise ScheduleConfigurationError("Schedule target_type must be project or package.")
+    if target_type == "project" and not project_name:
         raise ScheduleConfigurationError("Project name is required.")
+    if target_type == "package" and not package_name:
+        raise ScheduleConfigurationError("Package name is required.")
     if not start_text:
         raise ScheduleConfigurationError("Start date and time is required.")
 
-    project = Project.query.filter_by(name=project_name).first()
-    if project is None:
-        raise ScheduleConfigurationError('Project "{}" does not exist.'.format(project_name))
+    project = None
+    package = None
+    if target_type == "project":
+        project = Project.query.filter_by(name=project_name).first()
+        if project is None:
+            raise ScheduleConfigurationError('Project "{}" does not exist.'.format(project_name))
+    else:
+        package = ProjectPackage.query.filter_by(name=package_name).first()
+        if package is None:
+            raise ScheduleConfigurationError('Package "{}" does not exist.'.format(package_name))
+        project = package.project
+        from app.services.project_package_launch import PackageLaunchError, prepare_package_scheduled_launch
+        try:
+            prepare_package_scheduled_launch(package)
+        except PackageLaunchError as exc:
+            raise ScheduleConfigurationError(str(exc)) from exc
 
     interval_minutes = values.get("interval_minutes")
     if interval_minutes in ("", None):
@@ -153,8 +174,11 @@ def _normalise(values):
 
     return {
         "name": name,
-        "project": project,
+        "target_type": target_type,
+        "project": project if target_type == "project" else None,
+        "package": package,
         "project_name": project.name,
+        "package_name": package.name if package is not None else "",
         "schedule_type": schedule_type,
         "timezone_name": timezone_name,
         "start_at": start_at,
@@ -169,15 +193,18 @@ def _normalise(values):
 
 def configure_schedule(values, *, created_by="system"):
     desired = _normalise(values)
-    schedule = ProjectSchedule.query.filter_by(
-        project_id=desired["project"].id,
-        name=desired["name"],
-    ).first()
+    target_filter = (
+        {"package_id": desired["package"].id, "name": desired["name"]}
+        if desired["target_type"] == "package"
+        else {"project_id": desired["project"].id, "name": desired["name"]}
+    )
+    schedule = ProjectSchedule.query.filter_by(**target_filter).first()
 
     created = schedule is None
     if created:
         schedule = ProjectSchedule(
-            project_id=desired["project"].id,
+            project_id=desired["project"].id if desired["project"] is not None else None,
+            package_id=desired["package"].id if desired["package"] is not None else None,
             name=desired["name"],
             created_by=_clean(created_by) or "system",
             start_at=desired["start_at"],
@@ -187,6 +214,7 @@ def configure_schedule(values, *, created_by="system"):
     else:
         current = {
             "project_id": schedule.project_id,
+            "package_id": schedule.package_id,
             "name": schedule.name,
             "schedule_type": schedule.schedule_type,
             "timezone_name": schedule.timezone_name,
@@ -198,7 +226,8 @@ def configure_schedule(values, *, created_by="system"):
         }
 
     comparable = {
-        "project_id": desired["project"].id,
+        "project_id": desired["project"].id if desired["project"] is not None else None,
+        "package_id": desired["package"].id if desired["package"] is not None else None,
         "name": desired["name"],
         "schedule_type": desired["schedule_type"],
         "timezone_name": desired["timezone_name"],
@@ -216,7 +245,8 @@ def configure_schedule(values, *, created_by="system"):
             'Schedule "{}" is already configured.'.format(desired["name"]),
         )
 
-    schedule.project_id = desired["project"].id
+    schedule.project_id = desired["project"].id if desired["project"] is not None else None
+    schedule.package_id = desired["package"].id if desired["package"] is not None else None
     schedule.name = desired["name"]
     schedule.schedule_type = desired["schedule_type"]
     schedule.timezone_name = desired["timezone_name"]
@@ -244,35 +274,31 @@ def configure_schedule(values, *, created_by="system"):
     )
 
 
-def delete_schedule(project_name, name):
+def delete_schedule(project_name, name, package_name=""):
     project_name = _clean(project_name)
+    package_name = _clean(package_name)
     name = _clean(name)
-    if not project_name:
-        raise ScheduleConfigurationError("Project name is required.")
     if not name:
         raise ScheduleConfigurationError("Schedule name is required.")
+    if bool(project_name) == bool(package_name):
+        raise ScheduleConfigurationError("Specify exactly one of Project or Package name.")
 
-    project = Project.query.filter_by(name=project_name).first()
-    if project is None:
-        return ScheduleConfigurationResult(
-            None,
-            False,
-            'Schedule "{}" is already absent.'.format(name),
-        )
+    if package_name:
+        target = ProjectPackage.query.filter_by(name=package_name).first()
+        target_filter = {"package_id": target.id} if target is not None else None
+    else:
+        target = Project.query.filter_by(name=project_name).first()
+        target_filter = {"project_id": target.id} if target is not None else None
 
-    schedule = ProjectSchedule.query.filter_by(project_id=project.id, name=name).first()
+    if target_filter is None:
+        return ScheduleConfigurationResult(None, False, 'Schedule "{}" is already absent.'.format(name))
+    schedule = ProjectSchedule.query.filter_by(name=name, **target_filter).first()
     if schedule is None:
-        return ScheduleConfigurationResult(
-            None,
-            False,
-            'Schedule "{}" is already absent.'.format(name),
-        )
-
+        return ScheduleConfigurationResult(None, False, 'Schedule "{}" is already absent.'.format(name))
     db.session.delete(schedule)
     try:
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
         raise ScheduleConfigurationError('Unable to delete Schedule "{}".'.format(name)) from exc
-
     return ScheduleConfigurationResult(None, True, 'Schedule "{}" deleted.'.format(name))

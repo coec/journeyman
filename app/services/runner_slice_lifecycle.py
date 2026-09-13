@@ -367,6 +367,19 @@ def _complete_slice(execution_slice, payload, *, runner=None, local=False):
 
 
 def complete_remote_slice(execution_slice, runner, token, payload):
+    requested_status = str(payload.get("status") or "").strip().lower()
+
+    # Completion may have committed successfully even if the HTTP response was
+    # lost. Completion clears dispatch_token, so assignment_matches() cannot
+    # authenticate that retry. A replay from the runner that owns an already
+    # terminal slice is safe to acknowledge when the final status is identical.
+    if (
+        execution_slice.status in FINAL_SLICE_STATUSES
+        and execution_slice.status == requested_status
+        and execution_slice.assigned_runner_id == getattr(runner, "id", None)
+    ):
+        return True, "already_complete"
+
     if not assignment_matches(execution_slice, runner, token):
         return False, "assignment_mismatch"
     return _complete_slice(execution_slice, payload, runner=runner, local=False)

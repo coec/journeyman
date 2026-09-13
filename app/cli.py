@@ -201,6 +201,12 @@ def register_scheduler_cli_commands(app):
                                 health_result["updated"], len(health_result["failed"])
                             )
                         )
+                        for runner_id, reason in health_result["failed"].items():
+                            click.echo(
+                                "Runner mTLS health poll failure: "
+                                "runner_id={} reason={}".format(runner_id, reason),
+                                err=True,
+                            )
                 next_runner_health_poll_at = now_monotonic + 30
             if now_monotonic >= next_retention_purge_at:
                 purged = purge_expired_protected_data()

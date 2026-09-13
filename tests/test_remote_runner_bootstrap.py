@@ -343,7 +343,7 @@ def test_remote_runner_environment_sync_has_writable_runner_local_root():
     )
     assert 'api("/api/runners/environments/claim")' in remote_runner
     assert "synchronize_execution_environment" in remote_runner
-    assert 'VERSION = "0.20"' in remote_runner
+    assert 'VERSION = "0.21"' in remote_runner
 
 
 def test_environment_sync_runner_api_endpoints_bypass_interactive_login():
@@ -392,7 +392,7 @@ def test_environment_sync_accepts_python_patch_drift_within_release_series():
     assert "def _python_release_series(version_output):" in remote_runner
     assert "actual_python_series == expected_python_series" in remote_runner
     assert "Python major.minor release does not match" in remote_runner
-    assert 'VERSION = "0.20"' in remote_runner
+    assert 'VERSION = "0.21"' in remote_runner
 
 
 def test_environment_sync_accepts_ansible_patch_drift_within_release_series():

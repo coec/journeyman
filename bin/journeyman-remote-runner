@@ -41,7 +41,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 LOGGER = logging.getLogger("journeyman-remote-runner")
-VERSION = "0.20"
+VERSION = "0.21"
 KEY_INFO = b"journeyman remote execution data v1"
 STOP = False
 
@@ -1400,6 +1400,94 @@ def _set_runtime_dependency_names(values):
         RUNTIME_DEPENDENCY_NAMES.update(normalized)
 
 
+def _completion_spool_root():
+    """Return the durable spool used for unacknowledged completion reports."""
+    return Path(
+        os.environ.get(
+            "JOURNEYMAN_REMOTE_COMPLETION_SPOOL",
+            "/var/lib/journeyman/remote-runner/completions",
+        )
+    )
+
+
+def _completion_spool_path(job_id, slice_id):
+    root = _completion_spool_root()
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
+
+    if slice_id is not None:
+        name = "slice-{}.json".format(int(slice_id))
+    else:
+        name = "job-{}.json".format(int(job_id))
+    return root / name
+
+
+def _spool_completion(job_id, slice_id, complete_url, token, payload):
+    """Persist a completion before attempting delivery to the controller."""
+    path = _completion_spool_path(job_id, slice_id)
+    record = {
+        "job_id": int(job_id),
+        "slice_id": None if slice_id is None else int(slice_id),
+        "complete_url": str(complete_url),
+        "dispatch_token": str(token),
+        "payload": payload,
+    }
+
+    temporary = path.with_name(
+        ".{}.{}.{}.tmp".format(
+            path.name,
+            os.getpid(),
+            threading.get_ident(),
+        )
+    )
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(record, handle, separators=(",", ":"), sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    return path
+
+
+def _deliver_spooled_completion(path):
+    """Deliver one spooled completion and remove it only after acknowledgement."""
+    with Path(path).open("r", encoding="utf-8") as handle:
+        record = json.load(handle)
+
+    request(
+        "POST",
+        api(str(record["complete_url"])),
+        token=str(record["dispatch_token"]),
+        payload=record["payload"],
+    )
+    Path(path).unlink(missing_ok=True)
+
+
+def drain_completion_spool():
+    """Retry completions that the controller has not acknowledged."""
+    root = _completion_spool_root()
+    if not root.exists():
+        return 0
+
+    delivered = 0
+    for path in sorted(root.glob("*.json")):
+        try:
+            _deliver_spooled_completion(path)
+        except Exception as exc:
+            LOGGER.warning(
+                "Unable to deliver spooled completion %s: %s",
+                path.name,
+                exc,
+            )
+            continue
+        delivered += 1
+        LOGGER.info("Delivered spooled completion %s.", path.name)
+    return delivered
+
+
 def heartbeat(status=None, running=None, include_details=True):
     payload = _local_health_payload(include_details=include_details)
     if status is not None:
@@ -1423,6 +1511,7 @@ def remote_runner_heartbeat_loop():
     while not STOP:
         try:
             heartbeat()
+            drain_completion_spool()
         except Exception:
             LOGGER.exception("Unable to update remote runner heartbeat.")
         for _ in range(HEARTBEAT_SECONDS):
@@ -2754,21 +2843,51 @@ def execute_job(manifest):
         LOGGER.exception("Remote Job #%s failed.", job_id)
         message = str(exc)[:4000]
     finally:
+        completion_payload = {
+            "status": final_status,
+            "exit_code": exit_code,
+            "message": message,
+            "steps": results,
+        }
+        completion_path = None
         try:
-            request(
-                "POST",
-                api(complete_url),
-                token=token,
-                payload={
-                    "status": final_status,
-                    "exit_code": exit_code,
-                    "message": message,
-                    "steps": results,
-                },
+            completion_path = _spool_completion(
+                job_id,
+                slice_id,
+                complete_url,
+                token,
+                completion_payload,
             )
+            try:
+                _deliver_spooled_completion(completion_path)
+            except Exception as exc:
+                LOGGER.warning(
+                    "Unable to report completion for Job #%s%s; "
+                    "the result remains queued in %s: %s",
+                    job_id,
+                    (
+                        " slice #{}".format(slice_id)
+                        if slice_id is not None
+                        else ""
+                    ),
+                    completion_path,
+                    exc,
+                )
+        except Exception:
+            LOGGER.exception(
+                "Unable to spool completion for Job #%s%s; retaining workspace %s.",
+                job_id,
+                (
+                    " slice #{}".format(slice_id)
+                    if slice_id is not None
+                    else ""
+                ),
+                workspace,
+            )
+            return
         finally:
-            shutil.rmtree(workspace, ignore_errors=True)
-
+            if completion_path is not None:
+                shutil.rmtree(workspace, ignore_errors=True)
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Journeyman remote execution agent")

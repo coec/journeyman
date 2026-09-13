@@ -81,6 +81,17 @@ class ProjectExecutionQueueError(Exception):
     The exception message is safe to show in the web interface.
     """
 
+    def __init__(
+        self,
+        message,
+        *,
+        reason=None,
+        blocker_job_id=None,
+    ):
+        super().__init__(message)
+        self.reason = reason
+        self.blocker_job_id = blocker_job_id
+
 
 def _utcnow():
     return datetime.now(timezone.utc)
@@ -203,7 +214,13 @@ def queue_project_execution(
     )
     if blocker is not None:
         raise ProjectExecutionQueueError(
-            project_concurrency_message(project, concurrency_policy, blocker)
+            project_concurrency_message(
+                project,
+                concurrency_policy,
+                blocker,
+            ),
+            reason="concurrency",
+            blocker_job_id=blocker.id,
         )
 
     machine_credential_override = None

@@ -961,6 +961,45 @@ def prepare_package_launch(
 
 
 
+def package_default_answer_form(package):
+    """Return launch-form values represented by the Package defaults."""
+    fields = package_launch_fields(package)
+    form = {}
+    for field in fields:
+        if not field.get("visible"):
+            continue
+        name = field["html_name"]
+        input_type = field["input_type"]
+        if input_type == PACKAGE_INPUT_BOOLEAN:
+            if field.get("checked"):
+                form[name] = "true"
+        elif input_type == PACKAGE_INPUT_CHOICE:
+            if field.get("selected_choice_key"):
+                form[name] = field["selected_choice_key"]
+        elif field.get("value") not in (None, ""):
+            form[name] = str(field["value"])
+    return form
+
+
+def prepare_package_scheduled_launch(package, answers=None):
+    """Build a non-interactive Package launch from saved schedule answers."""
+    if package is None or not package.enabled:
+        raise PackageLaunchError("This Package is disabled and cannot be scheduled.")
+
+    form = package_default_answer_form(package)
+    if answers:
+        form.update(dict(answers))
+
+    errors, _fields, prepared = prepare_package_launch(package=package, form=form)
+    if errors:
+        raise PackageLaunchError(
+            'Package "{}" cannot run unattended: {}'.format(
+                package.name, " ".join(errors)
+            )
+        )
+    return prepared
+
+
 def _condition_variable_names(value):
     """Return Package variable names referenced by a condition tree."""
 

@@ -10,6 +10,10 @@ from app import db
 from app.models import ProjectSchedule
 from app.services.audit import record_audit_event
 from app.services.project_execution import ProjectExecutionQueueError, queue_project_execution
+from app.services.project_package_launch import (
+    PackageLaunchError,
+    prepare_package_scheduled_launch,
+)
 from app.services.project_operational_approval import (
     project_operational_approval_error,
 )
@@ -129,7 +133,7 @@ def run_claimed_schedule(schedule_id, now=None):
     if schedule is None or schedule.claimed_at is None:
         return None
 
-    approval_error = project_operational_approval_error(schedule.project)
+    approval_error = project_operational_approval_error(schedule.target_project)
     if approval_error:
         schedule.last_error = approval_error
         schedule.enabled = False
@@ -144,7 +148,8 @@ def run_claimed_schedule(schedule_id, now=None):
             object_name=schedule.name,
             actor_username=schedule.created_by,
             details={
-                "project_id": schedule.project_id,
+                "project_id": schedule.target_project.id,
+                "package_id": schedule.package_id,
                 "error": approval_error,
             },
         )
@@ -155,10 +160,23 @@ def run_claimed_schedule(schedule_id, now=None):
         return None
 
     try:
+        package_execution = None
+        if schedule.package is not None:
+            prepared = prepare_package_scheduled_launch(
+                schedule.package, schedule.get_package_answers()
+            )
+            package_execution = prepared.execution_data
         job = queue_project_execution(
-            project=schedule.project,
+            project=schedule.target_project,
             requested_by=schedule.created_by,
-            message='Queued by schedule "{}".'.format(schedule.name),
+            message=(
+                'Queued Package "{}" by schedule "{}".'.format(
+                    schedule.package.name, schedule.name
+                )
+                if schedule.package is not None
+                else 'Queued by schedule "{}".'.format(schedule.name)
+            ),
+            package_execution=package_execution,
             launch_source="schedule",
         )
         schedule.last_run_at = now
@@ -175,16 +193,55 @@ def run_claimed_schedule(schedule_id, now=None):
             object_id=schedule.id,
             object_name=schedule.name,
             actor_username=schedule.created_by,
-            details={"project_id": schedule.project_id, "job_id": job.id},
+            details={"project_id": schedule.target_project.id, "package_id": schedule.package_id, "job_id": job.id},
         )
         return job
-    except ProjectExecutionQueueError as exc:
-        schedule.last_error = str(exc)
+    except (ProjectExecutionQueueError, PackageLaunchError) as exc:
+        concurrency_skip = (
+            isinstance(exc, ProjectExecutionQueueError)
+            and getattr(exc, "reason", None) == "concurrency"
+        )
+
+        # This scheduled occurrence was processed even when concurrency policy
+        # deliberately prevented creation of a Job.
+        schedule.last_run_at = now
+        schedule.last_error = "" if concurrency_skip else str(exc)
         schedule.claimed_at = None
         schedule.next_run_at = calculate_next_run(schedule, after=now)
         if schedule.schedule_type == "once" or schedule.next_run_at is None:
             schedule.enabled = False
         db.session.commit()
+
+        details = {
+            "project_id": schedule.target_project.id,
+            "package_id": schedule.package_id,
+        }
+
+        if concurrency_skip:
+            details.update(
+                {
+                    "reason": "concurrency",
+                    "blocker_job_id": exc.blocker_job_id,
+                    "message": str(exc),
+                }
+            )
+            record_audit_event(
+                "schedule.launch",
+                result="skipped",
+                object_type="project_schedule",
+                object_id=schedule.id,
+                object_name=schedule.name,
+                actor_username=schedule.created_by,
+                details=details,
+            )
+            current_app.logger.info(
+                'Scheduled launch "%s" skipped: %s',
+                schedule.name,
+                exc,
+            )
+            return None
+
+        details["error"] = str(exc)
         record_audit_event(
             "schedule.launch",
             result="failure",
@@ -192,7 +249,7 @@ def run_claimed_schedule(schedule_id, now=None):
             object_id=schedule.id,
             object_name=schedule.name,
             actor_username=schedule.created_by,
-            details={"project_id": schedule.project_id, "error": str(exc)},
+            details=details,
         )
         current_app.logger.warning("Scheduled Project launch failed: %s", exc)
         return None

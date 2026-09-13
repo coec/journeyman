@@ -18,8 +18,16 @@ def test_mtls_health_poll_updates_runner(app, monkeypatch, tmp_path):
 
     seen = {}
 
-    def fake_fetch(hostname, management_port, runner_uuid, serial, fingerprint):
-        seen.update(hostname=hostname, management_port=management_port, runner_uuid=runner_uuid)
+    def fake_fetch(
+        hostname, management_port, runner_uuid, serial, fingerprint,
+        *, transport_settings=None,
+    ):
+        seen.update(
+            hostname=hostname,
+            management_port=management_port,
+            runner_uuid=runner_uuid,
+            transport_settings=transport_settings,
+        )
         return {
             "runner_uuid": runner_uuid,
             "hostname": hostname,
@@ -59,6 +67,11 @@ def test_mtls_health_poll_updates_runner(app, monkeypatch, tmp_path):
 
         assert result == {"updated": 1, "failed": {}}
         assert seen["management_port"] == 9443
+        assert seen["transport_settings"]["default_port"] == 8443
+        assert seen["transport_settings"]["timeout"] == 5
+        assert seen["transport_settings"]["controller_cert"] == str(
+            root / "controller-cert.pem"
+        )
         assert stored.version == "0.18"
         assert stored.status_message == "Ready"
         assert stored.free_workspace_bytes == 123456

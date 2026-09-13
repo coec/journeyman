@@ -155,3 +155,172 @@ def test_schedule_order_puts_reserved_zz_names_last(app):
             "Nightly patching",
             "ZZ - Built-in backup",
         ]
+
+
+def test_package_schedule_target_properties(app):
+    from app.models import ProjectPackage
+
+    with app.app_context():
+        project = Project(
+            name="Package schedule project",
+            description="",
+            enabled=True,
+            owner="tester",
+            security_scope="private",
+        )
+        package = ProjectPackage(
+            name="Package schedule target",
+            project=project,
+            enabled=True,
+            owner="tester",
+        )
+        db.session.add_all([project, package])
+        db.session.flush()
+
+        schedule = ProjectSchedule(
+            package_id=package.id,
+            name="Scheduled package",
+            schedule_type="daily",
+            timezone_name="UTC",
+            start_at=datetime(2099, 1, 1, 2, 0, tzinfo=timezone.utc),
+            weekdays="",
+            enabled=True,
+            created_by="tester",
+        )
+        db.session.add(schedule)
+        db.session.commit()
+
+        assert schedule.project_id is None
+        assert schedule.package_id == package.id
+        assert schedule.target_type == "package"
+        assert schedule.target_name == package.name
+        assert schedule.target_project.id == project.id
+
+
+def test_schedule_configuration_accepts_package_target(app):
+    from app.models import ProjectPackage
+    from app.services.schedule_configuration import configure_schedule
+
+    with app.app_context():
+        project = Project(
+            name="Package configuration project",
+            description="",
+            enabled=True,
+            owner="tester",
+            security_scope="private",
+        )
+        package = ProjectPackage(
+            name="Schedulable Package",
+            project=project,
+            enabled=True,
+            owner="tester",
+        )
+        db.session.add_all([project, package])
+        db.session.commit()
+
+        result = configure_schedule({
+            "name": "Nightly Package",
+            "package": package.name,
+            "schedule_type": "daily",
+            "timezone": "UTC",
+            "start_at": "2099-01-01T02:00",
+            "enabled": True,
+        }, created_by="api-admin")
+
+        assert result.changed is True
+        assert result.schedule.package_id == package.id
+        assert result.schedule.project_id is None
+        assert result.schedule.target_type == "package"
+
+
+def test_package_schedule_rejects_required_input_without_default(app):
+    from app.models import ProjectPackage, ProjectPackageInput
+    from app.services.project_package_launch import (
+        PackageLaunchError,
+        prepare_package_scheduled_launch,
+    )
+
+    with app.app_context():
+        project = Project(
+            name="Prompted package project",
+            description="",
+            enabled=True,
+            owner="tester",
+            security_scope="private",
+        )
+        package = ProjectPackage(
+            name="Prompted Package",
+            project=project,
+            enabled=True,
+            owner="tester",
+        )
+        package.inputs.append(ProjectPackageInput(
+            position=1,
+            variable_name="required_value",
+            label="Required value",
+            input_type="text",
+            required=True,
+        ))
+        db.session.add_all([project, package])
+        db.session.commit()
+
+        import pytest
+        with pytest.raises(PackageLaunchError, match="cannot run unattended"):
+            prepare_package_scheduled_launch(package)
+
+
+def test_package_schedule_accepts_required_saved_input(app):
+    from app.models import ProjectPackage, ProjectPackageInput
+    from app.services.project_package_launch import prepare_package_scheduled_launch
+
+    with app.app_context():
+        project = Project(
+            name="Prompted scheduled project",
+            description="",
+            enabled=True,
+            owner="tester",
+            security_scope="private",
+        )
+        package = ProjectPackage(
+            name="Prompted scheduled Package",
+            project=project,
+            enabled=True,
+            owner="tester",
+        )
+        package_input = ProjectPackageInput(
+            position=1,
+            variable_name="required_value",
+            label="Required value",
+            input_type="text",
+            required=True,
+        )
+        package.inputs.append(package_input)
+        db.session.add_all([project, package])
+        db.session.commit()
+
+        prepared = prepare_package_scheduled_launch(
+            package,
+            {"package_value_{}".format(package_input.id): "scheduled-value"},
+        )
+        assert prepared.execution_data.execution_vars["required_value"] == "scheduled-value"
+
+
+def test_schedule_encrypts_package_answers(app):
+    with app.app_context():
+        schedule = ProjectSchedule(
+            project_id=1,
+            name="Encrypted Package answers",
+            schedule_type="daily",
+            timezone_name="UTC",
+            start_at=datetime(2099, 1, 1, 2, 0, tzinfo=timezone.utc),
+            weekdays="",
+            enabled=False,
+            created_by="tester",
+        )
+        schedule.set_package_answers({"package_value_123": "secret-ish-value"})
+
+        assert schedule.encrypted_package_answers
+        assert b"secret-ish-value" not in schedule.encrypted_package_answers
+        assert schedule.get_package_answers() == {
+            "package_value_123": "secret-ish-value"
+        }

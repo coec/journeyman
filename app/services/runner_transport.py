@@ -58,10 +58,24 @@ def _management_url(hostname, port, path):
     return "https://{}:{}{}".format(hostname, port, path)
 
 
-def _management_ssl_context():
+def _management_transport_settings():
+    """Resolve Flask-backed runner transport settings in the caller thread."""
+
     cert, key, ca = _controller_tls()
-    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca)
-    context.load_cert_chain(certfile=cert, keyfile=key)
+    return {
+        "controller_cert": cert,
+        "controller_key": key,
+        "ca_cert": ca,
+        "default_port": int(current_app.config["RUNNER_MANAGEMENT_PORT"]),
+        "timeout": max(
+            1, int(current_app.config["RUNNER_MANAGEMENT_TIMEOUT_SECONDS"])
+        ),
+    }
+
+
+def _management_ssl_context(*, controller_cert, controller_key, ca_cert):
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_cert)
+    context.load_cert_chain(certfile=controller_cert, keyfile=controller_key)
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -142,16 +156,28 @@ def _request_runner_json(
     method,
     path,
     payload=None,
+    transport_settings=None,
 ):
-    """Perform one pinned mTLS management request and return JSON."""
+    """Perform one pinned mTLS management request and return JSON.
+
+    ``transport_settings`` may be resolved by the caller before dispatching
+    work to another thread.  Flask application context is thread-local, so
+    worker threads must not dereference ``current_app`` themselves.
+    """
 
     hostname = str(hostname or "").strip()
     if not hostname:
         raise RunnerTransportError("Runner hostname is empty.")
-    port = int(management_port or current_app.config["RUNNER_MANAGEMENT_PORT"])
-    timeout = max(1, int(current_app.config["RUNNER_MANAGEMENT_TIMEOUT_SECONDS"]))
+    settings = transport_settings or _management_transport_settings()
+    port = int(management_port or settings["default_port"])
+    timeout = int(settings["timeout"])
+    context = _management_ssl_context(
+        controller_cert=settings["controller_cert"],
+        controller_key=settings["controller_key"],
+        ca_cert=settings["ca_cert"],
+    )
     connection = http.client.HTTPSConnection(
-        hostname, port, timeout=timeout, context=_management_ssl_context()
+        hostname, port, timeout=timeout, context=context
     )
     body = None
     headers = {"Accept": "application/json"}
@@ -220,6 +246,8 @@ def fetch_runner_health(
     expected_runner_uuid,
     expected_serial="",
     expected_fingerprint_sha256="",
+    *,
+    transport_settings=None,
 ):
     """Fetch one runner health document and pin its live certificate identity."""
 
@@ -231,6 +259,7 @@ def fetch_runner_health(
         expected_fingerprint_sha256,
         method="GET",
         path="/v1/health",
+        transport_settings=transport_settings,
     )
     actual_uuid = str(payload.get("runner_uuid") or "").strip()
     if actual_uuid != str(expected_runner_uuid or "").strip():
@@ -354,6 +383,11 @@ def refresh_remote_runner_health():
         )
         for row in rows
     ]
+    # Flask application context is local to this thread.  Resolve all
+    # current_app-backed transport configuration before entering the pool and
+    # pass only plain values to worker threads.
+    transport_settings = _management_transport_settings()
+
     results = {}
     failures = {}
     identity_failures = {}
@@ -367,6 +401,7 @@ def refresh_remote_runner_health():
                 runner_uuid,
                 serial,
                 fingerprint,
+                transport_settings=transport_settings,
             ): runner_id
             for runner_id, hostname, management_port, runner_uuid, serial, fingerprint in targets
         }

@@ -641,12 +641,15 @@ def api_schedule_configurations():
         return denied
     name = str(request.args.get("name") or "").strip()
     project_name = str(request.args.get("project") or "").strip()
-    query = ProjectSchedule.query.join(Project)
+    package_name = str(request.args.get("package") or "").strip()
+    query = ProjectSchedule.query
     if name:
         query = query.filter(ProjectSchedule.name == name)
     if project_name:
-        query = query.filter(Project.name == project_name)
-    rows = query.order_by(Project.name.asc(), ProjectSchedule.name.asc()).all()
+        query = query.join(Project, ProjectSchedule.project_id == Project.id).filter(Project.name == project_name)
+    if package_name:
+        query = query.join(ProjectPackage, ProjectSchedule.package_id == ProjectPackage.id).filter(ProjectPackage.name == package_name)
+    rows = query.order_by(ProjectSchedule.name.asc()).all()
     return jsonify({"schedules": [schedule_configuration_document(row) for row in rows]})
 
 
@@ -675,11 +678,12 @@ def delete_schedule_api():
     if denied:
         return denied
     project_name = str(request.args.get("project") or "").strip()
+    package_name = str(request.args.get("package") or "").strip()
     name = str(request.args.get("name") or "").strip()
-    if not project_name or not name:
-        return _error(400, "invalid_request", "Project and Schedule names are required.")
+    if not name or bool(project_name) == bool(package_name):
+        return _error(400, "invalid_request", "Schedule name and exactly one of Project or Package name are required.")
     try:
-        result = delete_schedule(project_name, name)
+        result = delete_schedule(project_name, name, package_name=package_name)
     except ScheduleConfigurationError as exc:
         return _error(409, "configuration_rejected", str(exc))
     return jsonify({"changed": result.changed, "message": result.message, "schedule": None})

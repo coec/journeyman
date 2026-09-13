@@ -126,6 +126,11 @@ Packages · Journeyman
                   {% endif %}
 
                   {% if not package.builtin_key %}
+                    {% if package.id in operational_approval_errors %}
+                      <button class="action-menu-item" type="button" disabled title="{{ operational_approval_errors[package.id] }}">Schedule</button>
+                    {% else %}
+                      <a class="action-menu-item" href="{{ url_for('main.schedule_new', package_id=package.id) }}">Schedule</a>
+                    {% endif %}
                     <details class="action-submenu">
                       <summary class="action-menu-item action-submenu-trigger">
                         Show Ansible <span aria-hidden="true">‹</span>

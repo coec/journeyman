@@ -7,9 +7,16 @@ from app.routes import (
     Project, abort, bp, current_user_can_access_automation, current_user_can_manage_automation, current_username, db, flash,
     redirect, render_template, request, url_for,
 )
-from app.models import ProjectSchedule
+from app.models import ProjectPackage, ProjectSchedule
 from app.services.audit import record_audit_event
 from app.services.project_execution import ProjectExecutionQueueError, queue_project_execution
+from app.services.project_package_launch import (
+    PackageLaunchError,
+    package_default_answer_form,
+    package_launch_fields,
+    prepare_package_launch,
+    prepare_package_scheduled_launch,
+)
 from app.services.project_operational_approval import (
     project_operational_approval_error,
 )
@@ -28,7 +35,7 @@ def _require_admin():
         abort(403)
 
 
-def _form_values(schedule=None, project_id=None):
+def _form_values(schedule=None, project_id=None, package_id=None):
     if schedule is not None:
         start = schedule.start_at
         end = schedule.end_at
@@ -50,7 +57,9 @@ def _form_values(schedule=None, project_id=None):
                 end = end.astimezone(timezone.utc)
         return {
             "name": schedule.name,
+            "target_type": schedule.target_type,
             "project_id": schedule.project_id,
+            "package_id": schedule.package_id,
             "schedule_type": schedule.schedule_type,
             "timezone_name": schedule.timezone_name,
             "start_at": start.strftime("%Y-%m-%dT%H:%M"),
@@ -61,7 +70,9 @@ def _form_values(schedule=None, project_id=None):
         }
     return {
         "name": "",
+        "target_type": "package" if package_id else "project",
         "project_id": project_id,
+        "package_id": package_id,
         "schedule_type": "once",
         "timezone_name": "Australia/Perth",
         "start_at": "",
@@ -73,10 +84,15 @@ def _form_values(schedule=None, project_id=None):
 
 
 def _submitted_values():
+    target_type = str(request.form.get("target_type") or "project").strip().lower()
     try:
         project_id = int(request.form.get("project_id", ""))
     except (TypeError, ValueError):
         project_id = None
+    try:
+        package_id = int(request.form.get("package_id", ""))
+    except (TypeError, ValueError):
+        package_id = None
     try:
         interval_minutes = int(request.form.get("interval_minutes", ""))
     except (TypeError, ValueError):
@@ -89,7 +105,9 @@ def _submitted_values():
             weekdays.add(-1)
     return {
         "name": str(request.form.get("name") or "").strip(),
-        "project_id": project_id,
+        "target_type": target_type,
+        "project_id": project_id if target_type == "project" else None,
+        "package_id": package_id if target_type == "package" else None,
         "schedule_type": str(request.form.get("schedule_type") or "").strip(),
         "timezone_name": str(request.form.get("timezone_name") or "").strip(),
         "start_at": str(request.form.get("start_at") or "").strip(),
@@ -100,9 +118,44 @@ def _submitted_values():
     }
 
 
+
+def _package_answers_from_request(package, existing_answers=None):
+    """Collect Package input answers from the Schedule form.
+
+    Secret fields are deliberately rendered blank while editing. Leaving one
+    blank preserves the encrypted value already stored on the Schedule.
+    """
+    existing_answers = dict(existing_answers or {})
+    answers = {}
+    for package_input in package.inputs:
+        name = "package_value_{}".format(package_input.id)
+        if package_input.input_type == "boolean":
+            if request.form.get(name) == "true":
+                answers[name] = "true"
+            continue
+        value = request.form.get(name, "")
+        is_secret = package_input.is_secret or package_input.input_type == "password"
+        if is_secret and not value and name in existing_answers:
+            answers[name] = existing_answers[name]
+        elif value != "":
+            answers[name] = value
+    return answers
+
+
+def _package_fields(package, answers=None):
+    if package is None:
+        return []
+    form = package_default_answer_form(package)
+    if answers:
+        form.update(dict(answers))
+    _errors, fields, _prepared = prepare_package_launch(package=package, form=form)
+    return fields
+
+
 def _apply(schedule, values):
     schedule.name = values["name"]
     schedule.project_id = values["project_id"]
+    schedule.package_id = values["package_id"]
     schedule.schedule_type = values["schedule_type"]
     schedule.timezone_name = values["timezone_name"]
     schedule.start_at = parse_local_datetime(values["start_at"], values["timezone_name"])
@@ -146,7 +199,7 @@ def schedules():
         schedule.id: error
         for schedule in page_rows
         for error in [
-            project_operational_approval_error(schedule.project)
+            project_operational_approval_error(schedule.target_project)
         ]
         if error
     }
@@ -162,18 +215,40 @@ def schedules():
 def schedule_new():
     _require_admin()
     project_id = request.args.get("project_id", type=int)
-    values = _form_values(project_id=project_id)
+    package_id = request.args.get("package_id", type=int)
+    values = _form_values(project_id=project_id, package_id=package_id)
     projects = Project.query.order_by(Project.name.asc()).all()
+    packages = ProjectPackage.query.filter_by(enabled=True).order_by(ProjectPackage.name.asc()).all()
     if request.method == "POST":
         values = _submitted_values()
         errors = []
         if not values["name"]:
             errors.append("Name is required.")
         project = db.session.get(Project, values["project_id"]) if values["project_id"] else None
-        if project is None:
+        package = db.session.get(ProjectPackage, values["package_id"]) if values["package_id"] else None
+        target_project = package.project if package is not None else project
+        package_answers = {}
+        package_fields = []
+        if request.form.get("load_package_inputs") and package is not None:
+            package_fields = _package_fields(package)
+            return render_template(
+                "schedule_form.html", schedule=None, projects=projects, packages=packages,
+                package_fields=package_fields, form_data=values,
+            )
+        if values["target_type"] == "package":
+            if package is None:
+                errors.append("Package is required.")
+            else:
+                package_answers = _package_answers_from_request(package)
+                launch_errors, package_fields, _prepared = prepare_package_launch(
+                    package=package,
+                    form={**package_default_answer_form(package), **package_answers},
+                )
+                errors.extend(launch_errors)
+        elif project is None:
             errors.append("Project is required.")
-        elif values["enabled"]:
-            approval_error = project_operational_approval_error(project)
+        if target_project is not None and values["enabled"]:
+            approval_error = project_operational_approval_error(target_project)
             if approval_error:
                 errors.append(approval_error)
         start_at = None
@@ -194,20 +269,26 @@ def schedule_new():
         if errors:
             for error in errors:
                 flash(error, "error")
-            return render_template("schedule_form.html", schedule=None, projects=projects, form_data=values)
+            return render_template("schedule_form.html", schedule=None, projects=projects, packages=packages, package_fields=package_fields, form_data=values)
         schedule = ProjectSchedule(created_by=current_username())
         _apply(schedule, values)
+        if package is not None:
+            schedule.set_package_answers(package_answers)
         db.session.add(schedule)
         try:
             db.session.commit()
         except Exception:
             db.session.rollback()
             flash("Unable to create the schedule. The name may already be in use for this Project.", "error")
-            return render_template("schedule_form.html", schedule=None, projects=projects, form_data=values)
-        record_audit_event("schedule.create", object_type="project_schedule", object_id=schedule.id, object_name=schedule.name, details={"project_id": schedule.project_id})
+            return render_template("schedule_form.html", schedule=None, projects=projects, packages=packages, package_fields=package_fields, form_data=values)
+        record_audit_event("schedule.create", object_type="project_schedule", object_id=schedule.id, object_name=schedule.name, details={"project_id": schedule.target_project.id, "package_id": schedule.package_id})
         flash("Schedule created.", "success")
         return redirect(url_for("main.schedules"))
-    return render_template("schedule_form.html", schedule=None, projects=projects, form_data=values)
+    selected_package = db.session.get(ProjectPackage, package_id) if package_id else None
+    return render_template(
+        "schedule_form.html", schedule=None, projects=projects, packages=packages,
+        package_fields=_package_fields(selected_package), form_data=values,
+    )
 
 
 @bp.route("/schedules/<int:schedule_id>/edit", methods=["GET", "POST"])
@@ -215,17 +296,44 @@ def schedule_edit(schedule_id):
     _require_admin()
     schedule = db.get_or_404(ProjectSchedule, schedule_id)
     projects = Project.query.order_by(Project.name.asc()).all()
+    packages = ProjectPackage.query.filter_by(enabled=True).order_by(ProjectPackage.name.asc()).all()
+    if schedule.package is not None and schedule.package not in packages:
+        packages.append(schedule.package)
     values = _form_values(schedule=schedule)
+    existing_package_answers = schedule.get_package_answers() if schedule.package is not None else {}
+    package_fields = _package_fields(schedule.package, existing_package_answers)
     if request.method == "POST":
         values = _submitted_values()
         errors = []
         if not values["name"]:
             errors.append("Name is required.")
         project = db.session.get(Project, values["project_id"]) if values["project_id"] else None
-        if project is None:
+        package = db.session.get(ProjectPackage, values["package_id"]) if values["package_id"] else None
+        target_project = package.project if package is not None else project
+        package_answers = {}
+        package_fields = []
+        if request.form.get("load_package_inputs") and package is not None:
+            preserved = existing_package_answers if package.id == schedule.package_id else {}
+            package_fields = _package_fields(package, preserved)
+            return render_template(
+                "schedule_form.html", schedule=schedule, projects=projects, packages=packages,
+                package_fields=package_fields, form_data=values,
+            )
+        if values["target_type"] == "package":
+            if package is None:
+                errors.append("Package is required.")
+            else:
+                preserved = existing_package_answers if package.id == schedule.package_id else {}
+                package_answers = _package_answers_from_request(package, preserved)
+                launch_errors, package_fields, _prepared = prepare_package_launch(
+                    package=package,
+                    form={**package_default_answer_form(package), **package_answers},
+                )
+                errors.extend(launch_errors)
+        elif project is None:
             errors.append("Project is required.")
-        elif values["enabled"]:
-            approval_error = project_operational_approval_error(project)
+        if target_project is not None and values["enabled"]:
+            approval_error = project_operational_approval_error(target_project)
             if approval_error:
                 errors.append(approval_error)
         start_at = None
@@ -246,18 +354,25 @@ def schedule_edit(schedule_id):
         if errors:
             for error in errors:
                 flash(error, "error")
-            return render_template("schedule_form.html", schedule=schedule, projects=projects, form_data=values)
+            return render_template("schedule_form.html", schedule=schedule, projects=projects, packages=packages, package_fields=package_fields, form_data=values)
         _apply(schedule, values)
+        if package is not None:
+            schedule.set_package_answers(package_answers)
+        else:
+            schedule.set_package_answers({})
         try:
             db.session.commit()
         except Exception:
             db.session.rollback()
             flash("Unable to update the schedule.", "error")
-            return render_template("schedule_form.html", schedule=schedule, projects=projects, form_data=values)
-        record_audit_event("schedule.update", object_type="project_schedule", object_id=schedule.id, object_name=schedule.name, details={"project_id": schedule.project_id})
+            return render_template("schedule_form.html", schedule=schedule, projects=projects, packages=packages, package_fields=package_fields, form_data=values)
+        record_audit_event("schedule.update", object_type="project_schedule", object_id=schedule.id, object_name=schedule.name, details={"project_id": schedule.target_project.id, "package_id": schedule.package_id})
         flash("Schedule updated.", "success")
         return redirect(url_for("main.schedules"))
-    return render_template("schedule_form.html", schedule=schedule, projects=projects, form_data=values)
+    return render_template(
+        "schedule_form.html", schedule=schedule, projects=projects, packages=packages,
+        package_fields=package_fields, form_data=values,
+    )
 
 
 @bp.post("/schedules/<int:schedule_id>/toggle")
@@ -266,7 +381,13 @@ def schedule_toggle(schedule_id):
     schedule = db.get_or_404(ProjectSchedule, schedule_id)
     requested_enabled = not schedule.enabled
     if requested_enabled:
-        approval_error = project_operational_approval_error(schedule.project)
+        if schedule.package is not None:
+            try:
+                prepare_package_scheduled_launch(schedule.package, schedule.get_package_answers())
+            except PackageLaunchError as exc:
+                flash(str(exc), "error")
+                return redirect(url_for("main.schedules"))
+        approval_error = project_operational_approval_error(schedule.target_project)
         if approval_error:
             flash(approval_error, "error")
             return redirect(url_for("main.schedules"))
@@ -286,13 +407,22 @@ def schedule_toggle(schedule_id):
 def schedule_run_now(schedule_id):
     _require_admin()
     schedule = db.get_or_404(ProjectSchedule, schedule_id)
-    approval_error = project_operational_approval_error(schedule.project)
+    approval_error = project_operational_approval_error(schedule.target_project)
     if approval_error:
         flash(approval_error, "error")
         return redirect(url_for("main.schedules"))
     try:
-        job = queue_project_execution(project=schedule.project, requested_by=current_username(), message='Dispatch now from schedule "{}".'.format(schedule.name), launch_source="schedule")
-    except ProjectExecutionQueueError as exc:
+        package_execution = None
+        if schedule.package is not None:
+            package_execution = prepare_package_scheduled_launch(schedule.package, schedule.get_package_answers()).execution_data
+        job = queue_project_execution(
+            project=schedule.target_project,
+            requested_by=current_username(),
+            message='Dispatch now from schedule "{}".'.format(schedule.name),
+            package_execution=package_execution,
+            launch_source="schedule",
+        )
+    except (ProjectExecutionQueueError, PackageLaunchError) as exc:
         flash(str(exc), "error")
         return redirect(url_for("main.schedules"))
     schedule.last_run_at = datetime.now(timezone.utc)

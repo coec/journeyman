@@ -1,8 +1,8 @@
-"""Manage Journeyman Project schedules declaratively."""
+"""Manage Journeyman Project and Package schedules declaratively."""
 
 DOCUMENTATION = r'''
 module: schedule
-short_description: Configure a Journeyman Project schedule
+short_description: Configure a Journeyman Project or Package schedule
 options:
   name:
     type: str
@@ -11,9 +11,12 @@ options:
     - Name of the Journeyman resource.
   project:
     type: str
-    required: true
     description:
-    - Name of the Journeyman Project.
+    - Name of the Journeyman Project. Mutually exclusive with C(package).
+  package:
+    type: str
+    description:
+    - Name of the Journeyman Package. Mutually exclusive with C(project).
   schedule_type:
     type: str
     choices:
@@ -81,7 +84,7 @@ options:
     description:
     - Journeyman API bearer token. Defaults to the C(JOURNEYMAN_API_TOKEN) environment variable.
 description:
-- Declares the desired configuration of a Journeyman Project Schedule.
+- Declares the desired configuration of a Journeyman Project or Package Schedule.
 - Schedules can be created, updated idempotently, disabled, or removed through the Journeyman API.
 version_added: 0.1.0
 author:
@@ -129,6 +132,15 @@ EXAMPLES = r'''
     start_at: "2026-09-13T01:00"
     state: present
 
+- name: Schedule an unattended Package
+  journeyman.configuration.schedule:
+    name: Nightly ingestion
+    package: POM Ingestion
+    schedule_type: daily
+    timezone: Australia/Perth
+    start_at: "2026-09-13T07:45"
+    state: present
+
 - name: Remove a schedule
   journeyman.configuration.schedule:
     name: Retired schedule
@@ -146,17 +158,20 @@ message: {description: Configuration result message, returned: when available, t
 
 def execute(params, client):
     name = params["name"]
-    project = params["project"]
+    project = params.get("project") or ""
+    package = params.get("package") or ""
+    target_query = {"package": package} if package else {"project": project}
     if params.get("state", "present") == "absent":
         return client.request(
             "DELETE",
             "/api/v1/schedule-configurations/by-name",
-            query={"project": project, "name": name},
+            query={**target_query, "name": name},
         )
 
     payload = {
         "name": name,
-        "project": project,
+        **target_query,
+        "target_type": "package" if package else "project",
         "schedule_type": params.get("schedule_type", "once"),
         "timezone": params.get("timezone", "UTC"),
         "start_at": params.get("start_at") or "",
@@ -182,7 +197,8 @@ def main():
     module = AnsibleModule(
         argument_spec={
             "name": {"type": "str", "required": True},
-            "project": {"type": "str", "required": True},
+            "project": {"type": "str"},
+            "package": {"type": "str"},
             "schedule_type": {"type": "str", "choices": ["once", "daily", "weekly", "interval"], "default": "once"},
             "timezone": {"type": "str", "default": "UTC"},
             "start_at": {"type": "str"},
@@ -197,6 +213,8 @@ def main():
             "timeout": {"type": "int", "default": 30},
         },
         required_if=[["state", "present", ["start_at"]]],
+        mutually_exclusive=[["project", "package"]],
+        required_one_of=[["project", "package"]],
         supports_check_mode=False,
     )
     try:

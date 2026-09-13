@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if schedule else 'Add' }} Schedule · Journeyman{% endblock %}
+{% block title %}{{ 'Edit' if schedule else 'Add' }} Schedule · Journeyman
+{% endblock %}
 {% block content %}
 <div class="page-heading">
   <div>
     <h1>{{ 'Edit' if schedule else 'Add' }} Schedule</h1>
-    <p>Schedule a Project using timezone-aware start and end times.</p>
+    <p>Schedule a Project or unattended Package using timezone-aware start and end times.</p>
   </div>
 </div>
 
@@ -18,14 +19,55 @@
     </label>
 
     <label>
+      Target type
+      <select name="target_type" id="schedule-target-type">
+        <option value="project" {% if form_data.target_type == 'project' %}selected{% endif %}>Project</option>
+        <option value="package" {% if form_data.target_type == 'package' %}selected{% endif %}>Package</option>
+      </select>
+    </label>
+
+    <label id="schedule-project-target">
       Project
-      <select name="project_id" required>
+      <select name="project_id">
         <option value="">Select a Project</option>
         {% for project in projects %}
         <option value="{{ project.id }}" {% if form_data.project_id == project.id %}selected{% endif %}>{{ project.name }}</option>
         {% endfor %}
       </select>
     </label>
+
+    <label id="schedule-package-target">
+      Package
+      <select name="package_id">
+        <option value="">Select a Package</option>
+        {% for package in packages %}
+        <option value="{{ package.id }}" {% if form_data.package_id == package.id %}selected{% endif %}>{{ package.name }}</option>
+        {% endfor %}
+      </select>
+      <small class="field-help">Package input answers are stored with the Schedule and reused for each unattended dispatch.</small>
+      <button class="button" type="submit" name="load_package_inputs" value="1" formnovalidate>Load Package inputs</button>
+    </label>
+
+    {% if form_data.target_type == 'package' and package_fields %}
+    <fieldset>
+      <legend>Package inputs</legend>
+      <p class="field-help">These values belong to this Schedule. Secret values are encrypted at rest. When editing, leave a secret field blank to retain its current value.</p>
+      {% for field in package_fields %}
+      <div class="package-launch-field" data-package-launch-field data-variable-name="{{ field.variable_name }}" data-input-type="{{ field.input_type }}" data-base-required="{{ 'true' if field.required else 'false' }}" data-conditions='{{ field.conditions | tojson }}' {% if not field.visible %}hidden{% endif %}>
+        {% if field.input_type == 'boolean' %}
+        <label class="checkbox-label"><input type="checkbox" name="{{ field.html_name }}" value="true" {% if field.checked %}checked{% endif %}> {{ field.label }}</label>
+        {% elif field.input_type == 'choice' %}
+        <label>{{ field.label }}<select name="{{ field.html_name }}" {% if field.required %}required{% endif %}><option value="">Select a value</option>{% for choice in field.choices %}<option value="{{ choice.key }}" {% if choice.key == field.selected_choice_key %}selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select></label>
+        {% elif field.input_type == 'email_addresses' %}
+        <label>{{ field.label }}<textarea name="{{ field.html_name }}" rows="4" {% if field.required %}required{% endif %}>{{ field.value }}</textarea></label>
+        {% else %}
+        <label>{{ field.label }}<input type="{% if field.input_type == 'password' %}password{% elif field.input_type == 'integer' %}number{% elif field.input_type == 'url' %}url{% else %}text{% endif %}" name="{{ field.html_name }}" value="{{ field.value }}" autocomplete="{% if field.is_secret %}new-password{% else %}off{% endif %}" {% if field.required and not (schedule and field.is_secret) %}required{% endif %}></label>
+        {% endif %}
+        {% if field.help_text %}<small class="field-help">{{ field.help_text }}</small>{% endif %}
+      </div>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
 
     <label>
       Schedule type
@@ -84,4 +126,56 @@
     </div>
   </form>
 </section>
+<script nonce="{{ csp_nonce }}">
+(function () {
+  const type = document.getElementById("schedule-target-type");
+  const project = document.getElementById("schedule-project-target");
+  const pkg = document.getElementById("schedule-package-target");
+  function updateTarget() {
+    const packageSelected = type.value === "package";
+    project.hidden = packageSelected;
+    pkg.hidden = !packageSelected;
+    project.querySelector("select").required = !packageSelected;
+    pkg.querySelector("select").required = packageSelected;
+  }
+  type.addEventListener("change", updateTarget);
+  updateTarget();
+})();
+</script>
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+  const fields = Array.from(document.querySelectorAll("[data-package-launch-field]"));
+  function valueForField(field) {
+    const control = field.querySelector("input, select, textarea");
+    if (!control) return null;
+    if (field.dataset.inputType === "boolean") return control.checked;
+    if (!control.value) return null;
+    if (field.dataset.inputType === "integer") { const n=Number(control.value); return Number.isNaN(n)?null:n; }
+    if (field.dataset.inputType === "choice") { try { return JSON.parse(control.value); } catch(e) { return null; } }
+    return control.value;
+  }
+  function ruleMatches(rule, values) {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) return false;
+    return Object.entries(rule).every(function(entry) {
+      const k=entry[0], expected=entry[1];
+      if (k === "all" || k === "any") { if (!Array.isArray(expected)||!expected.length) return false; return k === "all" ? expected.every(r=>ruleMatches(r,values)) : expected.some(r=>ruleMatches(r,values)); }
+      if (k === "not") return expected && typeof expected === "object" && !Array.isArray(expected) && !ruleMatches(expected, values);
+      if (!Object.prototype.hasOwnProperty.call(values,k)) return false;
+      return Array.isArray(expected) ? expected.some(v=>JSON.stringify(values[k])===JSON.stringify(v)) : JSON.stringify(values[k])===JSON.stringify(expected);
+    });
+  }
+  function update() {
+    const values={}; fields.forEach(f=>{ if(!f.hidden){ const v=valueForField(f); if(v!==null) values[f.dataset.variableName]=v; }});
+    fields.forEach(function(f){
+      let conditions={}; try { conditions=JSON.parse(f.dataset.conditions||"{}"); } catch(e) {}
+      const visible=!conditions.visible_when || ruleMatches(conditions.visible_when, values);
+      const required=f.dataset.baseRequired === "true" || (visible && conditions.required_when && ruleMatches(conditions.required_when,values));
+      f.hidden=!visible; const c=f.querySelector("input, select, textarea"); if(c && c.type!=="checkbox") c.required=!!required;
+    });
+  }
+  fields.forEach(f=>{ const c=f.querySelector("input, select, textarea"); if(c){ c.addEventListener("change",update); c.addEventListener("input",update); }});
+  update();
+})();
+</script>
 {% endblock %}

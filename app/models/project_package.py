@@ -263,6 +263,14 @@ class ProjectPackage(db.Model):
         passive_deletes=True,
     )
 
+    schedules = db.relationship(
+        "ProjectSchedule",
+        back_populates="package",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectSchedule.name",
+    )
+
     reactors = db.relationship(
         "Reactor",
         back_populates="package",
