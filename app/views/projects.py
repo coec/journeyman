@@ -484,7 +484,6 @@ def project_new():
             Runner.enabled.is_(True),
             Runner.is_local.is_(False),
             Runner.runner_uuid.isnot(None),
-            Runner.api_secret_digest != "",
         )
         .order_by(Runner.name.asc())
         .all()
@@ -893,7 +892,6 @@ def project_edit(project_id):
             Runner.enabled.is_(True),
             Runner.is_local.is_(False),
             Runner.runner_uuid.isnot(None),
-            Runner.api_secret_digest != "",
         )
         .order_by(Runner.name.asc())
         .all()

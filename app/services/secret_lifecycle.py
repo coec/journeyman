@@ -5,7 +5,7 @@ from pathlib import Path
 
 from flask import current_app
 
-from app.models import ApiToken, Credential, SignalSource
+from app.models import ApiToken, Credential, Runner, SignalSource
 from app.credential_crypto import (
     active_credential_key_id,
     credential_key_file,
@@ -53,7 +53,13 @@ def credential_too_old(credential, *, now=None):
 
 def _active_credential_key_timestamp():
     key_id = active_credential_key_id()
-    path = Path(credential_keyring_dir()) / (key_id + '.key') if key_id else Path(credential_key_file())
+    if key_id:
+        keyring = Path(credential_keyring_dir())
+        rsa_path = keyring / (key_id + '.public.pem')
+        legacy_path = keyring / (key_id + '.key')
+        path = rsa_path if rsa_path.is_file() else legacy_path
+    else:
+        path = Path(credential_key_file())
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc), str(path)
     except OSError:
@@ -98,6 +104,27 @@ def security_notices_for_identity(username, *, is_admin=False, now=None):
             'message': 'Credential-encryption key is {} ({} days old); rotate it with the credential-key tooling.'.format(
                 'overdue' if credential_key_state == 'overdue' else 'due within 30 days',
                 credential_key_age,
+            ),
+        })
+
+    warning_failures = max(
+        1, int(current_app.config.get("RUNNER_CERTIFICATE_WARNING_FAILURES", 3))
+    )
+    renewal_rows = (
+        Runner.query.filter(
+            Runner.is_local.is_(False),
+            Runner.pki_renewal_failure_count >= warning_failures,
+        )
+        .order_by(Runner.name)
+        .all()
+    )
+    for runner in renewal_rows:
+        notices.append({
+            'severity': 'warning',
+            'message': 'Runner "{}" certificate renewal has failed {} consecutive times: {}'.format(
+                runner.name,
+                runner.pki_renewal_failure_count,
+                (runner.pki_renewal_last_error or 'unknown error')[:300],
             ),
         })
 

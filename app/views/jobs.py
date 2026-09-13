@@ -1,7 +1,11 @@
 """Job listing, detail, cancellation, and live-update routes."""
 
 import json
+import math
 import time
+from types import SimpleNamespace
+
+from sqlalchemy import literal
 
 from flask import Response, jsonify, stream_with_context
 
@@ -84,41 +88,95 @@ def jobs():
     per_page = page_size_for_user(current_username())
     page = max(request.args.get("page", 1, type=int) or 1, 1)
     status_filter = (request.args.get("status") or "").strip().lower()
-    query = _visible_jobs_query()
-    if status_filter == "running":
-        query = query.filter(Job.status == "running")
 
-    pagination = (
-        query
-        .order_by(Job.id.desc())
-        .paginate(page=page, per_page=per_page, error_out=False)
+    job_query = _visible_jobs_query()
+    sync_query = _visible_environment_syncs_query()
+    if status_filter == "running":
+        job_query = job_query.filter(Job.status == "running")
+        sync_query = sync_query.filter(RunnerEnvironmentSync.status == "building")
+
+    # Jobs and Environment synchronizations share one global work-number
+    # sequence.  Page the sequence first, then load the corresponding ORM
+    # rows so the Jobs page is one chronological/numbered stream.
+    job_keys = job_query.with_entities(
+        Job.id.label("work_number"),
+        literal("job").label("kind"),
+        Job.queued_at.label("queued_at"),
     )
+    sync_keys = sync_query.with_entities(
+        RunnerEnvironmentSync.work_item_id.label("work_number"),
+        literal("environment_sync").label("kind"),
+        RunnerEnvironmentSync.requested_at.label("queued_at"),
+    )
+    combined = job_keys.union_all(sync_keys).subquery()
+    ordered_keys = db.session.query(
+        combined.c.work_number, combined.c.kind, combined.c.queued_at
+    ).order_by(combined.c.queued_at.desc(), combined.c.work_number.desc())
+
+    total = ordered_keys.count()
+    pages = max(1, math.ceil(total / per_page)) if total else 0
+    if pages and page > pages:
+        page = pages
+    key_rows = (
+        ordered_keys
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    job_ids = [number for number, kind, _queued_at in key_rows if kind == "job"]
+    sync_numbers = [
+        number for number, kind, _queued_at in key_rows if kind == "environment_sync"
+    ]
+    jobs_by_id = {
+        row.id: row
+        for row in Job.query.filter(Job.id.in_(job_ids)).all()
+    } if job_ids else {}
+    syncs_by_number = {
+        row.work_item_id: row
+        for row in RunnerEnvironmentSync.query.filter(
+            RunnerEnvironmentSync.work_item_id.in_(sync_numbers)
+        ).all()
+    } if sync_numbers else {}
+
+    work_rows = []
+    for number, kind, _queued_at in key_rows:
+        item = (
+            jobs_by_id.get(number)
+            if kind == "job"
+            else syncs_by_number.get(number)
+        )
+        if item is not None:
+            work_rows.append((kind, item))
+
+    page_jobs = [item for kind, item in work_rows if kind == "job"]
     failed_rerun_hosts_by_job_id = {
         job.id: failed_hosts_for_rerun(job)
-        for job in pagination.items
+        for job in page_jobs
         if job.status in TERMINAL_JOB_STATUSES and job.status != "successful"
     }
 
-    sync_query = _visible_environment_syncs_query()
-    if status_filter == "running":
-        sync_query = sync_query.filter(RunnerEnvironmentSync.status == "building")
-    environment_syncs = (
-        sync_query
-        .order_by(RunnerEnvironmentSync.requested_at.desc())
-        .all()
-    )
     has_active_work = any(
-        job.status in {"queued", "running", "waiting_oversight", "cancelling"}
-        for job in pagination.items
-    ) or any(
-        sync.status in {"queued", "building"}
-        for sync in environment_syncs
+        (
+            item.status in {"queued", "running", "waiting_oversight", "cancelling"}
+            if kind == "job"
+            else item.status in {"queued", "building"}
+        )
+        for kind, item in work_rows
+    )
+
+    pagination = SimpleNamespace(
+        page=page,
+        pages=pages,
+        has_prev=page > 1,
+        prev_num=page - 1 if page > 1 else None,
+        has_next=bool(pages and page < pages),
+        next_num=page + 1 if pages and page < pages else None,
     )
 
     return render_template(
         "jobs.html",
-        jobs=pagination.items,
-        environment_syncs=environment_syncs,
+        work_rows=work_rows,
         has_active_work=has_active_work,
         pagination=pagination,
         pagination_args={"status": status_filter} if status_filter else {},

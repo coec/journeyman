@@ -364,7 +364,6 @@ def environment_sync(environment_id):
             Runner.is_local.is_(False),
             Runner.enabled.is_(True),
             Runner.runner_uuid.isnot(None),
-            Runner.api_secret_digest != "",
         )
         .order_by(Runner.name.asc())
         .all()

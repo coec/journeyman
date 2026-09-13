@@ -39,7 +39,7 @@ from app.routes import (
     ProjectPackage, VARIABLE_NAME_PATTERN,
     _clean, abort, apply_package_input_rows, apply_package_permission_rows,
     bp, can_launch_package,
-    create_package_launch_token, current_app, current_user_can_access_automation, current_user_can_manage_automation, current_user_can_view_automation,
+    create_package_launch_token, current_app, current_user_can_access_automation, current_user_can_manage_automation, current_user_can_manage_resources, current_user_can_view_automation,
     current_username, db, flash, package_definition_digest,
     package_execution_from_token, package_input_rows_for_form,
     package_input_rows_from_request, package_launch_fields,
@@ -746,6 +746,15 @@ def _launchable_package(package_id):
         ProjectPackage,
         package_id,
     )
+
+    # Manage Remote Runner is an execution-resource administration operation,
+    # even though it is implemented internally as a built-in Package.  It must
+    # therefore follow Resource Admin authorization rather than Automation
+    # Admin / normal Package grants.
+    if package.builtin_key == REMOTE_RUNNER_BUILTIN_KEY:
+        if not current_user_can_manage_resources():
+            abort(403)
+        return package
 
     if is_builtin_package(package) and not current_user_can_manage_automation():
         abort(403)

@@ -129,6 +129,8 @@ def register_scheduler_cli_commands(app):
         from app.services.notifications import process_pending_notifications
         from app.services.fallback_admin import expire_fallback_activation_if_due
         from app.services.runner_runtime_dependencies import refresh_runner_runtime_dependency_audits
+        from app.services.runner_transport import refresh_remote_runner_health
+        from app.services.runner_certificate_renewal import maintain_runner_certificates
 
         signal.signal(
             signal.SIGHUP,
@@ -139,6 +141,8 @@ def register_scheduler_cli_commands(app):
 
         next_retention_purge_at = 0.0
         next_runner_dependency_audit_at = 0.0
+        next_runner_health_poll_at = 0.0
+        next_runner_pki_maintenance_at = 0.0
         while True:
             expire_fallback_activation_if_due()
             recovery = recover_lost_runner_jobs()
@@ -163,6 +167,41 @@ def register_scheduler_cli_commands(app):
                     )
                 )
             now_monotonic = time.monotonic()
+            if now_monotonic >= next_runner_pki_maintenance_at:
+                try:
+                    pki_result = maintain_runner_certificates()
+                except Exception as exc:
+                    click.echo("Runner PKI maintenance failed: {}".format(exc), err=True)
+                else:
+                    if (
+                        pki_result["ca_renewed"]
+                        or pki_result["controller_renewed"]
+                        or pki_result["runner_renewed"]
+                        or pki_result["runner_failed"]
+                    ):
+                        click.echo(
+                            "Runner PKI maintenance: ca_renewed={} controller_renewed={} "
+                            "runners_renewed={} runners_failed={}".format(
+                                pki_result["ca_renewed"],
+                                pki_result["controller_renewed"],
+                                len(pki_result["runner_renewed"]),
+                                len(pki_result["runner_failed"]),
+                            )
+                        )
+                next_runner_pki_maintenance_at = now_monotonic + 3600
+            if now_monotonic >= next_runner_health_poll_at:
+                try:
+                    health_result = refresh_remote_runner_health()
+                except Exception as exc:
+                    click.echo("Runner mTLS health poll failed: {}".format(exc), err=True)
+                else:
+                    if health_result["failed"]:
+                        click.echo(
+                            "Runner mTLS health poll: updated={} failed={}".format(
+                                health_result["updated"], len(health_result["failed"])
+                            )
+                        )
+                next_runner_health_poll_at = now_monotonic + 30
             if now_monotonic >= next_retention_purge_at:
                 purged = purge_expired_protected_data()
                 if (
@@ -254,67 +293,267 @@ def register_scheduler_cli_commands(app):
 def register_credential_key_cli_commands(app):
     @app.cli.group("credential-key")
     def credential_key():
-        """Manage versioned credential-encryption keys."""
+        """Manage Journeyman at-rest credential-encryption keys."""
+
+    def _audit(action, *, result="success", details=None):
+        from app.services.audit import record_audit_event
+        record_audit_event(
+            action,
+            result=result,
+            object_type="credential_storage_key",
+            details=details or {},
+            actor_username="system",
+            authenticated_via="cli",
+        )
+
+    @credential_key.command("generate")
+    @click.option("--key-id", required=True, help="New storage-key identifier, for example storage-2026-09.")
+    @click.option("--key-size", type=click.IntRange(min=2048), default=3072, show_default=True)
+    def generate_credential_key(key_id, key_size):
+        """Generate a new RSA storage keypair in decrypt-only state."""
+        from app.services.credential_key_lifecycle import generate_storage_key
+        try:
+            metadata = generate_storage_key(key_id, key_size=key_size)
+        except Exception as exc:
+            _audit("credential_key.generate", result="failed", details={"key_id": key_id})
+            raise click.ClickException(str(exc)) from exc
+        _audit("credential_key.generate", details={"key_id": metadata["key_id"], "key_size": metadata["key_size"]})
+        click.echo("Generated credential storage key: {}".format(metadata["key_id"]))
+        click.echo("State: decrypt-only")
+
+    @credential_key.command("status")
+    def credential_key_status():
+        """Show the active RSA storage key and retained decrypt-only keys."""
+        from app.services.credential_key_lifecycle import storage_key_status
+        status = storage_key_status()
+        click.echo("Active credential storage key: {}".format(status["active_key_id"] or "legacy/default"))
+        if not status["keys"]:
+            click.echo("No RSA credential storage keys found.")
+            return
+        for item in status["keys"]:
+            click.echo(
+                "{}  state={}  bits={}  private={}  created={}".format(
+                    item["key_id"],
+                    item["state"],
+                    item["key_size"] or "unknown",
+                    "yes" if item["private_key_present"] else "NO",
+                    item["created_at"] or "unknown",
+                )
+            )
+
+    @credential_key.command("activate")
+    @click.option("--key-id", required=True, help="Existing RSA storage-key identifier.")
+    def activate_credential_key(key_id):
+        """Make an existing RSA key active for newly encrypted secrets."""
+        from app.services.credential_key_lifecycle import activate_storage_key
+        try:
+            previous = activate_storage_key(key_id)
+        except Exception as exc:
+            _audit("credential_key.activate", result="failed", details={"key_id": key_id})
+            raise click.ClickException(str(exc)) from exc
+        _audit("credential_key.activate", details={"key_id": key_id, "previous_key_id": previous})
+        click.echo("Active credential storage key: {}".format(key_id))
+        if previous and previous != key_id:
+            click.echo("Previous key is retained as decrypt-only: {}".format(previous))
 
     @credential_key.command("rotate")
-    @click.option("--key-id", required=True, help="New key identifier, for example 2026-08.")
-    @click.option("--generate", is_flag=True, help="Generate and install the new key before rotation.")
-    def rotate_credential_key(key_id, generate):
-        """Re-encrypt all stored credentials and snapshots with a new key."""
-        from cryptography.fernet import Fernet
+    @click.option("--key-id", required=True, help="Target RSA storage-key identifier.")
+    @click.option("--generate", is_flag=True, help="Generate the target RSA keypair before rotation.")
+    @click.option("--key-size", type=click.IntRange(min=2048), default=3072, show_default=True)
+    def rotate_credential_key(key_id, generate, key_size):
+        """Rewrap all v2 data keys to a new RSA storage key and activate it."""
         from app import db
-        from app.credential_crypto import (
-            _validate_key_id, credential_active_key_file, credential_keyring_dir,
-            decrypt_credential_data, encrypt_credential_data_with_key_id,
+        from app.services.credential_key_lifecycle import (
+            activate_storage_key,
+            generate_storage_key,
+            rewrap_v2_rows,
         )
-        from app.models import Credential, JobCredentialSnapshot
-
-        key_id = _validate_key_id(key_id)
-        keyring = credential_keyring_dir()
-        keyring.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(keyring, 0o700)
-        new_key_path = keyring / (key_id + ".key")
-
-        if generate:
-            if new_key_path.exists():
-                raise click.ClickException("Key file already exists: {}".format(new_key_path))
-            fd = os.open(str(new_key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(Fernet.generate_key() + b"\\n")
-        elif not new_key_path.exists():
-            raise click.ClickException("New key file does not exist: {}".format(new_key_path))
-
-        active_path = credential_active_key_file()
-        old_active = active_path.read_text(encoding="utf-8").strip() if active_path.exists() else None
-
-        # Make the new key active only for this transaction's encryption calls.
-        temporary_active = active_path.with_name(active_path.name + ".tmp")
-        temporary_active.write_text(key_id + "\\n", encoding="utf-8")
-        os.chmod(temporary_active, 0o600)
-        os.replace(temporary_active, active_path)
-
         try:
-            credentials = db.session.execute(db.select(Credential)).scalars().all()
-            snapshots = db.session.execute(db.select(JobCredentialSnapshot)).scalars().all()
-            for item in credentials + snapshots:
-                if item.encrypted_data is None:
-                    continue
-                plaintext = decrypt_credential_data(item.encrypted_data, item.credential_key_id)
-                item.encrypted_data, item.credential_key_id = encrypt_credential_data_with_key_id(plaintext)
+            if generate:
+                generate_storage_key(key_id, key_size=key_size)
+            counts = rewrap_v2_rows(key_id)
             db.session.commit()
-        except Exception:
+            previous = activate_storage_key(key_id)
+        except Exception as exc:
             db.session.rollback()
-            if old_active:
-                active_path.write_text(old_active + "\\n", encoding="utf-8")
-                os.chmod(active_path, 0o600)
-            else:
-                try:
-                    active_path.unlink()
-                except FileNotFoundError:
-                    pass
-            raise
+            _audit("credential_key.rotate", result="failed", details={"key_id": key_id})
+            raise click.ClickException(str(exc)) from exc
+        _audit(
+            "credential_key.rotate",
+            details={
+                "key_id": key_id,
+                "previous_key_id": previous,
+                "rewrapped": counts["rewrapped"],
+                "already_current": counts["already_current"],
+                "legacy_skipped": counts["legacy_skipped"],
+            },
+        )
+        click.echo("Credential storage-key rotation complete: {}".format(key_id))
+        click.echo(
+            "Rewrapped {} v2 payloads; {} already used the target key; {} legacy payloads were left unchanged.".format(
+                counts["rewrapped"], counts["already_current"], counts["legacy_skipped"]
+            )
+        )
+        if previous and previous != key_id:
+            click.echo("Previous key is retained as decrypt-only: {}".format(previous))
 
-        click.echo("Credential key rotation complete: {}".format(key_id))
-        click.echo("Next rotation is due within 12 months; Journeyman warns administrators from 30 days before due.")
-        click.echo("Re-encrypted {} live credentials and {} job snapshots.".format(len(credentials), len(snapshots)))
-        click.echo("Retain previous key files until backup retention and rollback requirements have expired.")
+    @credential_key.command("migrate-legacy")
+    def migrate_legacy_credential_data():
+        """Convert all remaining Fernet payloads to v2 envelope encryption."""
+        from app import db
+        from app.services.credential_key_lifecycle import migrate_legacy_rows
+        try:
+            counts = migrate_legacy_rows()
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            _audit("credential_key.migrate_legacy", result="failed")
+            raise click.ClickException(str(exc)) from exc
+        _audit("credential_key.migrate_legacy", details=counts)
+        click.echo(
+            "Legacy credential migration complete: migrated={} v2_skipped={}.".format(
+                counts["migrated"], counts["v2_skipped"]
+            )
+        )
+        click.echo("Retain legacy Fernet keys until backup and rollback retention requirements have expired.")
+
+
+def register_runner_pki_cli_commands(app):
+    @app.cli.group("runner-pki")
+    def runner_pki():
+        """Manage the Journeyman runner certificate authority."""
+
+    def _audit(action, *, result="success", details=None):
+        from app.services.audit import record_audit_event
+        record_audit_event(
+            action,
+            result=result,
+            object_type="runner_pki",
+            details=details or {},
+            actor_username="system",
+            authenticated_via="cli",
+        )
+
+    @runner_pki.command("init-ca")
+    @click.option("--key-size", type=click.IntRange(min=3072), default=4096, show_default=True)
+    def init_runner_ca(key_size):
+        """Create the Journeyman-managed runner CA."""
+        from app.services.runner_pki import generate_runner_ca
+        try:
+            metadata = generate_runner_ca(key_size=key_size)
+        except Exception as exc:
+            _audit("runner_pki.init_ca", result="failed")
+            raise click.ClickException(str(exc)) from exc
+        _audit(
+            "runner_pki.init_ca",
+            details={
+                "serial": metadata["serial"],
+                "fingerprint_sha256": metadata["fingerprint_sha256"],
+            },
+        )
+        click.echo("Runner CA initialized.")
+        click.echo("Fingerprint (SHA-256): {}".format(metadata["fingerprint_sha256"]))
+        click.echo("Valid until: {}".format(metadata["not_after"]))
+
+    @runner_pki.command("status")
+    def runner_pki_status():
+        """Show runner CA status and renewal state."""
+        from app.services.runner_pki import runner_ca_status
+        try:
+            status = runner_ca_status()
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        if not status["initialized"]:
+            click.echo("Runner CA: not initialized")
+            return
+        click.echo("Runner CA: initialized")
+        click.echo("Subject: {}".format(status["subject"]))
+        click.echo("Fingerprint (SHA-256): {}".format(status["fingerprint_sha256"]))
+        click.echo("RSA bits: {}".format(status["key_size"]))
+        click.echo("Valid from: {}".format(status["not_before"].isoformat()))
+        click.echo("Valid until: {}".format(status["not_after"].isoformat()))
+        click.echo("Renew after: {}".format(status["renew_after"].isoformat()))
+        click.echo("Renewal due: {}".format("yes" if status["renewal_due"] else "no"))
+        click.echo("Expired: {}".format("yes" if status["expired"] else "no"))
+
+    @runner_pki.command("renew-ca")
+    @click.option(
+        "--force",
+        is_flag=True,
+        help="Renew before the normal 39-week renewal point.",
+    )
+    def renew_runner_ca(force):
+        """Renew the runner CA certificate while retaining its private key."""
+        from app.services.runner_pki import renew_runner_ca_certificate
+        try:
+            metadata = renew_runner_ca_certificate(force=force)
+        except Exception as exc:
+            _audit("runner_pki.renew_ca", result="failed", details={"forced": bool(force)})
+            raise click.ClickException(str(exc)) from exc
+        _audit(
+            "runner_pki.renew_ca",
+            details={
+                "forced": bool(force),
+                "serial": metadata["serial"],
+                "fingerprint_sha256": metadata["fingerprint_sha256"],
+            },
+        )
+        click.echo("Runner CA certificate renewed; CA private key retained.")
+        click.echo("Fingerprint (SHA-256): {}".format(metadata["fingerprint_sha256"]))
+        click.echo("Valid until: {}".format(metadata["not_after"]))
+
+    @runner_pki.command("ensure-controller")
+    @click.option("--force", is_flag=True, help="Replace the existing controller management identity.")
+    def ensure_runner_controller_identity(force):
+        """Create the controller mTLS client identity used on TCP/8443."""
+        from app.services.runner_pki import ensure_controller_client_identity
+        try:
+            metadata = ensure_controller_client_identity(force=force)
+        except Exception as exc:
+            _audit("runner_pki.controller_identity", result="failed", details={"forced": bool(force)})
+            raise click.ClickException(str(exc)) from exc
+        _audit(
+            "runner_pki.controller_identity",
+            details={
+                "forced": bool(force),
+                "created": bool(metadata["created"]),
+                "serial": metadata["serial"],
+                "fingerprint_sha256": metadata["fingerprint_sha256"],
+            },
+        )
+        click.echo(
+            "Runner management controller identity {}.".format(
+                "created" if metadata["created"] else "already exists"
+            )
+        )
+        click.echo("Fingerprint (SHA-256): {}".format(metadata["fingerprint_sha256"]))
+        click.echo("Valid until: {}".format(metadata["not_after"].isoformat()))
+
+
+    @runner_pki.command("enable-web-mtls")
+    def enable_runner_web_mtls():
+        """Re-render Nginx so runner -> controller APIs request client certificates."""
+        from pathlib import Path
+        from app.services.system_settings import get_or_create_system_settings
+        from app.services.system_settings_apply import apply_nginx_settings
+
+        helper = Path(current_app.config["NGINX_APPLY_HELPER"])
+        try:
+            helper_text = helper.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            raise click.ClickException(
+                "Unable to inspect the installed Nginx apply helper: {}".format(exc)
+            ) from exc
+        if "ssl_client_certificate" not in helper_text:
+            raise click.ClickException(
+                "Installed Nginx apply helper predates runner mTLS support. "
+                "Install scripts/journeyman-apply-web-settings to {} first.".format(helper)
+            )
+        try:
+            result = apply_nginx_settings(get_or_create_system_settings())
+        except Exception as exc:
+            _audit("runner_pki.web_mtls", result="failed")
+            raise click.ClickException(str(exc)) from exc
+        _audit("runner_pki.web_mtls")
+        click.echo(result["message"])
+        click.echo("Runner client-certificate verification enabled on Journeyman HTTPS.")

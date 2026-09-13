@@ -40,7 +40,7 @@ from app.services.reactions import (
     validate_match_definition,
     validate_mappings,
 )
-from app.services.runners import authenticate_runner
+from app.services.runner_request_auth import authenticate_runner_request
 from app.services.runner_capabilities import runner_capability_rows
 
 
@@ -902,10 +902,7 @@ def zabbix_signal_api():
 @bp.post("/api/runners/signals")
 @csrf.exempt
 def runner_signal_api():
-    runner_uuid = str(request.headers.get("X-Journeyman-Runner-ID") or "")
-    authorization = str(request.headers.get("Authorization") or "")
-    secret = authorization[7:] if authorization.startswith("Bearer ") else ""
-    runner = authenticate_runner(runner_uuid, secret)
+    runner = authenticate_runner_request(allow_legacy_unenrolled=True)
     if runner is None:
         return jsonify({"error": "Runner authentication failed."}), 403
     if not request.is_json:

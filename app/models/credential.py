@@ -4,6 +4,7 @@ from sqlalchemy.orm import validates
 
 from app import db
 from app.credential_crypto import (
+    credential_payload_format_version,
     decrypt_credential_data,
     encrypt_credential_data_with_key_id,
 )
@@ -171,7 +172,9 @@ class Credential(db.Model):
         self.encrypted_data, self.credential_key_id = (
             encrypt_credential_data_with_key_id(credential_data)
         )
-        self.secret_format_version = 1
+        self.secret_format_version = credential_payload_format_version(
+            self.encrypted_data
+        )
         self.secret_updated_at = utcnow()
 
     def get_credential_data(self):

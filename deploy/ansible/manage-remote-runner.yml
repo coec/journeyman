@@ -72,6 +72,12 @@
           {{ (journeyman_update_prepare.stdout | from_json).runner_uuid }}
       when: journeyman_manage_action == 'update'
 
+    - name: Preserve runner PKI quarantine state for update recovery
+      ansible.builtin.set_fact:
+        journeyman_runner_pki_quarantined: >-
+          {{ (journeyman_update_prepare.stdout | from_json).pki_quarantined | default(false) | bool }}
+      when: journeyman_manage_action == 'update'
+
     - name: Preflight unregister/delete before optional remote cleanup
       ansible.builtin.command:
         argv:
@@ -155,6 +161,8 @@
     journeyman_snmp_trap_spool_source: /opt/journeyman/bin/journeyman-snmp-trap-spool
     journeyman_runner_executable: /opt/journeyman/bin/journeyman-remote-runner
     journeyman_runner_ca_file: ""
+    journeyman_runner_pki_root: /etc/journeyman/runner-pki
+    journeyman_runner_management_port: 8443
     journeyman_runner_pip_extra_args: ""
     # Only the Journeyman remote-runner agent runtime is reconciled here.
     # Managed Execution Environments have independent dependency definitions.
@@ -320,7 +328,22 @@
       register: journeyman_runner_update_registration
       when: journeyman_manage_action == 'update'
 
-    - name: Prepare one-time recovery token for missing update registration
+    - name: Check existing runner PKI enrollment before update
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/grep
+          - -q
+          - '^JOURNEYMAN_RUNNER_CERTIFICATE='
+          - "{{ journeyman_runner_config }}"
+      delegate_to: "{{ journeyman_runner_host }}"
+      register: journeyman_runner_update_pki_registration
+      changed_when: false
+      failed_when: false
+      when:
+        - journeyman_manage_action == 'update'
+        - journeyman_runner_update_registration.stat.exists | default(false)
+
+    - name: Prepare one-time recovery token for missing registration or PKI identity
       ansible.builtin.command:
         argv:
           - /opt/journeyman/bin/journeyman-runner-admin
@@ -332,7 +355,10 @@
       changed_when: true
       when:
         - journeyman_manage_action == 'update'
-        - not (journeyman_runner_update_registration.stat.exists | default(false))
+        - >-
+          (journeyman_runner_pki_quarantined | default(false) | bool)
+          or (not (journeyman_runner_update_registration.stat.exists | default(false)))
+          or (journeyman_runner_update_pki_registration.rc | default(1) != 0)
       no_log: true
 
     - name: Preserve one-time recovery token for update
@@ -341,7 +367,10 @@
           {{ (journeyman_runner_recovery_prepare.stdout | from_json).registration_token }}
       when:
         - journeyman_manage_action == 'update'
-        - not (journeyman_runner_update_registration.stat.exists | default(false))
+        - >-
+          (journeyman_runner_pki_quarantined | default(false) | bool)
+          or (not (journeyman_runner_update_registration.stat.exists | default(false)))
+          or (journeyman_runner_update_pki_registration.rc | default(1) != 0)
       no_log: true
 
     # Resolve control-plane-derived configuration at the exact point it is
@@ -835,6 +864,12 @@
               - "{{ journeyman_signal_spool_root }}"
               - --ca-file
               - "{{ journeyman_runner_ca_file }}"
+              - --pki-root
+              - "{{ journeyman_runner_pki_root }}"
+              - --pki-owner
+              - "{{ journeyman_runner_user }}"
+              - --management-port
+              - "{{ journeyman_runner_management_port | string }}"
           environment:
             JOURNEYMAN_REGISTRATION_TOKEN: "{{ journeyman_registration_token }}"
           register: journeyman_runner_register
@@ -862,7 +897,7 @@
             - journeyman_runner_register is defined
             - journeyman_runner_register.rc | default(0) != 0
 
-        - name: Repair missing runner registration during update
+        - name: Enroll or repair runner identity during update
           ansible.builtin.command:
             argv:
               - "{{ journeyman_runner_venv }}/bin/python3"
@@ -880,11 +915,19 @@
               - "{{ journeyman_signal_spool_root }}"
               - --ca-file
               - "{{ journeyman_runner_ca_file }}"
+              - --pki-root
+              - "{{ journeyman_runner_pki_root }}"
+              - --pki-owner
+              - "{{ journeyman_runner_user }}"
+              - --management-port
+              - "{{ journeyman_runner_management_port | string }}"
           environment:
             JOURNEYMAN_REGISTRATION_TOKEN: "{{ journeyman_recovery_registration_token }}"
           when:
             - journeyman_manage_action == 'update'
-            - not (journeyman_runner_update_registration.stat.exists | default(false))
+            - >-
+              (not (journeyman_runner_update_registration.stat.exists | default(false)))
+              or (journeyman_runner_update_pki_registration.rc | default(1) != 0)
           no_log: true
 
         - name: Record runner-specific SNMP configuration path
@@ -906,6 +949,24 @@
             owner: root
             group: "{{ journeyman_runner_group }}"
             mode: '0640'
+
+        - name: Record runner management HTTPS port
+          ansible.builtin.lineinfile:
+            path: "{{ journeyman_runner_config }}"
+            regexp: '^JOURNEYMAN_RUNNER_MANAGEMENT_PORT='
+            line: "JOURNEYMAN_RUNNER_MANAGEMENT_PORT={{ journeyman_runner_management_port }}"
+            create: false
+            owner: root
+            group: "{{ journeyman_runner_group }}"
+            mode: '0640'
+
+        - name: Remove transitional runner bearer secret
+          ansible.builtin.lineinfile:
+            path: "{{ journeyman_runner_config }}"
+            regexp: '^JOURNEYMAN_RUNNER_SECRET='
+            state: absent
+            create: false
+          no_log: true
 
         - name: Protect runner registration credentials
           ansible.builtin.file:

@@ -8,6 +8,7 @@
   </div>
   <div class="page-heading-actions">
     <a class="button secondary" href="{{ url_for('main.runner_crews') }}">Runner Crews</a>
+    {% if can_manage_resources %}<a class="button secondary" href="{{ url_for('main.runner_manual_bootstrap') }}">Manual Bootstrap</a>{% endif %}
     <a class="button primary" href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id) }}">Manage Remote Runner</a>
   </div>
 </div>
@@ -23,58 +24,66 @@
 <div class="panel" id="runner-live-content">
   <div class="panel-header"><h2>Execution runners</h2></div>
   {% if runners %}
-  <table>
-    <thead><tr><th>Name</th><th>Type</th><th>Site</th><th>Crew(s)</th><th>Host</th><th>Execution</th><th>Runner capabilities</th><th>Runtime dependencies</th><th>Environments</th><th>Status</th><th>Last heartbeat</th><th>Capacity</th><th>Load 1m / 5m</th><th>Actions</th></tr></thead>
+  <table class="runners-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Site</th>
+        <th>Type</th>
+        <th>Host</th>
+        <th>Status</th>
+        <th>Runtime</th>
+        <th>Environments</th>
+        <th>Capacity</th>
+        <th class="runner-actions-column">Actions</th>
+      </tr>
+    </thead>
     <tbody>
     {% for item in runners %}
       {% set runner = item.runner %}
-      <tr data-runner-id="{{ runner.id }}">
-        <td><strong>{{ runner.name }}</strong><br><small>{{ runner.runner_uuid or 'Awaiting registration' }}</small></td>
-        <td>{{ 'Local / built in' if runner.is_local else 'Remote' }}</td>
-        <td>{{ runner.site or '—' }}</td>
-        <td>{% if runner.crews %}{{ runner.crews|map(attribute='name')|join(', ') }}{% else %}—{% endif %}</td>
-        <td>
-          {{ runner.hostname or '—' }}
+      <tr data-runner-id="{{ runner.id }}" class="runner-summary-row">
+        <td class="runner-name-cell">
+          <strong>{{ runner.name }}</strong>
+          <small>{{ runner.runner_uuid or 'Awaiting registration' }}</small>
           {% if not runner.is_local %}
-            <br><small>Runner version: {{ runner.version or 'Unknown' }}</small>
+            <small>Runner version: {{ runner.version or 'Unknown' }}</small>
             {% if item.update_available %}
-              <br><small class="warning-text">Current: {{ current_remote_runner_version }} · runner update available</small>
+              <small class="warning-text">Current: {{ current_remote_runner_version }} · runner update available</small>
             {% endif %}
             {% if item.capability_update_required %}
-              <br><small class="warning-text">Runner capability update required</small>
+              <small class="warning-text">Runner capability update required</small>
             {% endif %}
             {% if item.runtime_dependency_update_required %}
-              <br><small class="warning-text">Runner runtime dependency reconciliation required</small>
+              <small class="warning-text">Runner runtime dependency reconciliation required</small>
             {% endif %}
           {% elif runner.version %}
-            <br><small>Runner version: {{ runner.version }}</small>
+            <small>Runner version: {{ runner.version }}</small>
           {% endif %}
+          <button
+            class="runner-details-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="runner-details-{{ runner.id }}"
+          >Details <span aria-hidden="true">▾</span></button>
         </td>
-        <td>{{ runner.capabilities()|sort|join(", ") or '—' }}</td>
+        <td>{{ runner.site or '—' }}</td>
+        <td>{{ 'Local / built in' if runner.is_local else 'Remote' }}</td>
+        <td>{{ runner.hostname or '—' }}</td>
         <td>
-          {% if item.managed_capabilities %}
-            {% for capability in item.managed_capabilities %}
-              <strong>{{ capability.label }}</strong>
-              {% if capability.state == 'healthy' %}
-                <span class="status-label status-healthy">Ready</span>
-              {% elif capability.state == 'update_required' %}
-                <span class="status-label status-warning">Update required</span>
-              {% else %}
-                <span class="status-label status-warning">Warning</span>
-              {% endif %}
-              {% if capability.message %}<br><small>{{ capability.message }}</small>{% endif %}
-              {% if not loop.last %}<br>{% endif %}
-            {% endfor %}
-          {% else %}
-            —
+          <span class="runner-live-health"><span class="status-label status-{{ item.health }}">{{ item.health|title }}</span></span>
+          {% if runner.pki_quarantined %}
+            <br><small class="warning-text">PKI quarantined</small>
+          {% elif not runner.is_local and runner.pki_certificate_fingerprint_sha256 %}
+            <br><small>mTLS enrolled</small>
+          {% elif not runner.is_local %}
+            <br><small class="warning-text">mTLS not enrolled</small>
           {% endif %}
+          <br><small>Heartbeat: <span class="runner-live-heartbeat">{% if runner.last_heartbeat_at %}<span class="utc-datetime" data-utc="{{ runner.last_heartbeat_at.isoformat() }}">{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</span></small>
         </td>
         <td>
           {% set deps = item.runtime_dependencies %}
           {% if deps.state in ['current', 'canonical'] %}
             <span class="status-label status-healthy">{{ deps.label }}</span>
-          {% elif deps.state == 'drifted' %}
-            <span class="status-label status-warning">{{ deps.label }}</span>
           {% else %}
             <span class="status-label status-warning">{{ deps.label }}</span>
           {% endif %}
@@ -87,17 +96,6 @@
           {% else %}
             <br><small class="muted">{{ deps.audit_label }}</small>
           {% endif %}
-          {% if deps.drift %}
-            {% for drift in deps.drift[:3] %}
-              <br><small>{{ drift.name }}: {{ drift.reported or 'missing' }} → {{ drift.expected }}</small>
-            {% endfor %}
-            {% if deps.drift|length > 3 %}
-              <br><small>+ {{ deps.drift|length - 3 }} more</small>
-            {% endif %}
-          {% endif %}
-          {% if deps.audit_message %}
-            <br><small title="{{ deps.audit_message }}">{{ deps.audit_message | truncate(220, true, '…') }}</small>
-          {% endif %}
         </td>
         <td>
           {% if item.execution_environments %}
@@ -107,17 +105,10 @@
                 <span class="status-label status-healthy">Ready</span>
               {% elif environment_row.state == 'failed' %}
                 <span class="status-label status-failed">Failed</span>
-              {% elif environment_row.state == 'queued' %}
-                <span class="status-label status-warning">Queued</span>
-              {% elif environment_row.state == 'building' %}
-                <span class="status-label status-warning">Building</span>
-              {% elif environment_row.state == 'out_of_date' %}
-                <span class="status-label status-warning">Out of date</span>
+              {% elif environment_row.state in ['queued', 'building', 'out_of_date'] %}
+                <span class="status-label status-warning">{{ environment_row.state|replace('_', ' ')|title }}</span>
               {% else %}
                 <span class="status-label status-warning">Not installed</span>
-              {% endif %}
-              {% if environment_row.message %}
-                <br><small title="{{ environment_row.message }}">{{ environment_row.message | truncate(280, true, '…') }}</small>
               {% endif %}
               {% if not loop.last %}<br>{% endif %}
             {% endfor %}
@@ -125,28 +116,23 @@
             —
           {% endif %}
         </td>
-        <td class="runner-live-health"><span class="status-label status-{{ item.health }}">{{ item.health|title }}</span></td>
-        <td class="runner-live-heartbeat">{% if runner.last_heartbeat_at %}<span class="utc-datetime" data-utc="{{ runner.last_heartbeat_at.isoformat() }}">{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</td>
-        <td class="runner-live-capacity">{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</td>
-        <td class="runner-live-load">{% if runner.load_average_1m is not none %}{{ '%.2f'|format(runner.load_average_1m) }}{% else %}—{% endif %} / {% if runner.load_average_5m is not none %}{{ '%.2f'|format(runner.load_average_5m) }}{% else %}—{% endif %}{% if runner.cpu_count %}<br><small>{{ runner.cpu_count }} CPU{{ 's' if runner.cpu_count != 1 else '' }}</small>{% endif %}</td>
         <td>
+          <span class="runner-live-capacity">{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</span>
+          <br><small>Load: <span class="runner-live-load">{% if runner.load_average_1m is not none %}{{ '%.2f'|format(runner.load_average_1m) }}{% else %}—{% endif %} / {% if runner.load_average_5m is not none %}{{ '%.2f'|format(runner.load_average_5m) }}{% else %}—{% endif %}{% if runner.cpu_count %} · {{ runner.cpu_count }} CPU{{ 's' if runner.cpu_count != 1 else '' }}{% endif %}</span></small>
+        </td>
+        <td class="runner-actions-column">
           {% if runner.is_local %}
             <span class="muted">Managed by service</span>
           {% else %}
             <details class="action-menu">
-              <summary class="button action-menu-trigger">
-                Actions <span aria-hidden="true">▾</span>
-              </summary>
+              <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
               <div class="action-menu-items">
-                <a
-                  class="action-menu-item"
-                  href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=runner.id) }}"
-                >Manage</a>
+                <a class="action-menu-item" href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=runner.id) }}">Manage</a>
+                {% if can_manage_resources %}
+                  {% if runner.is_registered %}<a class="action-menu-item" href="{{ url_for('main.runner_manual_bootstrap', runner_id=runner.id, mode='update') }}">Manual update package</a>{% else %}<a class="action-menu-item" href="{{ url_for('main.runner_manual_bootstrap', runner_id=runner.id, mode='bootstrap') }}">Manual bootstrap</a>{% endif %}
+                {% endif %}
                 {% if item.update_available or item.capability_update_required or item.runtime_dependency_update_required %}
-                  <a
-                    class="action-menu-item"
-                    href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=runner.id, action='update') }}"
-                  >{% if item.update_available %}Update runner to {{ current_remote_runner_version }}{% elif item.runtime_dependency_update_required %}Reconcile runner runtime dependencies{% else %}Reconcile runner capabilities{% endif %}</a>
+                  <a class="action-menu-item" href="{{ url_for('main.project_package_launch', package_id=manage_runner_package.id, runner_id=runner.id, action='update') }}">{% if item.update_available %}Update runner to {{ current_remote_runner_version }}{% elif item.runtime_dependency_update_required %}Reconcile runner runtime dependencies{% else %}Reconcile runner capabilities{% endif %}</a>
                 {% endif %}
                 <form method="post" action="{{ url_for('main.runner_toggle', runner_id=runner.id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -155,6 +141,68 @@
               </div>
             </details>
           {% endif %}
+        </td>
+      </tr>
+      <tr id="runner-details-{{ runner.id }}" class="runner-details-row" hidden>
+        <td colspan="9">
+          <div class="runner-details-grid">
+            <section>
+              <h3>Execution</h3>
+              <dl class="runner-details-list">
+                <dt>Crew(s)</dt><dd>{% if runner.crews %}{{ runner.crews|map(attribute='name')|join(', ') }}{% else %}—{% endif %}</dd>
+                <dt>Execution</dt><dd>{{ runner.capabilities()|sort|join(', ') or '—' }}</dd>
+              </dl>
+              <h4>Runner capabilities</h4>
+              {% if item.managed_capabilities %}
+                {% for capability in item.managed_capabilities %}
+                  <div class="runner-detail-item"><strong>{{ capability.label }}</strong>
+                    {% if capability.state == 'healthy' %}<span class="status-label status-healthy">Ready</span>{% else %}<span class="status-label status-warning">{{ 'Update required' if capability.state == 'update_required' else 'Warning' }}</span>{% endif %}
+                    {% if capability.message %}<small>{{ capability.message }}</small>{% endif %}
+                  </div>
+                {% endfor %}
+              {% else %}—{% endif %}
+            </section>
+            <section>
+              <h3>Runtime dependencies</h3>
+              <div class="runner-detail-item">
+                <strong>{{ deps.label }}</strong>
+                {% if deps.drift %}
+                  {% for drift in deps.drift %}<small>{{ drift.name }}: {{ drift.reported or 'missing' }} → {{ drift.expected }}</small>{% endfor %}
+                {% endif %}
+                {% if deps.audit_message %}<small title="{{ deps.audit_message }}">{{ deps.audit_message | truncate(300, true, '…') }}</small>{% endif %}
+              </div>
+            </section>
+            <section>
+              <h3>PKI / mTLS</h3>
+              {% if runner.is_local %}
+                <span class="muted">Not applicable to the built-in runner.</span>
+              {% else %}
+                {% if runner.pki_quarantined %}
+                  <span class="status-label status-failed">Quarantined</span>
+                  {% if runner.pki_quarantine_reason %}<small class="warning-text">{{ runner.pki_quarantine_reason }}</small>{% endif %}
+                {% elif runner.pki_certificate_fingerprint_sha256 %}
+                  <span class="status-label status-healthy">Enrolled</span>
+                {% else %}
+                  <span class="status-label status-warning">Not enrolled</span>
+                {% endif %}
+                <dl class="runner-details-list">
+                  <dt>Management</dt><dd>{{ runner.hostname or '—' }}:{{ runner.management_port or 8443 }}</dd>
+                  <dt>Certificate expires</dt><dd>{% if runner.pki_certificate_not_after_at %}<span class="utc-datetime" data-utc="{{ runner.pki_certificate_not_after_at.isoformat() }}">{{ runner.pki_certificate_not_after_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}—{% endif %}</dd>
+                  <dt>Expected fingerprint</dt><dd class="runner-fingerprint">{% if runner.pki_certificate_fingerprint_sha256 %}<span title="{{ runner.pki_certificate_fingerprint_sha256 }}">{{ runner.pki_certificate_fingerprint_sha256 }}</span>{% else %}—{% endif %}</dd>
+                  <dt>Renewal failures</dt><dd>{{ runner.pki_renewal_failure_count or 0 }}{% if runner.pki_renewal_last_error %}<small class="warning-text">{{ runner.pki_renewal_last_error }}</small>{% endif %}</dd>
+                </dl>
+              {% endif %}
+            </section>
+            <section>
+              <h3>Telemetry</h3>
+              <dl class="runner-details-list">
+                <dt>Last heartbeat</dt><dd>{% if runner.last_heartbeat_at %}<span class="utc-datetime" data-utc="{{ runner.last_heartbeat_at.isoformat() }}">{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</dd>
+                <dt>Capacity</dt><dd>{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</dd>
+                <dt>Load 1m / 5m</dt><dd>{% if runner.load_average_1m is not none %}{{ '%.2f'|format(runner.load_average_1m) }}{% else %}—{% endif %} / {% if runner.load_average_5m is not none %}{{ '%.2f'|format(runner.load_average_5m) }}{% else %}—{% endif %}</dd>
+                <dt>CPUs</dt><dd>{{ runner.cpu_count or '—' }}</dd>
+              </dl>
+            </section>
+          </div>
         </td>
       </tr>
     {% endfor %}
@@ -336,6 +384,27 @@
 
     refreshRunnerContent().catch(function () {});
   }, true);
+
+  document.addEventListener("click", function (event) {
+    const toggle = event.target.closest(".runner-details-toggle");
+    if (!toggle) {
+      return;
+    }
+
+    const detailsId = toggle.getAttribute("aria-controls");
+    const detailsRow = detailsId ? document.getElementById(detailsId) : null;
+    if (!detailsRow) {
+      return;
+    }
+
+    const willOpen = detailsRow.hidden;
+    detailsRow.hidden = !willOpen;
+    toggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    const indicator = toggle.querySelector("span[aria-hidden='true']");
+    if (indicator) {
+      indicator.textContent = willOpen ? "▴" : "▾";
+    }
+  });
 
   function startEventStream() {
     if (!("EventSource" in window)) {

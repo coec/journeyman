@@ -29,6 +29,7 @@
     journeyman_configure_selinux_nginx_proxy: true
     journeyman_generate_fallback_admin: true
     journeyman_outbound_allowed_hosts: ""
+    journeyman_migrate_legacy_credentials: true
     journeyman_directory_admin_group_name: Journeyman Admins
     journeyman_directory_user_group_name: Journeyman Users
 
@@ -111,7 +112,9 @@
       loop:
         - { path: /opt/journeyman, owner: journeyman, group: journeyman, mode: '0755' }
         - { path: /etc/journeyman, owner: root, group: journeyman, mode: '0750' }
+        - { path: /etc/journeyman/credential-keys, owner: journeyman, group: journeyman, mode: '0700' }
         - { path: /etc/journeyman/tls, owner: root, group: root, mode: '0750' }
+        - { path: /etc/journeyman/runner-pki, owner: journeyman, group: journeyman, mode: '0700' }
         - { path: /var/lib/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/repos, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/jobs, owner: journeyman, group: journeyman, mode: '0750' }
@@ -540,6 +543,139 @@
       register: journeyman_db_upgrade
       changed_when: "'Running upgrade' in journeyman_db_upgrade.stdout or 'Running upgrade' in journeyman_db_upgrade.stderr"
 
+    - name: Repair credential storage keyring directory ownership
+      ansible.builtin.file:
+        path: /etc/journeyman/credential-keys
+        state: directory
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+        mode: '0700'
+
+    - name: Find existing credential storage keyring files
+      ansible.builtin.find:
+        paths: /etc/journeyman/credential-keys
+        file_type: file
+      register: journeyman_credential_keyring_files
+
+    - name: Repair credential storage keyring file ownership
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+      loop: "{{ journeyman_credential_keyring_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Check active RSA credential storage key
+      ansible.builtin.stat:
+        path: /etc/journeyman/credential-keys/active
+      register: journeyman_credential_active_key
+
+    - name: Select initial RSA credential storage key identifier
+      ansible.builtin.set_fact:
+        journeyman_initial_credential_key_id: >-
+          storage-{{ ansible_date_time.year }}-{{ ansible_date_time.month }}
+      when: not journeyman_credential_active_key.stat.exists
+
+    - name: Check initial RSA credential storage private key
+      ansible.builtin.stat:
+        path: >-
+          /etc/journeyman/credential-keys/{{ journeyman_initial_credential_key_id }}.private.pem
+      register: journeyman_initial_credential_private_key
+      when: not journeyman_credential_active_key.stat.exists
+
+    - name: Generate initial RSA credential storage key
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py credential-key generate \
+          --key-id {{ journeyman_initial_credential_key_id | quote }}
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      when:
+        - not journeyman_credential_active_key.stat.exists
+        - not (journeyman_initial_credential_private_key.stat.exists | default(false))
+
+    - name: Activate initial RSA credential storage key
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py credential-key activate \
+          --key-id {{ journeyman_initial_credential_key_id | quote }}
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      when: not journeyman_credential_active_key.stat.exists
+
+    - name: Migrate legacy Fernet credential data to v2 envelope encryption
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py credential-key migrate-legacy
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      register: journeyman_credential_migration
+      changed_when: >-
+        not ('migrated=0 ' in journeyman_credential_migration.stdout)
+      when: journeyman_migrate_legacy_credentials | bool
+
+    - name: Find credential storage private keys
+      ansible.builtin.find:
+        paths: /etc/journeyman/credential-keys
+        patterns: '*.private.pem'
+        file_type: file
+      register: journeyman_credential_private_keys
+
+    - name: Protect credential storage private keys
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+        mode: '0600'
+      loop: "{{ journeyman_credential_private_keys.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Protect active credential storage key pointer
+      ansible.builtin.file:
+        path: /etc/journeyman/credential-keys/active
+        owner: "{{ journeyman_user }}"
+        group: "{{ journeyman_group }}"
+        mode: '0600'
+
+    - name: Check Journeyman runner CA certificate
+      ansible.builtin.stat:
+        path: /etc/journeyman/runner-pki/ca-cert.pem
+      register: journeyman_runner_ca_certificate
+
+    - name: Initialize Journeyman runner CA
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py runner-pki init-ca
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      when: not journeyman_runner_ca_certificate.stat.exists
+
+    - name: Ensure Journeyman controller mTLS identity
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
+        {{ journeyman_venv }}/bin/flask --app run.py runner-pki ensure-controller
+      args:
+        executable: /bin/bash
+        chdir: /opt/journeyman
+      become_user: "{{ journeyman_user }}"
+      register: journeyman_controller_identity
+      changed_when: "'created' in (journeyman_controller_identity.stdout | lower)"
+
     - name: Install Journeyman systemd units
       ansible.builtin.copy:
         src: "{{ journeyman_root }}/deploy/systemd/{{ item }}"
@@ -579,6 +715,9 @@
 
               ssl_certificate {{ journeyman_tls_fullchain_dest }};
               ssl_certificate_key {{ journeyman_tls_key_dest }};
+              ssl_client_certificate /etc/journeyman/runner-pki/ca-cert.pem;
+              ssl_verify_client optional;
+              ssl_verify_depth 2;
 
               location / {
                   proxy_pass http://127.0.0.1:5000;
@@ -588,6 +727,8 @@
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                   proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Journeyman-TLS-Client-Verify $ssl_client_verify;
+                  proxy_set_header X-Journeyman-TLS-Client-Cert $ssl_client_escaped_cert;
               }
           }
       notify: Reload Nginx

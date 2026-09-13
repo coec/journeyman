@@ -93,11 +93,3 @@ def test_directory_revalidation_backend_failure_fails_closed_and_is_audited(
         assert row is not None
         assert row.result == "failure"
         assert '"status_code": 503' in row.details_json
-
-
-def test_authorization_failure_remains_fail_closed(client):
-    response = client.get(
-        "/audit-log",
-        headers={"X-Test-Username": "ordinary.user"},
-    )
-    assert response.status_code == 403

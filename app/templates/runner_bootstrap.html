@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Manual Runner Bootstrap · Journeyman<script nonce="{{ csp_nonce }}">
+(() => {
+  const radios = document.querySelectorAll('input[name="mode"]');
+  const bootstrapOnly = document.querySelectorAll('.runner-bootstrap-only');
+  const submit = document.getElementById('runner-package-submit');
+  function refreshMode() {
+    const selected = document.querySelector('input[name="mode"]:checked');
+    const update = selected && selected.value === 'update';
+    bootstrapOnly.forEach((element) => { element.hidden = update; });
+    if (submit) submit.textContent = update ? 'Generate update script' : 'Generate bootstrap script';
+  }
+  radios.forEach((radio) => radio.addEventListener('change', refreshMode));
+  refreshMode();
+})();
+</script>
+{% endblock %}
+{% block content %}
+<style nonce="{{ csp_nonce }}">
+  .runner-bootstrap-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 760px;
+  }
+  .runner-bootstrap-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .runner-bootstrap-field input {
+    box-sizing: border-box;
+    width: 100%;
+  }
+  .runner-bootstrap-capabilities {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 760px;
+  }
+  .runner-bootstrap-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+</style>
+<div class="page-heading">
+  <div>
+    <h1>Manual Remote Runner Package</h1>
+    <p>Generate a self-contained bootstrap or update script for a runner that Journeyman cannot reach by SSH.</p>
+  </div>
+  <div class="page-heading-actions"><a class="button secondary" href="{{ url_for('main.runners') }}">Back to Runners</a></div>
+</div>
+<div class="panel">
+  <div class="panel-header"><h2>Runner package</h2></div>
+  <p>Bootstrap packages contain a short-lived one-time enrolment token. Update packages preserve the existing UUID, private key and certificate. Transfer the generated script securely, run it as root on the target host, and do not retain copies.</p>
+  <form method="post" class="runner-bootstrap-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <fieldset class="runner-bootstrap-capabilities">
+      <legend>Package operation</legend>
+      <label><input type="radio" name="mode" value="bootstrap" {% if form_data.mode == 'bootstrap' %}checked{% endif %}> Bootstrap new runner</label>
+      <label><input type="radio" name="mode" value="update" {% if form_data.mode == 'update' %}checked{% endif %}> Update existing enrolled runner</label>
+    </fieldset>
+
+    <div class="runner-bootstrap-field">
+      <label for="runner-bootstrap-name">Runner name</label>
+      <input id="runner-bootstrap-name" name="name" required maxlength="120" value="{{ form_data.name }}">
+    </div>
+
+    <div class="runner-bootstrap-field runner-bootstrap-only">
+      <label for="runner-bootstrap-site">Site / execution zone</label>
+      <input id="runner-bootstrap-site" name="site" maxlength="120" value="{{ form_data.site }}">
+    </div>
+
+    <div class="runner-bootstrap-field runner-bootstrap-only">
+      <label for="runner-bootstrap-capacity">Maximum concurrent steps</label>
+      <input id="runner-bootstrap-capacity" name="max_concurrent_steps" type="number" min="1" max="100" value="{{ form_data.max_concurrent_steps }}">
+    </div>
+
+    <div class="runner-bootstrap-field runner-bootstrap-only">
+      <label for="runner-bootstrap-port">Management port</label>
+      <input id="runner-bootstrap-port" name="management_port" type="number" min="1" max="65535" value="{{ form_data.management_port }}">
+    </div>
+
+    <div class="runner-bootstrap-field">
+      <label for="runner-bootstrap-proxy">HTTPS proxy (optional)</label>
+      <input id="runner-bootstrap-proxy" name="https_proxy" value="{{ form_data.https_proxy }}" placeholder="http://proxy.example:3128">
+    </div>
+
+    <div class="runner-bootstrap-field">
+      <label for="runner-bootstrap-no-proxy">no_proxy (optional)</label>
+      <input id="runner-bootstrap-no-proxy" name="no_proxy" value="{{ form_data.no_proxy }}" placeholder="localhost,127.0.0.1,.example.com">
+    </div>
+
+    <div class="runner-bootstrap-field runner-bootstrap-only">
+      <label for="runner-bootstrap-ca">Journeyman web CA file on target (optional)</label>
+      <input id="runner-bootstrap-ca" name="server_ca_file" value="{{ form_data.server_ca_file }}" placeholder="/etc/pki/ca-trust/source/anchors/site-ca.pem">
+    </div>
+
+    <fieldset class="runner-bootstrap-capabilities runner-bootstrap-only">
+      <legend>Execution capabilities</legend>
+      <label><input type="checkbox" name="capabilities" value="ansible" {% if 'ansible' in form_data.capabilities %}checked{% endif %}> Ansible</label>
+      <label><input type="checkbox" name="capabilities" value="shell" {% if 'shell' in form_data.capabilities %}checked{% endif %}> Shell</label>
+    </fieldset>
+
+    <div class="runner-bootstrap-actions">
+      <button class="button primary" type="submit" id="runner-package-submit">Generate package</button>
+    </div>
+  </form>
+</div>
+<script nonce="{{ csp_nonce }}">
+(() => {
+  const radios = document.querySelectorAll('input[name="mode"]');
+  const bootstrapOnly = document.querySelectorAll('.runner-bootstrap-only');
+  const submit = document.getElementById('runner-package-submit');
+  function refreshMode() {
+    const selected = document.querySelector('input[name="mode"]:checked');
+    const update = selected && selected.value === 'update';
+    bootstrapOnly.forEach((element) => { element.hidden = update; });
+    if (submit) submit.textContent = update ? 'Generate update script' : 'Generate bootstrap script';
+  }
+  radios.forEach((radio) => radio.addEventListener('change', refreshMode));
+  refreshMode();
+})();
+</script>
+{% endblock %}

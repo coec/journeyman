@@ -16,7 +16,7 @@ from .environment_build_setting import EnvironmentBuildSetting
 from .release_test_setting import ReleaseTestSetting
 from .notification import NotificationTarget, NotificationRule, NotificationEvent, NotificationDelivery
 from .inventory import Inventory
-from .job import Job, JobStep
+from .job import Job, JobStep, WorkItem
 from .job_step_host_result import JobStepHostResult
 from .job_step_execution_slice import JobStepExecutionSlice
 from .job_repository_snapshot import JobRepositorySnapshot
@@ -88,6 +88,7 @@ __all__ = [
     "FallbackAdminActivation",
     "Inventory",
     "Job",
+    "WorkItem",
     "JobCredentialSnapshot",
     "JobRepositorySnapshot",
     "JobStep",

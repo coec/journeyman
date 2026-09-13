@@ -1287,6 +1287,76 @@ def test_runner_management_rejects_unknown_runner(app):
             raise AssertionError("Unknown runner reference was accepted")
 
 
+def test_runners_page_shows_remote_runner_pki_management_state(app, client):
+    from datetime import datetime, timezone
+
+    with app.app_context():
+        runner = Runner(
+            name="pki-runner",
+            runner_uuid="11111111-2222-3333-4444-555555555555",
+            hostname="pki-runner.example.com",
+            enabled=True,
+            management_port=8443,
+            pki_certificate_serial="1234abcd",
+            pki_certificate_fingerprint_sha256=(
+                "0123456789abcdef0123456789abcdef"
+                "0123456789abcdef0123456789abcdef"
+            ),
+            pki_certificate_not_after_at=datetime(
+                2026, 10, 12, 12, 0, 0, tzinfo=timezone.utc
+            ),
+        )
+        runner.set_capabilities(["ansible"])
+        db.session.add(runner)
+        db.session.commit()
+
+    response = client.get(
+        "/runners",
+        headers={"X-Test-Username": "admin"},
+    )
+
+    assert response.status_code == 200
+    assert b"PKI / mTLS" in response.data
+    assert b"Enrolled" in response.data
+    assert b"pki-runner.example.com:8443" in response.data
+    assert b"Certificate expires" in response.data
+    assert b"0123456789abcdef" in response.data
+    assert b'class="runner-details-toggle"' in response.data
+    assert b'class="runner-details-row" hidden' in response.data
+
+
+
+def test_runners_page_uses_compact_summary_columns(app, client):
+    with app.app_context():
+        runner = Runner(
+            name="compact-runner",
+            runner_uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            hostname="compact-runner.example.com",
+            site="site-a",
+            enabled=True,
+        )
+        runner.set_capabilities(["ansible", "shell"])
+        db.session.add(runner)
+        db.session.commit()
+
+    response = client.get(
+        "/runners",
+        headers={"X-Test-Username": "admin"},
+    )
+
+    assert response.status_code == 200
+    assert b"<th>Name</th>" in response.data
+    assert b"<th>Status</th>" in response.data
+    assert b"<th>Runtime</th>" in response.data
+    assert b"<th>Environments</th>" in response.data
+    assert b"runner-actions-column" in response.data
+    assert b"<th>Crew(s)</th>" not in response.data
+    assert b"<th>Runner capabilities</th>" not in response.data
+    assert b"<th>PKI / mTLS</th>" not in response.data
+    assert b">Crew(s)</dt>" in response.data
+    assert b">PKI / mTLS</h3>" in response.data
+
+
 def test_runners_page_uses_builtin_management_package_instead_of_add_form(client):
     response = client.get(
         "/runners",

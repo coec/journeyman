@@ -219,6 +219,59 @@ class Config:
         )
     )
 
+    # Runner PKI is an independent trust domain from the public web TLS
+    # certificate and the credential-storage encryption keyring.
+    RUNNER_PKI_ROOT = Path(
+        os.environ.get(
+            "JOURNEYMAN_RUNNER_PKI_ROOT",
+            "/etc/journeyman/runner-pki",
+        )
+    )
+    RUNNER_CA_PRIVATE_KEY_PATH = os.environ.get(
+        "JOURNEYMAN_RUNNER_CA_PRIVATE_KEY_PATH",
+        str(RUNNER_PKI_ROOT / "ca-key.pem"),
+    )
+    RUNNER_CA_CERTIFICATE_PATH = os.environ.get(
+        "JOURNEYMAN_RUNNER_CA_CERTIFICATE_PATH",
+        str(RUNNER_PKI_ROOT / "ca-cert.pem"),
+    )
+    RUNNER_CA_METADATA_PATH = os.environ.get(
+        "JOURNEYMAN_RUNNER_CA_METADATA_PATH",
+        str(RUNNER_PKI_ROOT / "ca-metadata.json"),
+    )
+    RUNNER_CA_VALIDITY_DAYS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_CA_VALIDITY_DAYS", "364")
+    )
+    RUNNER_CA_RENEW_AFTER_DAYS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_CA_RENEW_AFTER_DAYS", "273")
+    )
+    RUNNER_CERTIFICATE_VALIDITY_DAYS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_CERTIFICATE_VALIDITY_DAYS", "30")
+    )
+    RUNNER_CERTIFICATE_RENEW_BEFORE_DAYS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_CERTIFICATE_RENEW_BEFORE_DAYS", "15")
+    )
+    RUNNER_CERTIFICATE_RETRY_SECONDS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_CERTIFICATE_RETRY_SECONDS", "86400")
+    )
+    RUNNER_CERTIFICATE_WARNING_FAILURES = int(
+        os.environ.get("JOURNEYMAN_RUNNER_CERTIFICATE_WARNING_FAILURES", "3")
+    )
+    RUNNER_CONTROLLER_PRIVATE_KEY_PATH = os.environ.get(
+        "JOURNEYMAN_RUNNER_CONTROLLER_PRIVATE_KEY_PATH",
+        str(RUNNER_PKI_ROOT / "controller-key.pem"),
+    )
+    RUNNER_CONTROLLER_CERTIFICATE_PATH = os.environ.get(
+        "JOURNEYMAN_RUNNER_CONTROLLER_CERTIFICATE_PATH",
+        str(RUNNER_PKI_ROOT / "controller-cert.pem"),
+    )
+    RUNNER_MANAGEMENT_PORT = int(
+        os.environ.get("JOURNEYMAN_RUNNER_MANAGEMENT_PORT", "8443")
+    )
+    RUNNER_MANAGEMENT_TIMEOUT_SECONDS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_MANAGEMENT_TIMEOUT_SECONDS", "5")
+    )
+
     REPOSITORY_ROOT = Path(
         os.environ.get(
             "JOURNEYMAN_REPOSITORY_ROOT",

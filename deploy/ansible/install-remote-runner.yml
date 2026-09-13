@@ -16,6 +16,8 @@
     journeyman_runner_source: /opt/journeyman/bin/journeyman-remote-runner
     journeyman_signal_spool_source: /opt/journeyman/bin/journeyman-signal-spool
     journeyman_runner_config: /etc/journeyman/remote-runner.env
+    journeyman_runner_pki_root: /etc/journeyman/runner-pki
+    journeyman_runner_management_port: 8443
     journeyman_runner_ca_file: ""
     journeyman_runner_pip_extra_args: ""
     journeyman_runner_python_packages:
@@ -257,6 +259,12 @@
           - "{{ journeyman_signal_spool_root }}"
           - --ca-file
           - "{{ journeyman_runner_ca_file }}"
+          - --pki-root
+          - "{{ journeyman_runner_pki_root }}"
+          - --pki-owner
+          - "{{ journeyman_runner_user }}"
+          - --management-port
+          - "{{ journeyman_runner_management_port | string }}"
       environment:
         JOURNEYMAN_REGISTRATION_TOKEN: "{{ journeyman_registration_token }}"
       register: journeyman_runner_register

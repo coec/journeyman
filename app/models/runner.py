@@ -45,6 +45,25 @@ class Runner(db.Model):
     )
     registration_token_digest = db.Column(db.String(64), nullable=False, default="")
     api_secret_digest = db.Column(db.String(64), nullable=False, default="")
+    # X.509 identity metadata. The private key is generated and retained on the
+    # runner; Journeyman stores only the certificate identity it issued.
+    pki_certificate_serial = db.Column(db.String(64), nullable=False, default="")
+    pki_certificate_fingerprint_sha256 = db.Column(
+        db.String(64), nullable=False, default="", index=True
+    )
+    pki_certificate_not_before_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    pki_certificate_not_after_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    pki_certificate_issued_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    management_port = db.Column(db.Integer, nullable=False, default=8443)
+    pki_quarantined = db.Column(db.Boolean, nullable=False, default=False)
+    pki_quarantine_reason = db.Column(db.Text, nullable=False, default="")
+    pki_quarantined_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Automatic certificate renewal state. Attempts are persisted so scheduler
+    # restarts cannot create a tight retry loop against an unreachable runner.
+    pki_renewal_last_attempt_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    pki_renewal_failure_count = db.Column(db.Integer, nullable=False, default=0)
+    pki_renewal_last_error = db.Column(db.Text, nullable=False, default="")
+    pki_renewal_warning_at = db.Column(db.DateTime(timezone=True), nullable=True)
     status_message = db.Column(db.Text, nullable=False, default="")
     version = db.Column(db.String(120), nullable=False, default="")
     runtime_dependencies_json = db.Column(db.Text, nullable=False, default="{}")
@@ -102,4 +121,7 @@ class Runner(db.Model):
 
     @property
     def is_registered(self):
-        return bool(self.runner_uuid and self.api_secret_digest)
+        return bool(
+            self.runner_uuid
+            and (self.pki_certificate_fingerprint_sha256 or self.api_secret_digest)
+        )

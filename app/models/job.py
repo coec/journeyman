@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timezone
 from app.security_scope import SECURITY_SCOPE_PRIVATE
 
+from sqlalchemy import event
+
 from app import db
 
 
@@ -31,6 +33,17 @@ job_step_credential_snapshot = db.Table(
         primary_key=True,
     ),
 )
+
+
+
+class WorkItem(db.Model):
+    """Global monotonically increasing number for work shown on Jobs."""
+
+    __tablename__ = "work_item"
+
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(32), nullable=False, index=True)
+
 
 class Job(db.Model):
     """
@@ -260,6 +273,18 @@ class Job(db.Model):
 
     def __repr__(self):
         return f"<Job id={self.id} status={self.status!r}>"
+
+
+@event.listens_for(Job, "before_insert")
+def _allocate_job_work_item_number(_mapper, connection, target):
+    """Allocate every Job ID from the shared Jobs-page work sequence."""
+
+    if target.id is not None:
+        return
+    result = connection.execute(
+        WorkItem.__table__.insert().values(kind="job")
+    )
+    target.id = result.inserted_primary_key[0]
 
 
 class JobStep(db.Model):

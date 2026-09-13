@@ -8,6 +8,7 @@ from flask_migrate import Migrate
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from journeyman_configuration import load_journeyman_configuration
+from app.version import JOURNEYMAN_VERSION
 from flask_wtf.csrf import (
     CSRFError,
     CSRFProtect,
@@ -18,23 +19,6 @@ db = SQLAlchemy()
 migrate = Migrate()
 csrf = CSRFProtect()
 
-
-def read_journeyman_version():
-    """Return the application version from the repository VERSION file."""
-
-    version_file = (
-        Path(__file__).resolve().parents[1]
-        / "VERSION"
-    )
-
-    try:
-        version = version_file.read_text(
-            encoding="utf-8"
-        ).strip()
-    except OSError:
-        return "unknown"
-
-    return version or "unknown"
 
 
 def validate_runtime_directory(path, setting_name):
@@ -120,9 +104,7 @@ def create_app(config_object=None, *, instance_path=None):
                 "run journeyman-service-coordinator prepare before startup."
             )
 
-    app.config["JOURNEYMAN_VERSION"] = (
-        read_journeyman_version()
-    )
+    app.config["JOURNEYMAN_VERSION"] = JOURNEYMAN_VERSION
 
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
@@ -478,9 +460,15 @@ def create_app(config_object=None, *, instance_path=None):
             ),
         }
 
-    from app.cli import register_cli_commands, register_scheduler_cli_commands, register_credential_key_cli_commands
+    from app.cli import (
+        register_cli_commands,
+        register_scheduler_cli_commands,
+        register_credential_key_cli_commands,
+        register_runner_pki_cli_commands,
+    )
     register_cli_commands(app)
     register_scheduler_cli_commands(app)
     register_credential_key_cli_commands(app)
+    register_runner_pki_cli_commands(app)
 
     return app

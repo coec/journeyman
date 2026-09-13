@@ -28,13 +28,13 @@ from app.services.builtin_automation import (
     ensure_builtin_admin_automation,
 )
 from app.services.runners import (
-    authenticate_runner,
     delete_runner,
     issue_registration_token,
     RunnerRemovalError,
     CURRENT_REMOTE_RUNNER_VERSION,
     runner_update_available,
     register_runner,
+    enroll_runner_pki,
     unregister_runner,
     runner_health,
 )
@@ -59,6 +59,13 @@ from app.services.runner_environment_sync import (
     claim_next_environment_sync,
     complete_environment_sync,
     environment_sync_manifest,
+)
+from app.services.runner_pki import RunnerPkiError
+from app.services.runner_request_auth import authenticate_runner_request
+from app.services.runner_bootstrap import (
+    RunnerBootstrapError,
+    generate_bootstrap_script,
+    generate_update_script,
 )
 from app.services.runner_slice_dispatch import (
     claim_next_remote_slice,
@@ -125,6 +132,15 @@ def _runner_structural_fingerprint(rows):
             item["runner"].site,
             item["runner"].hostname,
             item["runner"].version,
+            item["runner"].management_port,
+            item["runner"].pki_certificate_serial,
+            item["runner"].pki_certificate_fingerprint_sha256,
+            item["runner"].pki_certificate_not_after_at,
+            item["runner"].pki_quarantined,
+            item["runner"].pki_quarantine_reason,
+            item["runner"].pki_renewal_failure_count,
+            item["runner"].pki_renewal_last_error,
+            item["runner"].pki_renewal_warning_at,
             tuple(sorted(item["runner"].capabilities())),
             tuple(crew.name for crew in item["runner"].crews),
             tuple(
@@ -216,7 +232,148 @@ def runners():
         runners=_runner_rows(),
         manage_runner_package=package,
         current_remote_runner_version=CURRENT_REMOTE_RUNNER_VERSION,
+        can_manage_resources=current_user_can_manage_resources(),
     )
+
+
+@bp.route("/runners/manual-bootstrap", methods=["GET", "POST"])
+def runner_manual_bootstrap():
+    if not current_user_can_manage_resources():
+        abort(403)
+
+    existing = None
+    runner_id = request.args.get("runner_id", type=int)
+    if runner_id:
+        existing = db.get_or_404(Runner, runner_id)
+        if existing.is_local:
+            abort(400)
+
+    requested_mode = str(request.args.get("mode") or "").strip().lower()
+    default_mode = (
+        "update"
+        if existing is not None and existing.is_registered
+        else "bootstrap"
+    )
+    if requested_mode in {"bootstrap", "update"}:
+        default_mode = requested_mode
+
+    form_data = {
+        "mode": default_mode,
+        "name": (existing.name if existing else ""),
+        "site": (existing.site if existing else ""),
+        "max_concurrent_steps": (existing.max_concurrent_steps if existing else 1),
+        "management_port": (existing.management_port if existing else 8443),
+        "https_proxy": "",
+        "no_proxy": "",
+        "server_ca_file": "",
+        "capabilities": sorted(existing.capabilities()) if existing else ["ansible"],
+    }
+    if request.method == "GET":
+        return render_template("runner_bootstrap.html", form_data=form_data)
+
+    form_data.update({
+        "mode": str(request.form.get("mode") or "bootstrap").strip().lower(),
+        "name": str(request.form.get("name") or "").strip(),
+        "site": str(request.form.get("site") or "").strip(),
+        "https_proxy": str(request.form.get("https_proxy") or "").strip(),
+        "no_proxy": str(request.form.get("no_proxy") or "").strip(),
+        "server_ca_file": str(request.form.get("server_ca_file") or "").strip(),
+        "capabilities": sorted({str(v).strip().lower() for v in request.form.getlist("capabilities") if str(v).strip()}),
+    })
+    if form_data["mode"] not in {"bootstrap", "update"}:
+        flash("Manual runner package mode is invalid.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+
+    if not form_data["name"]:
+        flash("Runner name is required.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+
+    if form_data["mode"] == "update":
+        runner = Runner.query.filter_by(name=form_data["name"]).one_or_none()
+        if runner is None or runner.is_local or not runner.is_registered:
+            flash("Manual update requires an existing enrolled remote runner.", "error")
+            return render_template("runner_bootstrap.html", form_data=form_data), 409
+        try:
+            script = generate_update_script(
+                runner,
+                https_proxy=form_data["https_proxy"],
+                no_proxy=form_data["no_proxy"],
+            )
+        except RunnerBootstrapError as exc:
+            flash(str(exc), "error")
+            return render_template("runner_bootstrap.html", form_data=form_data), 400
+        record_audit_event(
+            "runner.manual_update.generate",
+            object_type="runner",
+            object_id=runner.id,
+            object_name=runner.name,
+            details={"runner_uuid": runner.runner_uuid},
+        )
+        safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in runner.name)
+        response = Response(script, mimetype="text/x-shellscript")
+        response.headers["Content-Disposition"] = 'attachment; filename="journeyman-update-{}.sh"'.format(safe_name)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    try:
+        form_data["max_concurrent_steps"] = int(request.form.get("max_concurrent_steps") or 1)
+        form_data["management_port"] = int(request.form.get("management_port") or 8443)
+    except ValueError:
+        flash("Capacity and management port must be integers.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+
+    if not form_data["capabilities"]:
+        flash("At least one execution capability is required.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+    if any(value not in {"ansible", "shell"} for value in form_data["capabilities"]):
+        flash("One or more runner capabilities are invalid.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+    if not 1 <= form_data["max_concurrent_steps"] <= 100:
+        flash("Maximum concurrent steps must be between 1 and 100.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+
+    runner = Runner.query.filter_by(name=form_data["name"]).one_or_none()
+    if runner is not None and runner.is_registered:
+        flash("A registered runner must use Manual Update, or be explicitly recovered/re-enrolled.", "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 409
+    created = runner is None
+    if runner is None:
+        runner = Runner(name=form_data["name"], enabled=True)
+        db.session.add(runner)
+    runner.site = form_data["site"][:120]
+    runner.max_concurrent_steps = form_data["max_concurrent_steps"]
+    runner.management_port = form_data["management_port"]
+    runner.set_capabilities(form_data["capabilities"])
+    token = issue_registration_token(runner)
+    db.session.flush()
+    try:
+        script = generate_bootstrap_script(
+            runner,
+            registration_token=token,
+            https_proxy=form_data["https_proxy"],
+            no_proxy=form_data["no_proxy"],
+            server_ca_file=form_data["server_ca_file"],
+            management_port=form_data["management_port"],
+        )
+    except RunnerBootstrapError as exc:
+        db.session.rollback()
+        flash(str(exc), "error")
+        return render_template("runner_bootstrap.html", form_data=form_data), 400
+    db.session.commit()
+    record_audit_event(
+        "runner.manual_bootstrap.generate",
+        object_type="runner",
+        object_id=runner.id,
+        object_name=runner.name,
+        details={"created": created, "management_port": runner.management_port, "token_ttl_seconds": 3600},
+    )
+    safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in runner.name)
+    response = Response(script, mimetype="text/x-shellscript")
+    response.headers["Content-Disposition"] = 'attachment; filename="journeyman-bootstrap-{}.sh"'.format(safe_name)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @bp.get("/runners/events")
@@ -471,6 +628,8 @@ def runner_create():
         manage_runner_package=ensure_builtin_admin_automation()["package"],
         registration_token=token,
         registration_runner=runner,
+        current_remote_runner_version=CURRENT_REMOTE_RUNNER_VERSION,
+        can_manage_resources=current_user_can_manage_resources(),
     )
 
 
@@ -567,8 +726,11 @@ def runner_new_registration_token(runner_id):
     return render_template(
         "runners.html",
         runners=_runner_rows(),
+        manage_runner_package=ensure_builtin_admin_automation()["package"],
         registration_token=token,
         registration_runner=runner,
+        current_remote_runner_version=CURRENT_REMOTE_RUNNER_VERSION,
+        can_manage_resources=current_user_can_manage_resources(),
     )
 
 
@@ -578,11 +740,29 @@ def runner_register_api():
     payload, error = _json_object_payload()
     if error is not None:
         return error
-    runner, secret = register_runner(
-        str(payload.get("token") or ""),
-        hostname=payload.get("hostname"),
-        version=payload.get("version"),
-    )
+    csr_pem = str(payload.get("csr_pem") or "").strip()
+    try:
+        if csr_pem:
+            runner, secret, certificate = enroll_runner_pki(
+                str(payload.get("token") or ""),
+                csr_pem=csr_pem,
+                hostname=payload.get("hostname"),
+                version=payload.get("version"),
+                management_port=payload.get("management_port", 8443),
+            )
+        else:
+            # Compatibility path for pre-v2 remote runners during rolling
+            # upgrades. New v2 runners always send a CSR.
+            runner, secret = register_runner(
+                str(payload.get("token") or ""),
+                hostname=payload.get("hostname"),
+                version=payload.get("version"),
+            )
+            certificate = None
+    except RunnerPkiError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 503
+
     if runner is None:
         return jsonify(
             {"error": "Invalid, expired, or already-used registration token."}
@@ -593,20 +773,39 @@ def runner_register_api():
         object_id=runner.id,
         object_name=runner.name,
         actor_username="runner:{}".format(runner.runner_uuid),
-        authenticated_via="runner-token",
-    )
-    return jsonify(
-        {
-            "runner_uuid": runner.runner_uuid,
-            "runner_secret": secret,
-            "name": runner.name,
-            "site": runner.site,
-            "heartbeat_url": url_for(
-                "main.runner_heartbeat_api",
-                _external=True,
+        authenticated_via="runner-enrolment",
+        details={
+            "pki_enrolled": certificate is not None,
+            "certificate_serial": (certificate or {}).get("serial", ""),
+            "certificate_fingerprint_sha256": (certificate or {}).get(
+                "fingerprint_sha256", ""
             ),
-        }
+        },
     )
+    response = {
+        "runner_uuid": runner.runner_uuid,
+        "name": runner.name,
+        "site": runner.site,
+        "heartbeat_url": url_for(
+            "main.runner_heartbeat_api",
+            _external=True,
+        ),
+    }
+    if secret:
+        response["runner_secret"] = secret
+    if certificate is not None:
+        response.update(
+            {
+                "certificate_pem": certificate["certificate_pem"],
+                "ca_certificate_pem": certificate["ca_certificate_pem"],
+                "certificate_serial": certificate["serial"],
+                "certificate_fingerprint_sha256": certificate[
+                    "fingerprint_sha256"
+                ],
+                "certificate_not_after": certificate["not_after"].isoformat(),
+            }
+        )
+    return jsonify(response)
 
 
 @bp.post("/api/runners/unregister")
@@ -641,7 +840,7 @@ def runner_unregister_api():
         object_id=runner_id,
         object_name=runner_name,
         actor_username="runner:{}".format(runner_uuid),
-        authenticated_via="runner-secret",
+        authenticated_via="runner-mtls",
     )
     return jsonify({"status": status, "name": runner_name})
 
@@ -649,10 +848,7 @@ def runner_unregister_api():
 @bp.post("/api/runners/heartbeat")
 @csrf.exempt
 def runner_heartbeat_api():
-    runner_uuid = str(request.headers.get("X-Journeyman-Runner-ID") or "")
-    authorization = str(request.headers.get("Authorization") or "")
-    secret = authorization[7:] if authorization.startswith("Bearer ") else ""
-    runner = authenticate_runner(runner_uuid, secret)
+    runner = _authenticated_runner_request()
     if runner is None:
         return jsonify({"error": "Runner authentication failed."}), 403
 
@@ -753,7 +949,7 @@ def runner_environment_sync_claim_api():
         object_id=sync.id,
         object_name=sync.environment.name,
         actor_username="runner:{}".format(runner.runner_uuid),
-        authenticated_via="runner-token",
+        authenticated_via="runner-mtls",
         details={"runner_id": runner.id, "environment_id": sync.environment_id},
     )
     response = jsonify(manifest)
@@ -788,7 +984,7 @@ def runner_environment_sync_complete_api(sync_id):
         object_id=sync.id,
         object_name=sync.environment.name,
         actor_username="runner:{}".format(runner.runner_uuid),
-        authenticated_via="runner-token",
+        authenticated_via="runner-mtls",
         details={
             "runner_id": runner.id,
             "environment_id": sync.environment_id,
@@ -801,10 +997,7 @@ def runner_environment_sync_complete_api(sync_id):
 @bp.post("/api/runners/jobs/claim")
 @csrf.exempt
 def runner_job_claim_api():
-    runner_uuid = str(request.headers.get("X-Journeyman-Runner-ID") or "")
-    authorization = str(request.headers.get("Authorization") or "")
-    secret = authorization[7:] if authorization.startswith("Bearer ") else ""
-    runner = authenticate_runner(runner_uuid, secret)
+    runner = _authenticated_runner_request()
     if runner is None:
         return jsonify({"error": "Runner authentication failed."}), 403
 
@@ -843,7 +1036,7 @@ def runner_job_claim_api():
                 job.id, execution_slice.step.position, execution_slice.position
             ),
             actor_username="runner:{}".format(runner.runner_uuid),
-            authenticated_via="runner-token",
+            authenticated_via="runner-mtls",
             details={
                 "job_id": job.id,
                 "step_position": execution_slice.step.position,
@@ -877,7 +1070,7 @@ def runner_job_claim_api():
             object_id=job.id,
             object_name=job.project_name,
             actor_username="runner:{}".format(runner.runner_uuid),
-            authenticated_via="runner-token",
+            authenticated_via="runner-mtls",
             details={"error": str(exc)},
         )
         return jsonify({"error": "repository_artifact_preparation_failed"}), 500
@@ -897,7 +1090,7 @@ def runner_job_claim_api():
         object_id=job.id,
         object_name=job.project_name,
         actor_username="runner:{}".format(runner.runner_uuid),
-        authenticated_via="runner-token",
+        authenticated_via="runner-mtls",
         details={"runner_id": runner.id, "runner_name": runner.name},
     )
     execution_data_url = url_for(
@@ -1029,10 +1222,7 @@ def runner_slice_repository_artifact_api(slice_id, snapshot_id):
 
 
 def _authenticated_runner_request():
-    runner_uuid = str(request.headers.get("X-Journeyman-Runner-ID") or "")
-    authorization = str(request.headers.get("Authorization") or "")
-    secret = authorization[7:] if authorization.startswith("Bearer ") else ""
-    return authenticate_runner(runner_uuid, secret)
+    return authenticate_runner_request(allow_legacy_unenrolled=True)
 
 
 def _dispatch_token():
@@ -1132,7 +1322,7 @@ def runner_job_start_api(job_id):
         object_id=job.id,
         object_name=job.project_name,
         actor_username="runner:{}".format(runner.runner_uuid),
-        authenticated_via="runner-token",
+        authenticated_via="runner-mtls",
         details={"runner_id": runner.id, "runner_name": runner.name},
     )
     return jsonify({"job_id": job.id, "status": "running", "result": result})
@@ -1258,7 +1448,7 @@ def runner_job_refresh_inventories_api(job_id):
         actor_username="runner:{}".format(
             runner.runner_uuid
         ),
-        authenticated_via="runner-token",
+        authenticated_via="runner-mtls",
         details={
             "runner_id": runner.id,
             "runner_name": runner.name,
@@ -1314,7 +1504,7 @@ def runner_job_complete_api(job_id):
         object_id=job.id,
         object_name=job.project_name,
         actor_username="runner:{}".format(runner.runner_uuid),
-        authenticated_via="runner-token",
+        authenticated_via="runner-mtls",
         details={
             "runner_id": runner.id,
             "runner_name": runner.name,

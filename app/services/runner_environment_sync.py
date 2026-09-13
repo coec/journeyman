@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from app import db
-from app.models import Environment, RunnerEnvironment, RunnerEnvironmentSync
+from app.models import Environment, RunnerEnvironment, RunnerEnvironmentSync, WorkItem
 from app.services.environment_build_settings import build_proxy_environment
 from app.services.environments import (
     APPLICATION_ENVIRONMENT_NAME,
@@ -129,9 +129,23 @@ def queue_environment_sync(environment, runner, *, requested_by="system"):
         runner_id=runner.id,
         environment_id=environment.id,
     ).one_or_none()
+
+    # Environment synchronization is first-class work on the Jobs page.
+    # Allocate its visible number from the same global sequence as Jobs so
+    # Job #405 can be followed by Environment sync #406 and then Job #407.
+    work_item = WorkItem(kind="environment_sync")
+    db.session.add(work_item)
+    db.session.flush()
+
     if row is None:
-        row = RunnerEnvironmentSync(runner=runner, environment=environment)
+        row = RunnerEnvironmentSync(
+            runner=runner,
+            environment=environment,
+            work_item_id=work_item.id,
+        )
         db.session.add(row)
+    else:
+        row.work_item_id = work_item.id
 
     row.requested_revision = revision
     row.requested_by = str(requested_by or "system")

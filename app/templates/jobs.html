@@ -22,7 +22,7 @@
 </div>
 
 <section class="panel">
-  {% if jobs or environment_syncs %}
+  {% if work_rows %}
     <div class="table-wrapper">
       <table>
         <thead>
@@ -39,169 +39,171 @@
         </thead>
 
         <tbody>
-          {% for sync in environment_syncs %}
-            <tr>
-              <td>
-                <a href="{{ url_for('main.environment_sync', environment_id=sync.environment_id) }}">
-                  Sync #{{ sync.id }}
-                </a>
-              </td>
+          {% for kind, item in work_rows %}
+            {% if kind == "environment_sync" %}
+              {% set sync = item %}
+              <tr>
+                <td>
+                  <a href="{{ url_for('main.environment_sync', environment_id=sync.environment_id) }}">
+                    #{{ sync.work_item_id }}
+                  </a>
+                </td>
 
-              <td>
-                Environment sync — {{ sync.environment.name }} → {{ sync.runner.name }}
-              </td>
+                <td>
+                  Environment sync — {{ sync.environment.name }} → {{ sync.runner.name }}
+                </td>
 
-              <td>
-                {% if sync.status == "building" %}
-                  {% set display_status = "running" %}
-                {% elif sync.status == "ready" %}
-                  {% set display_status = "successful" %}
-                {% else %}
-                  {% set display_status = sync.status %}
-                {% endif %}
-                <span class="status status-{{ display_status }}">
-                  {{ display_status | replace('_', ' ') | title }}
-                </span>
-              </td>
+                <td>
+                  {% if sync.status == "building" %}
+                    {% set display_status = "running" %}
+                  {% elif sync.status == "ready" %}
+                    {% set display_status = "successful" %}
+                  {% else %}
+                    {% set display_status = sync.status %}
+                  {% endif %}
+                  <span class="status status-{{ display_status }}">
+                    {{ display_status | replace('_', ' ') | title }}
+                  </span>
+                </td>
 
-              <td>{{ sync.requested_by }}</td>
+                <td>{{ sync.requested_by }}</td>
 
-              <td>
-                <span class="utc-datetime" data-utc="{{ sync.requested_at.isoformat() }}">{{ sync.requested_at }}</span>
-              </td>
+                <td>
+                  <span class="utc-datetime" data-utc="{{ sync.requested_at.isoformat() }}">{{ sync.requested_at }}</span>
+                </td>
 
-              <td>
-                {% if sync.started_at %}
-                  <span class="utc-datetime" data-utc="{{ sync.started_at.isoformat() }}">{{ sync.started_at }}</span>
-                {% else %}
-                  —
-                {% endif %}
-              </td>
+                <td>
+                  {% if sync.started_at %}
+                    <span class="utc-datetime" data-utc="{{ sync.started_at.isoformat() }}">{{ sync.started_at }}</span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
 
-              <td>—</td>
+                <td>—</td>
 
-              <td>
-                <details class="action-menu">
-                  <summary class="button action-menu-trigger">
-                    Actions <span aria-hidden="true">▾</span>
-                  </summary>
-                  <div class="action-menu-items">
-                    <a
-                      class="action-menu-item"
-                      href="{{ url_for('main.environment_sync', environment_id=sync.environment_id) }}"
-                    >View Environment sync</a>
-                  </div>
-                </details>
-              </td>
-            </tr>
-          {% endfor %}
+                <td>
+                  <details class="action-menu">
+                    <summary class="button action-menu-trigger">
+                      Actions <span aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="action-menu-items">
+                      <a
+                        class="action-menu-item"
+                        href="{{ url_for('main.environment_sync', environment_id=sync.environment_id) }}"
+                      >View Environment sync</a>
+                    </div>
+                  </details>
+                </td>
+              </tr>
+            {% else %}
+              {% set job = item %}
+              <tr>
+                <td>
+                  <a href="{{ url_for(
+                    'main.job_detail',
+                    job_id=job.id
+                  ) }}">
+                    #{{ job.id }}
+                  </a>
+                </td>
 
-          {% for job in jobs %}
-            <tr>
-              <td>
-                <a href="{{ url_for(
-                  'main.job_detail',
-                  job_id=job.id
-                ) }}">
-                  #{{ job.id }}
-                </a>
-              </td>
+                <td>{{ job.project_name }}</td>
 
-              <td>{{ job.project_name }}</td>
+                <td>
+                  <span class="status status-{{ job.status }}">
+                    {{ job.status | replace('_', ' ') | title }}
+                  </span>
+                </td>
 
-              <td>
-                <span class="status status-{{ job.status }}">
-                  {{ job.status | replace('_', ' ') | title }}
-                </span>
-              </td>
+                <td>{{ job.requested_by }}</td>
 
-              <td>{{ job.requested_by }}</td>
+                <td>
+                  {% if job.queued_at %}
+                    <span class="utc-datetime" data-utc="{{ job.queued_at.isoformat() }}">{{ job.queued_at }}</span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
 
-              <td>
-                {% if job.queued_at %}
-                  <span class="utc-datetime" data-utc="{{ job.queued_at.isoformat() }}">{{ job.queued_at }}</span>
-                {% else %}
-                  —
-                {% endif %}
-              </td>
+                <td>
+                  {% if job.started_at %}
+                    <span class="utc-datetime" data-utc="{{ job.started_at.isoformat() }}">{{ job.started_at }}</span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
 
-              <td>
-                {% if job.started_at %}
-                  <span class="utc-datetime" data-utc="{{ job.started_at.isoformat() }}">{{ job.started_at }}</span>
-                {% else %}
-                  —
-                {% endif %}
-              </td>
+                <td>
+                  {% if job.duration_seconds is not none %}
+                    {{ job.duration_seconds }}s
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>
+                  <details class="action-menu">
+                    <summary class="button action-menu-trigger">
+                      Actions <span aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="action-menu-items">
+                      <a
+                        class="action-menu-item"
+                        href="{{ url_for('main.job_detail', job_id=job.id) }}"
+                      >View</a>
 
-              <td>
-                {% if job.duration_seconds is not none %}
-                  {{ job.duration_seconds }}s
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-<td>
-  <details class="action-menu">
-    <summary class="button action-menu-trigger">
-      Actions <span aria-hidden="true">▾</span>
-    </summary>
-    <div class="action-menu-items">
-      <a
-        class="action-menu-item"
-        href="{{ url_for('main.job_detail', job_id=job.id) }}"
-      >View</a>
+                      {% if job.status == "queued" %}
+                        <form
+                          method="post"
+                          action="{{ url_for('main.job_cancel', job_id=job.id) }}"
+                          data-confirm="Cancel this queued job?"
+                        >
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                          <button class="action-menu-item danger" type="submit">Cancel</button>
+                        </form>
 
-      {% if job.status == "queued" %}
-        <form
-          method="post"
-          action="{{ url_for('main.job_cancel', job_id=job.id) }}"
-          data-confirm="Cancel this queued job?"
-        >
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="action-menu-item danger" type="submit">Cancel</button>
-        </form>
+                      {% elif job.status == "waiting_oversight" %}
+                        <a
+                          class="action-menu-item"
+                          href="{{ url_for('main.job_oversight', job_id=job.id) }}"
+                        >Review</a>
 
-      {% elif job.status == "waiting_oversight" %}
-        <a
-          class="action-menu-item"
-          href="{{ url_for('main.job_oversight', job_id=job.id) }}"
-        >Review</a>
+                      {% elif job.status == "running" %}
+                        <form
+                          method="post"
+                          action="{{ url_for('main.job_cancel', job_id=job.id) }}"
+                          data-confirm="Stop this running job?"
+                        >
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                          <button class="action-menu-item danger" type="submit">Stop</button>
+                        </form>
 
-      {% elif job.status == "running" %}
-        <form
-          method="post"
-          action="{{ url_for('main.job_cancel', job_id=job.id) }}"
-          data-confirm="Stop this running job?"
-        >
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="action-menu-item danger" type="submit">Stop</button>
-        </form>
+                      {% elif job.status == "cancelling" %}
+                        <button class="action-menu-item" type="button" disabled>Stopping...</button>
 
-      {% elif job.status == "cancelling" %}
-        <button class="action-menu-item" type="button" disabled>Stopping...</button>
+                      {% elif job.status == "successful" %}
+                        <a
+                          class="action-menu-item"
+                          href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}"
+                        >Rerun</a>
 
-      {% elif job.status == "successful" %}
-        <a
-          class="action-menu-item"
-          href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}"
-        >Rerun</a>
-
-      {% elif job.status in ["failed", "cancelled"] %}
-        <a
-          class="action-menu-item"
-          href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}"
-        >Rerun - all</a>
-        {% if failed_rerun_hosts_by_job_id.get(job.id) %}
-          <a
-            class="action-menu-item"
-            href="{{ url_for('main.job_rerun', job_id=job.id, scope='failed') }}"
-          >Rerun - failed only</a>
-        {% endif %}
-      {% endif %}
-    </div>
-  </details>
-</td>
-            </tr>
+                      {% elif job.status in ["failed", "cancelled"] %}
+                        <a
+                          class="action-menu-item"
+                          href="{{ url_for('main.job_rerun', job_id=job.id, scope='all') }}"
+                        >Rerun - all</a>
+                        {% if failed_rerun_hosts_by_job_id.get(job.id) %}
+                          <a
+                            class="action-menu-item"
+                            href="{{ url_for('main.job_rerun', job_id=job.id, scope='failed') }}"
+                          >Rerun - failed only</a>
+                        {% endif %}
+                      {% endif %}
+                    </div>
+                  </details>
+                </td>
+              </tr>
+            {% endif %}
           {% endfor %}
         </tbody>
       </table>

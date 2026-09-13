@@ -8,9 +8,12 @@ from datetime import datetime, timezone
 
 from app import db
 from app.models import Job, JobStepExecutionSlice, JobStepHostResult, Project, Runner
+from app.version import REMOTE_RUNNER_VERSION
 
 
-CURRENT_REMOTE_RUNNER_VERSION = "0.16"
+# Backward-compatible name used by existing views/services/tests.  The value is
+# derived from the bundled runner artifact rather than duplicated here.
+CURRENT_REMOTE_RUNNER_VERSION = REMOTE_RUNNER_VERSION
 
 
 def _runner_version_key(value):
@@ -283,32 +286,48 @@ def _digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+REGISTRATION_TOKEN_TTL_SECONDS = 3600
+
+
 def issue_registration_token(runner):
-    token = secrets.token_urlsafe(32)
+    issued_at = int(datetime.now(timezone.utc).timestamp())
+    token = "{}.{}".format(secrets.token_urlsafe(32), issued_at)
     runner.registration_token_digest = _digest(token)
     return token
 
 
-def register_runner(token, *, hostname="", version=""):
-    """Consume a one-time token for initial registration or credential recovery.
+def _registration_token_fresh(token):
+    value = str(token or "").strip()
+    if not value:
+        return False
+    try:
+        issued_text = value.rsplit(".", 1)[1]
+        issued_at = int(issued_text)
+    except (IndexError, ValueError):
+        # Compatibility for one-time tokens issued before expiry was encoded.
+        return True
+    age = int(datetime.now(timezone.utc).timestamp()) - issued_at
+    return 0 <= age <= REGISTRATION_TOKEN_TTL_SECONDS
 
-    Issuing a new registration token does not revoke an already-running
-    runner's current API credential. Only successful consumption rotates the
-    runner UUID and API secret, which keeps update-time recovery failure-safe
-    until the remote host has actually obtained replacement credentials.
-    """
 
-    digest = _digest(token or "")
-    runner = Runner.query.filter_by(registration_token_digest=digest).one_or_none()
-    if runner is None or not runner.enabled:
-        return None, None
+def _prepare_runner_registration(
+    runner, *, hostname="", version="", management_port=8443, issue_bearer=True
+):
+    """Rotate runner identity fields without committing the transaction."""
 
-    secret = secrets.token_urlsafe(48)
+    secret = secrets.token_urlsafe(48) if issue_bearer else ""
     runner.runner_uuid = str(uuid.uuid4())
-    runner.api_secret_digest = _digest(secret)
+    runner.api_secret_digest = _digest(secret) if secret else ""
     runner.registration_token_digest = ""
     runner.hostname = str(hostname or "")[:255]
     runner.version = str(version or "")[:120]
+    try:
+        management_port = int(management_port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Runner management port must be an integer.") from exc
+    if management_port < 1 or management_port > 65535:
+        raise ValueError("Runner management port must be between 1 and 65535.")
+    runner.management_port = management_port
     runner.runtime_dependencies_json = "{}"
     runner.runtime_dependencies_reported_at = None
     runner.runtime_dependency_audit_status = "pending"
@@ -319,8 +338,81 @@ def register_runner(token, *, hostname="", version=""):
     runner.registered_at = utcnow()
     runner.last_heartbeat_at = utcnow()
     runner.status_message = "Registered; waiting for work dispatch support."
+    return secret
+
+
+def register_runner(token, *, hostname="", version=""):
+    """Consume a one-time token for legacy bearer registration/recovery.
+
+    Patch 4 retains this bearer credential because existing runner APIs still
+    use it. New remote-runner registration calls ``enroll_runner_pki`` below so
+    an X.509 identity is provisioned at the same time. Patch 5 can switch the
+    steady-state transport to mTLS before retiring this transitional secret.
+    """
+
+    if not _registration_token_fresh(token):
+        return None, None
+    digest = _digest(token or "")
+    runner = Runner.query.filter_by(registration_token_digest=digest).one_or_none()
+    if runner is None or not runner.enabled:
+        return None, None
+
+    secret = _prepare_runner_registration(
+        runner, hostname=hostname, version=version
+    )
     db.session.commit()
     return runner, secret
+
+
+def enroll_runner_pki(token, *, csr_pem, hostname="", version="", management_port=8443):
+    """Consume a one-time token and issue the runner's X.509 identity.
+
+    The remote runner generates and retains its private key. Journeyman sees
+    only a signed CSR, constrains the certificate identity to the newly assigned
+    runner UUID/hostname, and records the expected serial/fingerprint. The
+    PKI-enrolled runners do not receive a persistent bearer secret. Legacy
+    pre-PKI registration remains available only for rolling-upgrade recovery.
+    """
+
+    from app.services.runner_pki import issue_runner_certificate
+
+    if not _registration_token_fresh(token):
+        return None, None, None
+    digest = _digest(token or "")
+    runner = Runner.query.filter_by(registration_token_digest=digest).one_or_none()
+    if runner is None or not runner.enabled:
+        return None, None, None
+
+    was_quarantined = bool(getattr(runner, "pki_quarantined", False))
+    previous_quarantine_reason = str(
+        getattr(runner, "pki_quarantine_reason", "") or ""
+    )
+    secret = _prepare_runner_registration(
+        runner,
+        hostname=hostname,
+        version=version,
+        management_port=management_port,
+        issue_bearer=False,
+    )
+    certificate = issue_runner_certificate(
+        runner, csr_pem, commit=False
+    )
+    db.session.commit()
+    if was_quarantined:
+        from app.services.audit import record_audit_event
+        record_audit_event(
+            "runner.pki_quarantine_cleared",
+            object_type="runner",
+            object_id=str(runner.id),
+            object_name=runner.name,
+            details={
+                "previous_reason": previous_quarantine_reason,
+                "runner_uuid": runner.runner_uuid,
+            },
+            actor_username="system",
+            authenticated_via="runner-enrolment",
+        )
+    return runner, secret, certificate
 
 
 def authenticate_runner(runner_uuid, secret):
@@ -335,6 +427,8 @@ def authenticate_runner(runner_uuid, secret):
 def runner_health(runner, now=None):
     if not runner.enabled:
         return "disabled"
+    if not runner.is_local and runner.pki_quarantined:
+        return "quarantined"
     if runner.drain_job_id is not None:
         return "draining"
     if runner.is_local and runner.status_message == "Stopped":

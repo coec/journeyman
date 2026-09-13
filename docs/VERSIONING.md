@@ -51,3 +51,13 @@ artifacts are treated as supported compatibility contracts.
 A published Journeyman version is immutable. Its source, dependency
 lock, manifest, and SBOM must not be silently replaced. Any change
 requires a new version.
+
+## Version sources
+
+The Journeyman application version is read from the repository `VERSION` file.
+
+The remote runner is a self-contained deployment artifact and declares its own
+`VERSION` in `bin/journeyman-remote-runner`.  Controller code must derive the
+expected remote-runner version from that exact bundled artifact instead of
+maintaining a second version literal.  The artifact also supports
+`journeyman-remote-runner --version` for deployment and verification tooling.

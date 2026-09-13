@@ -273,6 +273,7 @@ def main():
                     "runner_id": runner.id,
                     "runner_uuid": runner.runner_uuid,
                     "name": runner.name,
+                    "pki_quarantined": bool(runner.pki_quarantined),
                 }))
                 return 0
 

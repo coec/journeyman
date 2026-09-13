@@ -10,10 +10,12 @@ import argparse
 import fcntl
 import base64
 import hashlib
+import http.server
 from importlib import metadata as importlib_metadata
 import json
 import logging
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -31,12 +33,15 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from cryptography.hazmat.primitives import hashes
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 LOGGER = logging.getLogger("journeyman-remote-runner")
-VERSION = "0.17"
+VERSION = "0.20"
 KEY_INFO = b"journeyman remote execution data v1"
 STOP = False
 
@@ -47,11 +52,16 @@ def env(name, default=""):
 
 BASE_URL = env("JOURNEYMAN_SERVER_URL").rstrip("/")
 RUNNER_UUID = env("JOURNEYMAN_RUNNER_UUID")
-RUNNER_SECRET = env("JOURNEYMAN_RUNNER_SECRET")
 WORK_ROOT = Path(env("JOURNEYMAN_REMOTE_WORK_ROOT", "/var/lib/journeyman/remote-jobs"))
 POLL_SECONDS = max(1, int(env("JOURNEYMAN_REMOTE_POLL_SECONDS", "5")))
 CONTROL_SECONDS = max(1, int(env("JOURNEYMAN_REMOTE_CONTROL_SECONDS", "2")))
 HEARTBEAT_SECONDS = max(5, int(env("JOURNEYMAN_REMOTE_HEARTBEAT_SECONDS", "15")))
+MANAGEMENT_BIND = env("JOURNEYMAN_RUNNER_MANAGEMENT_BIND", "0.0.0.0")
+MANAGEMENT_PORT = int(env("JOURNEYMAN_RUNNER_MANAGEMENT_PORT", "8443"))
+RUNNER_PRIVATE_KEY = env("JOURNEYMAN_RUNNER_PRIVATE_KEY")
+RUNNER_CERTIFICATE = env("JOURNEYMAN_RUNNER_CERTIFICATE")
+RUNNER_CA_CERTIFICATE = env("JOURNEYMAN_RUNNER_CA_CERTIFICATE")
+CONTROLLER_IDENTITY_URI = "urn:journeyman:controller"
 MAX_LIVE_OUTPUT_LENGTH = 2 * 1024 * 1024
 SIGNAL_SPOOL_ROOT = Path(env("JOURNEYMAN_SIGNAL_SPOOL_ROOT", "/var/spool/journeyman/signals"))
 SNMP_SOURCES_FILE = Path(env("JOURNEYMAN_SNMP_SOURCES_FILE", "/etc/journeyman/snmp-sources.json"))
@@ -82,17 +92,365 @@ def _validated_https_url(value, label="Journeyman server URL"):
     return value
 
 
-def _ssl_context(ca_file=""):
+def _ssl_context(ca_file="", certificate_file="", private_key_file=""):
     ca_file = str(ca_file or env("JOURNEYMAN_CA_FILE")).strip()
-    if ca_file:
-        return ssl.create_default_context(cafile=ca_file)
-    return ssl.create_default_context()
+    context = (
+        ssl.create_default_context(cafile=ca_file)
+        if ca_file
+        else ssl.create_default_context()
+    )
+    certificate_file = str(certificate_file or RUNNER_CERTIFICATE).strip()
+    private_key_file = str(private_key_file or RUNNER_PRIVATE_KEY).strip()
+    if certificate_file or private_key_file:
+        if not certificate_file or not private_key_file:
+            raise RuntimeError(
+                "Runner TLS client identity requires both certificate and private key."
+            )
+        context.load_cert_chain(certfile=certificate_file, keyfile=private_key_file)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+RUNNER_IDENTITY_KEY_SIZE = 3072
+
+
+def _atomic_private_write(path, data, mode=0o600):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    temporary = path.with_name(".{}.tmp-{}".format(path.name, os.getpid()))
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+        os.chmod(path, mode)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _set_identity_owner(paths, account_name):
+    """Make enrolled identity material readable by the runner service account."""
+
+    account_name = str(account_name or "").strip()
+    if not account_name or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    try:
+        account = pwd.getpwnam(account_name)
+    except KeyError as exc:
+        raise RuntimeError(
+            "Runner PKI owner account does not exist: {}".format(account_name)
+        ) from exc
+    directories = {Path(path).parent for path in paths}
+    for directory in directories:
+        os.chown(directory, account.pw_uid, account.pw_gid)
+        os.chmod(directory, 0o700)
+    for path in paths:
+        os.chown(path, account.pw_uid, account.pw_gid)
+
+
+def _new_runner_identity():
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=RUNNER_IDENTITY_KEY_SIZE,
+    )
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(
+            x509.Name(
+                [
+                    x509.NameAttribute(
+                        NameOID.COMMON_NAME,
+                        "Journeyman Runner Enrollment",
+                    )
+                ]
+            )
+        )
+        .sign(private_key, hashes.SHA256())
+    )
+    return private_key, csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+def _validate_enrollment_response(private_key, certificate_pem, ca_certificate_pem):
+    try:
+        certificate = x509.load_pem_x509_certificate(certificate_pem.encode("ascii"))
+        ca_certificate = x509.load_pem_x509_certificate(ca_certificate_pem.encode("ascii"))
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError("Runner registration returned invalid PKI material.") from exc
+
+    expected_public = private_key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    actual_public = certificate.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    if expected_public != actual_public:
+        raise RuntimeError("Issued runner certificate does not match the generated private key.")
+    if certificate.issuer != ca_certificate.subject:
+        raise RuntimeError("Issued runner certificate does not identify the returned runner CA as issuer.")
+    try:
+        ca_certificate.public_key().verify(
+            certificate.signature,
+            certificate.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            certificate.signature_hash_algorithm,
+        )
+    except Exception as exc:
+        raise RuntimeError("Issued runner certificate signature verification failed.") from exc
+    return certificate
+
+
+def _peer_has_controller_identity(connection):
+    try:
+        der = connection.getpeercert(binary_form=True)
+        cert = x509.load_der_x509_certificate(der)
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        uris = set(san.get_values_for_type(x509.UniformResourceIdentifier))
+    except Exception:
+        return False
+    return CONTROLLER_IDENTITY_URI in uris
+
+
+def _renewal_csr_pem():
+    """Build a CSR from the existing runner private key without rotating it."""
+
+    key = serialization.load_pem_private_key(Path(RUNNER_PRIVATE_KEY).read_bytes(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise RuntimeError("Runner private key is not RSA.")
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Journeyman Runner {}".format(RUNNER_UUID))])
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+
+def _install_renewed_identity(certificate_pem, ca_certificate_pem):
+    """Validate and atomically install renewed certificate material."""
+
+    try:
+        certificate = x509.load_pem_x509_certificate(str(certificate_pem).encode("ascii"))
+        new_ca = x509.load_pem_x509_certificate(str(ca_certificate_pem).encode("ascii"))
+        current_ca = x509.load_pem_x509_certificate(Path(RUNNER_CA_CERTIFICATE).read_bytes())
+        private_key = serialization.load_pem_private_key(
+            Path(RUNNER_PRIVATE_KEY).read_bytes(), password=None
+        )
+    except Exception as exc:
+        raise RuntimeError("Renewed runner certificate material could not be parsed.") from exc
+
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise RuntimeError("Runner private key is not RSA.")
+    existing_ca_public = current_ca.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    new_ca_public = new_ca.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    if existing_ca_public != new_ca_public:
+        raise RuntimeError("Renewed CA certificate uses an unexpected public key.")
+    expected_public = private_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    actual_public = certificate.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    if expected_public != actual_public:
+        raise RuntimeError("Renewed certificate does not match the runner private key.")
+    if certificate.issuer != new_ca.subject:
+        raise RuntimeError("Renewed certificate issuer does not match the runner CA.")
+    try:
+        new_ca.public_key().verify(
+            certificate.signature,
+            certificate.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            certificate.signature_hash_algorithm,
+        )
+        san = certificate.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+        uris = set(san.get_values_for_type(x509.UniformResourceIdentifier))
+    except Exception as exc:
+        raise RuntimeError("Renewed runner certificate validation failed.") from exc
+    expected_uri = "urn:journeyman:runner:{}".format(RUNNER_UUID)
+    if expected_uri not in uris:
+        raise RuntimeError("Renewed certificate runner identity is incorrect.")
+
+    _atomic_private_write(
+        RUNNER_CERTIFICATE, certificate.public_bytes(serialization.Encoding.PEM), 0o644
+    )
+    _atomic_private_write(
+        RUNNER_CA_CERTIFICATE, new_ca.public_bytes(serialization.Encoding.PEM), 0o644
+    )
+    return {
+        "serial": format(certificate.serial_number, "x"),
+        "fingerprint_sha256": certificate.fingerprint(hashes.SHA256()).hex(),
+    }
+
+
+def _local_health_payload(include_details=True):
+    usage = shutil.disk_usage(WORK_ROOT)
+    try:
+        load1, load5, _load15 = os.getloadavg()
+    except (AttributeError, OSError):
+        load1 = None
+        load5 = None
+    payload = {
+        "runner_uuid": RUNNER_UUID,
+        "hostname": socket.getfqdn() or socket.gethostname(),
+        "version": VERSION,
+        "status_message": _runner_status_message(),
+        "running_steps": active_assignment_count(),
+        "free_workspace_bytes": usage.free,
+        "load_average_1m": load1,
+        "load_average_5m": load5,
+        "cpu_count": os.cpu_count(),
+        "runtime_dependencies": runtime_dependency_versions(),
+    }
+    if include_details:
+        payload.update({
+            "capabilities": ["ansible", "shell"],
+            "managed_capabilities": managed_capability_status(),
+            "environments": execution_environment_status(),
+        })
+    return payload
+
+
+class _RunnerManagementHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "JourneymanRunnerManagement/2"
+
+    def log_message(self, fmt, *args):
+        LOGGER.debug("Runner management: " + fmt, *args)
+
+    def _json(self, status, payload):
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _controller_authorized(self):
+        if _peer_has_controller_identity(self.connection):
+            return True
+        self._json(403, {"error": "controller_identity_required"})
+        return False
+
+    def _request_json(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise RuntimeError("Invalid Content-Length.")
+        if length < 0 or length > 1024 * 1024:
+            raise RuntimeError("Management request body is too large.")
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError("Management request body is not valid JSON.") from exc
+        if not isinstance(value, dict):
+            raise RuntimeError("Management request body must be a JSON object.")
+        return value
+
+    def do_GET(self):
+        if not self._controller_authorized():
+            return
+        if self.path == "/v1/health":
+            self._json(200, _local_health_payload(include_details=True))
+            return
+        if self.path == "/v1/certificate/csr":
+            try:
+                csr_pem = _renewal_csr_pem()
+            except Exception as exc:
+                LOGGER.exception("Could not generate runner certificate renewal CSR.")
+                self._json(500, {"error": str(exc)})
+                return
+            self._json(200, {"runner_uuid": RUNNER_UUID, "csr_pem": csr_pem})
+            return
+        self._json(404, {"error": "not_found"})
+
+    def do_POST(self):
+        if not self._controller_authorized():
+            return
+        if self.path != "/v1/certificate/install":
+            self._json(404, {"error": "not_found"})
+            return
+        try:
+            payload = self._request_json()
+            result = _install_renewed_identity(
+                payload.get("certificate_pem") or "",
+                payload.get("ca_certificate_pem") or "",
+            )
+        except Exception as exc:
+            LOGGER.exception("Could not install renewed runner certificate.")
+            self._json(400, {"error": str(exc)})
+            return
+        result["runner_uuid"] = RUNNER_UUID
+        self._json(200, result)
+
+
+def _management_ssl_context():
+    for label, value in (
+        ("runner private key", RUNNER_PRIVATE_KEY),
+        ("runner certificate", RUNNER_CERTIFICATE),
+        ("runner CA certificate", RUNNER_CA_CERTIFICATE),
+    ):
+        if not value:
+            raise RuntimeError("{} is not configured.".format(label.capitalize()))
+        if not Path(value).is_file():
+            raise RuntimeError("{} does not exist: {}".format(label.capitalize(), value))
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_verify_locations(cafile=RUNNER_CA_CERTIFICATE)
+    context.load_cert_chain(certfile=RUNNER_CERTIFICATE, keyfile=RUNNER_PRIVATE_KEY)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+class _ReloadingMTLSServer(http.server.ThreadingHTTPServer):
+    """Load TLS material for each connection so renewal needs no process restart."""
+
+    def get_request(self):
+        socket_obj, address = super().get_request()
+        try:
+            wrapped = _management_ssl_context().wrap_socket(socket_obj, server_side=True)
+        except Exception:
+            socket_obj.close()
+            raise
+        return wrapped, address
+
+
+def start_management_server():
+    server = _ReloadingMTLSServer(
+        (MANAGEMENT_BIND, MANAGEMENT_PORT),
+        _RunnerManagementHandler,
+    )
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="remote-runner-management",
+        daemon=True,
+    )
+    thread.start()
+    LOGGER.info(
+        "Runner mTLS management API listening on %s:%s.",
+        MANAGEMENT_BIND,
+        MANAGEMENT_PORT,
+    )
+    return server
 
 
 def _headers(token=None):
     value = {
         "X-Journeyman-Runner-ID": RUNNER_UUID,
-        "Authorization": "Bearer {}".format(RUNNER_SECRET),
         "Accept": "application/json",
     }
     if token:
@@ -145,18 +503,24 @@ def register_remote_runner(
     ca_file="",
     work_root=None,
     signal_spool_root=None,
+    pki_root="/etc/journeyman/runner-pki",
+    pki_owner="journeyman",
+    management_port=8443,
 ):
-    """Consume a one-time registration token and write the runner environment file."""
+    """Enroll the runner and persist its locally generated X.509 identity."""
 
     server_url = _validated_https_url(server_url)
     token = str(token or "").strip()
     if not token:
         raise RuntimeError("Runner registration token is required.")
 
+    private_key, csr_pem = _new_runner_identity()
     payload = json.dumps({
         "token": token,
         "hostname": socket.getfqdn() or socket.gethostname(),
         "version": VERSION,
+        "csr_pem": csr_pem,
+        "management_port": int(management_port),
     }, separators=(",", ":")).encode("utf-8")
     req = urllib.request.Request(
         server_url + "/api/runners/register",
@@ -184,9 +548,37 @@ def register_remote_runner(
 
     data = json.loads(body.decode("utf-8")) if body else {}
     runner_uuid = str(data.get("runner_uuid") or "").strip()
-    runner_secret = str(data.get("runner_secret") or "").strip()
-    if not runner_uuid or not runner_secret:
-        raise RuntimeError("Runner registration response did not contain credentials.")
+    certificate_pem = str(data.get("certificate_pem") or "").strip()
+    ca_certificate_pem = str(data.get("ca_certificate_pem") or "").strip()
+    if not runner_uuid or not certificate_pem or not ca_certificate_pem:
+        raise RuntimeError("Runner registration response did not contain complete PKI material.")
+
+    certificate = _validate_enrollment_response(
+        private_key, certificate_pem, ca_certificate_pem
+    )
+    pki_directory = Path(pki_root)
+    private_key_path = pki_directory / "{}.key.pem".format(runner_uuid)
+    certificate_path = pki_directory / "{}.cert.pem".format(runner_uuid)
+    ca_certificate_path = pki_directory / "{}.ca.pem".format(runner_uuid)
+    _atomic_private_write(
+        private_key_path,
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+        0o600,
+    )
+    _atomic_private_write(
+        certificate_path, certificate_pem.encode("ascii") + (b"" if certificate_pem.endswith("\n") else b"\n"), 0o644
+    )
+    _atomic_private_write(
+        ca_certificate_path, ca_certificate_pem.encode("ascii") + (b"" if ca_certificate_pem.endswith("\n") else b"\n"), 0o644
+    )
+    _set_identity_owner(
+        (private_key_path, certificate_path, ca_certificate_path),
+        pki_owner,
+    )
 
     destination = Path(config_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +591,10 @@ def register_remote_runner(
     lines = [
         "JOURNEYMAN_SERVER_URL={}".format(server_url),
         "JOURNEYMAN_RUNNER_UUID={}".format(runner_uuid),
-        "JOURNEYMAN_RUNNER_SECRET={}".format(runner_secret),
+        "JOURNEYMAN_RUNNER_PRIVATE_KEY={}".format(private_key_path),
+        "JOURNEYMAN_RUNNER_CERTIFICATE={}".format(certificate_path),
+        "JOURNEYMAN_RUNNER_CA_CERTIFICATE={}".format(ca_certificate_path),
+        "JOURNEYMAN_RUNNER_MANAGEMENT_PORT={}".format(int(management_port)),
         "JOURNEYMAN_REMOTE_WORK_ROOT={}".format(resolved_work_root),
         "JOURNEYMAN_REMOTE_POLL_SECONDS=5",
         "JOURNEYMAN_REMOTE_CONTROL_SECONDS=2",
@@ -216,6 +611,11 @@ def register_remote_runner(
         "runner_uuid": runner_uuid,
         "name": str(data.get("name") or ""),
         "site": str(data.get("site") or ""),
+        "certificate_serial": format(certificate.serial_number, "x"),
+        "certificate_fingerprint_sha256": certificate.fingerprint(hashes.SHA256()).hex(),
+        "private_key_path": str(private_key_path),
+        "certificate_path": str(certificate_path),
+        "ca_certificate_path": str(ca_certificate_path),
     }
 
 def _load_env_file(path):
@@ -235,13 +635,14 @@ def unregister_remote_runner(config_path, *, delete=True, ca_file=""):
     config = _load_env_file(config_path)
     server_url = _validated_https_url(config.get("JOURNEYMAN_SERVER_URL"))
     runner_uuid = str(config.get("JOURNEYMAN_RUNNER_UUID") or "").strip()
-    runner_secret = str(config.get("JOURNEYMAN_RUNNER_SECRET") or "").strip()
+    certificate_file = str(config.get("JOURNEYMAN_RUNNER_CERTIFICATE") or "").strip()
+    private_key_file = str(config.get("JOURNEYMAN_RUNNER_PRIVATE_KEY") or "").strip()
     resolved_ca_file = str(
         ca_file or config.get("JOURNEYMAN_CA_FILE") or ""
     ).strip()
-    if not server_url or not runner_uuid or not runner_secret:
+    if not server_url or not runner_uuid or not certificate_file or not private_key_file:
         raise RuntimeError(
-            "Runner configuration does not contain server URL, UUID, and secret."
+            "Runner configuration does not contain server URL, UUID, certificate, and private key."
         )
 
     payload = json.dumps({"delete": bool(delete)}, separators=(",", ":")).encode(
@@ -252,7 +653,6 @@ def unregister_remote_runner(config_path, *, delete=True, ca_file=""):
         data=payload,
         headers={
             "Accept": "application/json",
-            "Authorization": "Bearer {}".format(runner_secret),
             "Content-Type": "application/json",
             "X-Journeyman-Runner-ID": runner_uuid,
         },
@@ -260,7 +660,13 @@ def unregister_remote_runner(config_path, *, delete=True, ca_file=""):
     )
     try:
         with urllib.request.urlopen(
-            req, timeout=60, context=_ssl_context(resolved_ca_file)
+            req,
+            timeout=60,
+            context=_ssl_context(
+                resolved_ca_file,
+                certificate_file=certificate_file,
+                private_key_file=private_key_file,
+            ),
         ) as response:
             body = response.read()
     except urllib.error.HTTPError as exc:
@@ -637,6 +1043,16 @@ def _synced_environment_ready(target, environment_id, name, revision):
     )
 
 
+def _python_release_series(version_output):
+    match = re.match(
+        r"^Python\s+(\d+)\.(\d+)(?:[.\s]|$)",
+        str(version_output or "").strip(),
+    )
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def _ansible_core_release_series(version_output):
     match = re.match(
         r"^ansible-playbook\s+\[core\s+(\d+)\.(\d+)(?:[.\]\s]|$)",
@@ -833,13 +1249,20 @@ def synchronize_execution_environment(manifest):
             )
             actual_python_version = python_version_output.splitlines()[0] if python_version_output else ""
             actual_ansible_version = ansible_version_output.splitlines()[0] if ansible_version_output else ""
-            if expected_python_version and actual_python_version != expected_python_version:
-                raise RuntimeError(
-                    "Synchronized Environment Python version does not match the central Environment "
-                    "(expected {!r}, got {!r}).".format(
-                        expected_python_version, actual_python_version
+            if expected_python_version:
+                expected_python_series = _python_release_series(expected_python_version)
+                actual_python_series = _python_release_series(actual_python_version)
+                if expected_python_series is not None and actual_python_series is not None:
+                    python_compatible = actual_python_series == expected_python_series
+                else:
+                    python_compatible = actual_python_version == expected_python_version
+                if not python_compatible:
+                    raise RuntimeError(
+                        "Synchronized Environment Python major.minor release does not match "
+                        "the central Environment (expected {!r}, got {!r}).".format(
+                            expected_python_version, actual_python_version
+                        )
                     )
-                )
             if expected_ansible_version:
                 expected_ansible_series = _ansible_core_release_series(expected_ansible_version)
                 actual_ansible_series = _ansible_core_release_series(actual_ansible_version)
@@ -978,31 +1401,11 @@ def _set_runtime_dependency_names(values):
 
 
 def heartbeat(status=None, running=None, include_details=True):
-    usage = shutil.disk_usage(WORK_ROOT)
-    try:
-        load1, load5, _load15 = os.getloadavg()
-    except (AttributeError, OSError):
-        load1 = None
-        load5 = None
-    if running is None:
-        running = active_assignment_count()
-    payload = {
-        "hostname": socket.gethostname(),
-        "version": VERSION,
-        "status_message": status or _runner_status_message(),
-        "running_steps": running,
-        "free_workspace_bytes": usage.free,
-        "load_average_1m": load1,
-        "load_average_5m": load5,
-        "cpu_count": os.cpu_count(),
-        "runtime_dependencies": runtime_dependency_versions(),
-    }
-    if include_details:
-        payload.update({
-            "capabilities": ["ansible", "shell"],
-            "managed_capabilities": managed_capability_status(),
-            "environments": execution_environment_status(),
-        })
+    payload = _local_health_payload(include_details=include_details)
+    if status is not None:
+        payload["status_message"] = status
+    if running is not None:
+        payload["running_steps"] = running
     _status, response = request(
         "POST",
         api("/api/runners/heartbeat"),
@@ -2369,6 +2772,12 @@ def execute_job(manifest):
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Journeyman remote execution agent")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=VERSION,
+        help="show the bundled remote runner version and exit",
+    )
     subparsers = parser.add_subparsers(dest="command")
     register_parser = subparsers.add_parser(
         "register",
@@ -2386,6 +2795,22 @@ def _parse_args():
         default="/etc/journeyman/remote-runner.env",
     )
     register_parser.add_argument("--ca-file", default="")
+    register_parser.add_argument(
+        "--pki-root",
+        default="/etc/journeyman/runner-pki",
+        help="directory used to retain this runner's private key and certificate",
+    )
+    register_parser.add_argument(
+        "--pki-owner",
+        default="journeyman",
+        help="service account that owns the enrolled runner identity",
+    )
+    register_parser.add_argument(
+        "--management-port",
+        type=int,
+        default=8443,
+        help="HTTPS/mTLS management listener port",
+    )
     register_parser.add_argument(
         "--work-root",
         default="/var/lib/journeyman/remote-jobs",
@@ -2431,6 +2856,9 @@ def main():
                 ca_file=args.ca_file,
                 work_root=args.work_root,
                 signal_spool_root=args.signal_spool_root,
+                pki_root=args.pki_root,
+                pki_owner=args.pki_owner,
+                management_port=args.management_port,
             )
         except Exception as exc:
             raise SystemExit(str(exc)) from exc
@@ -2459,8 +2887,13 @@ def main():
         )
         return
 
-    if not BASE_URL or not RUNNER_UUID or not RUNNER_SECRET:
-        raise SystemExit("JOURNEYMAN_SERVER_URL, JOURNEYMAN_RUNNER_UUID and JOURNEYMAN_RUNNER_SECRET are required.")
+    if not BASE_URL or not RUNNER_UUID:
+        raise SystemExit("JOURNEYMAN_SERVER_URL and JOURNEYMAN_RUNNER_UUID are required.")
+    if not RUNNER_PRIVATE_KEY or not RUNNER_CERTIFICATE or not RUNNER_CA_CERTIFICATE:
+        raise SystemExit(
+            "JOURNEYMAN_RUNNER_PRIVATE_KEY, JOURNEYMAN_RUNNER_CERTIFICATE and "
+            "JOURNEYMAN_RUNNER_CA_CERTIFICATE are required for the mTLS management API."
+        )
     try:
         _validated_https_url(BASE_URL)
     except RuntimeError as exc:
@@ -2470,6 +2903,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     signal.signal(signal.SIGTERM, _signal)
     signal.signal(signal.SIGINT, _signal)
+    management_server = start_management_server()
     heartbeat()
     heartbeat_thread = threading.Thread(
         target=remote_runner_heartbeat_loop,
@@ -2525,7 +2959,11 @@ def main():
                 LOGGER.exception("Remote runner poll failed.")
                 time.sleep(POLL_SECONDS)
     finally:
-        wait_for_assignments()
+        try:
+            management_server.shutdown()
+            management_server.server_close()
+        finally:
+            wait_for_assignments()
 
 
 if __name__ == "__main__":

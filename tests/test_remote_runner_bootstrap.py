@@ -42,6 +42,21 @@ class _Response:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class _EnrollmentCertificate:
+    serial_number = 0x1234
+
+    def fingerprint(self, algorithm):
+        return b"\xab" * 32
+
+
+def _stub_enrollment_validation(monkeypatch, runner):
+    monkeypatch.setattr(
+        runner,
+        "_validate_enrollment_response",
+        lambda private_key, certificate_pem, ca_certificate_pem: _EnrollmentCertificate(),
+    )
+
+
 def test_register_remote_runner_writes_protected_environment(tmp_path, monkeypatch):
     runner = _load_remote_runner()
     captured = {}
@@ -51,13 +66,15 @@ def test_register_remote_runner_writes_protected_environment(tmp_path, monkeypat
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         return _Response({
             "runner_uuid": "runner-uuid",
-            "runner_secret": "runner-secret",
+            "certificate_pem": "-----BEGIN CERTIFICATE-----\nrunner\n-----END CERTIFICATE-----\n",
+            "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n",
             "name": "kunrun01",
             "site": "kununurra",
         })
 
     monkeypatch.setattr(runner.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(runner, "_ssl_context", lambda ca_file="": object())
+    monkeypatch.setattr(runner, "_ssl_context", lambda ca_file="", **kwargs: object())
+    _stub_enrollment_validation(monkeypatch, runner)
 
     config = tmp_path / "remote-runner.env"
     result = runner.register_remote_runner(
@@ -65,21 +82,36 @@ def test_register_remote_runner_writes_protected_environment(tmp_path, monkeypat
         "one-time-token",
         config_path=config,
         work_root="/var/lib/journeyman/remote-jobs",
+        pki_root=tmp_path / "pki",
+        pki_owner="",
     )
 
     assert captured["url"] == "https://journeyman.example/api/runners/register"
     assert captured["payload"]["token"] == "one-time-token"
+    assert "BEGIN CERTIFICATE REQUEST" in captured["payload"]["csr_pem"]
     assert result["runner_uuid"] == "runner-uuid"
     assert result["name"] == "kunrun01"
 
     content = config.read_text()
     assert "JOURNEYMAN_SERVER_URL=https://journeyman.example" in content
     assert "JOURNEYMAN_RUNNER_UUID=runner-uuid" in content
-    assert "JOURNEYMAN_RUNNER_SECRET=runner-secret" in content
+    assert "JOURNEYMAN_RUNNER_SECRET=" not in content
+    assert "JOURNEYMAN_RUNNER_PRIVATE_KEY=" in content
+    assert "JOURNEYMAN_RUNNER_CERTIFICATE=" in content
+    assert "JOURNEYMAN_RUNNER_CA_CERTIFICATE=" in content
     assert "JOURNEYMAN_REMOTE_WORK_ROOT=/var/lib/journeyman/remote-jobs" in content
     assert "JOURNEYMAN_SIGNAL_SPOOL_ROOT=/var/spool/journeyman/signals" in content
     assert "one-time-token" not in content
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    private_key = tmp_path / "pki" / "runner-uuid.key.pem"
+    certificate = tmp_path / "pki" / "runner-uuid.cert.pem"
+    ca_certificate = tmp_path / "pki" / "runner-uuid.ca.pem"
+    assert private_key.exists()
+    assert certificate.exists()
+    assert ca_certificate.exists()
+    assert stat.S_IMODE(private_key.stat().st_mode) == 0o600
+    assert stat.S_IMODE(certificate.stat().st_mode) == 0o644
+    assert stat.S_IMODE(ca_certificate.stat().st_mode) == 0o644
 
 
 def test_register_remote_runner_supports_isolated_same_host_instance_paths(tmp_path, monkeypatch):
@@ -90,12 +122,14 @@ def test_register_remote_runner_supports_isolated_same_host_instance_paths(tmp_p
         "urlopen",
         lambda request, timeout, context: _Response({
             "runner_uuid": "runner-uuid-2",
-            "runner_secret": "runner-secret-2",
+            "certificate_pem": "-----BEGIN CERTIFICATE-----\nrunner2\n-----END CERTIFICATE-----\n",
+            "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\nca2\n-----END CERTIFICATE-----\n",
             "name": "dev-runner-2",
             "site": "development",
         }),
     )
-    monkeypatch.setattr(runner, "_ssl_context", lambda ca_file="": object())
+    monkeypatch.setattr(runner, "_ssl_context", lambda ca_file="", **kwargs: object())
+    _stub_enrollment_validation(monkeypatch, runner)
 
     config = tmp_path / "remote-runner-dev2.env"
     runner.register_remote_runner(
@@ -104,6 +138,8 @@ def test_register_remote_runner_supports_isolated_same_host_instance_paths(tmp_p
         config_path=config,
         work_root="/var/lib/journeyman/remote-jobs-dev2",
         signal_spool_root="/var/spool/journeyman/signals-dev2",
+        pki_root=tmp_path / "pki-dev2",
+        pki_owner="",
     )
 
     content = config.read_text()
@@ -122,20 +158,21 @@ def test_unregister_remote_runner_uses_credentials_from_environment_file(tmp_pat
         return _Response({"status": "deleted", "name": "kunrun01"})
 
     monkeypatch.setattr(runner.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(runner, "_ssl_context", lambda ca_file="": object())
+    monkeypatch.setattr(runner, "_ssl_context", lambda ca_file="", **kwargs: object())
 
     config = tmp_path / "remote-runner.env"
     config.write_text(
         "JOURNEYMAN_SERVER_URL=https://journeyman.example\n"
         "JOURNEYMAN_RUNNER_UUID=runner-uuid\n"
-        "JOURNEYMAN_RUNNER_SECRET=runner-secret\n"
+        "JOURNEYMAN_RUNNER_CERTIFICATE=/etc/journeyman/runner-pki/runner-uuid.cert.pem\n"
+        "JOURNEYMAN_RUNNER_PRIVATE_KEY=/etc/journeyman/runner-pki/runner-uuid.key.pem\n"
     )
 
     result = runner.unregister_remote_runner(config, delete=True)
 
     assert captured["url"] == "https://journeyman.example/api/runners/unregister"
     assert captured["headers"]["X-journeyman-runner-id"] == "runner-uuid"
-    assert captured["headers"]["Authorization"] == "Bearer runner-secret"
+    assert "Authorization" not in captured["headers"]
     assert captured["payload"] == {"delete": True}
     assert result["status"] == "deleted"
 
@@ -253,16 +290,26 @@ def test_update_repairs_missing_registration_before_remote_mutation():
         "- name: Check existing runner registration before update changes"
     )
     remote_mutation = playbook.index("- name: Install or update remote runner")
+    pki_preflight = playbook.index(
+        "- name: Check existing runner PKI enrollment before update"
+    )
     recovery_prepare = playbook.index(
-        "- name: Prepare one-time recovery token for missing update registration"
+        "- name: Prepare one-time recovery token for missing registration or PKI identity"
     )
     recovery_register = playbook.index(
-        "- name: Repair missing runner registration during update"
+        "- name: Enroll or repair runner identity during update"
     )
 
-    assert registration_preflight < recovery_prepare < remote_mutation < recovery_register
+    assert (
+        registration_preflight
+        < pki_preflight
+        < recovery_prepare
+        < remote_mutation
+        < recovery_register
+    )
     assert "journeyman-runner-admin\n          - prepare-recovery" in playbook
     assert "journeyman_recovery_registration_token" in playbook
+    assert "^JOURNEYMAN_RUNNER_CERTIFICATE=" in playbook
     assert "Require existing registration for update" not in playbook
     assert '"prepare-recovery"' in admin
     assert '"runner.prepare_recovery.builtin"' in admin
@@ -296,7 +343,7 @@ def test_remote_runner_environment_sync_has_writable_runner_local_root():
     )
     assert 'api("/api/runners/environments/claim")' in remote_runner
     assert "synchronize_execution_environment" in remote_runner
-    assert 'VERSION = "0.17"' in remote_runner
+    assert 'VERSION = "0.20"' in remote_runner
 
 
 def test_environment_sync_runner_api_endpoints_bypass_interactive_login():
@@ -334,6 +381,18 @@ def test_environment_sync_uses_writable_ansible_runtime_under_environment_root()
     assert 'runtime_environment["ANSIBLE_HOME"] = str(sync_ansible_home)' in remote_runner
     assert 'runtime_environment["ANSIBLE_LOCAL_TEMP"] = str(sync_ansible_tmp)' in remote_runner
     assert 'runtime_environment["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(sync_ansible_cp)' in remote_runner
+
+
+def test_environment_sync_accepts_python_patch_drift_within_release_series():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    remote_runner = (root / "bin" / "journeyman-remote-runner").read_text(encoding="utf-8")
+
+    assert "def _python_release_series(version_output):" in remote_runner
+    assert "actual_python_series == expected_python_series" in remote_runner
+    assert "Python major.minor release does not match" in remote_runner
+    assert 'VERSION = "0.20"' in remote_runner
 
 
 def test_environment_sync_accepts_ansible_patch_drift_within_release_series():
