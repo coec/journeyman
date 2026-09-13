@@ -275,7 +275,7 @@ class Config:
     REPOSITORY_ROOT = Path(
         os.environ.get(
             "JOURNEYMAN_REPOSITORY_ROOT",
-            "/var/lib/journeyman/repos",
+            "/var/lib/journeyman/repositories",
         )
     )
 

@@ -299,14 +299,14 @@ install -d -o journeyman -g journeyman -m 0755 /opt/journeyman
 
 mkdir -p \
   /etc/journeyman/tls \
-  /var/lib/journeyman/repos \
+  /var/lib/journeyman/repositories \
   /var/lib/journeyman/jobs \
   /var/lib/journeyman/runner-artifacts \
   /var/log/journeyman \
   /var/spool/journeyman/signals \
   /opt/journeyman/environments
 chown journeyman:journeyman \
-  /var/lib/journeyman/repos \
+  /var/lib/journeyman/repositories \
   /var/lib/journeyman/jobs \
   /var/lib/journeyman/runner-artifacts \
   /var/log/journeyman \

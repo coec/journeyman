@@ -102,6 +102,37 @@
         group: "{{ journeyman_group }}"
         create_home: false
 
+    - name: Check legacy Journeyman repository root
+      ansible.builtin.stat:
+        path: /var/lib/journeyman/repos
+      register: journeyman_legacy_repository_root
+
+    - name: Check canonical Journeyman repository root
+      ansible.builtin.stat:
+        path: /var/lib/journeyman/repositories
+      register: journeyman_repository_root
+
+    - name: Refuse ambiguous Journeyman repository roots
+      ansible.builtin.assert:
+        that:
+          - not (journeyman_legacy_repository_root.stat.exists and journeyman_repository_root.stat.exists)
+        fail_msg: >-
+          Both /var/lib/journeyman/repos and
+          /var/lib/journeyman/repositories exist. Resolve the duplicate
+          repository roots before running the installer so Journeyman does
+          not overwrite or ignore repository content.
+
+    - name: Migrate legacy Journeyman repository root
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --
+          - /var/lib/journeyman/repos
+          - /var/lib/journeyman/repositories
+      when:
+        - journeyman_legacy_repository_root.stat.exists
+        - not journeyman_repository_root.stat.exists
+
     - name: Create Journeyman system directories
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -116,7 +147,7 @@
         - { path: /etc/journeyman/tls, owner: root, group: root, mode: '0750' }
         - { path: /etc/journeyman/runner-pki, owner: journeyman, group: journeyman, mode: '0700' }
         - { path: /var/lib/journeyman, owner: journeyman, group: journeyman, mode: '0750' }
-        - { path: /var/lib/journeyman/repos, owner: journeyman, group: journeyman, mode: '0750' }
+        - { path: /var/lib/journeyman/repositories, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/jobs, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/inventory-snapshots, owner: journeyman, group: journeyman, mode: '0750' }
         - { path: /var/lib/journeyman/runner-artifacts, owner: journeyman, group: journeyman, mode: '0750' }
@@ -467,7 +498,7 @@
           database:
             uri: {{ ('postgresql+psycopg://' ~ journeyman_database_user ~ ':' ~ (journeyman_database_password | urlencode) ~ '@' ~ journeyman_database_host ~ ':' ~ journeyman_database_port ~ '/' ~ journeyman_database_name) | to_json }}
           paths:
-            repository_root: /var/lib/journeyman/repos
+            repository_root: /var/lib/journeyman/repositories
             log_root: /var/log/journeyman
             job_root: /var/lib/journeyman/jobs
           environments:

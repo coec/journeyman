@@ -25,7 +25,7 @@ database:
   uri: sqlite:////opt/journeyman/instance/journeyman.db
 
 paths:
-  repository_root: /var/lib/journeyman/repos
+  repository_root: /var/lib/journeyman/repositories
   log_root: /var/log/journeyman
   job_root: /var/lib/journeyman/jobs
 
