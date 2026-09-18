@@ -392,7 +392,7 @@ def complete_local_slice(execution_slice, runner, payload):
         return False, "assignment_mismatch"
     return _complete_slice(execution_slice, payload, runner=runner, local=True)
 
-def mark_lost_remote_slice(execution_slice, runner, *, cancelling=False):
+def mark_lost_remote_slice(execution_slice, runner, *, cancelling=False, loss_reason=None):
     """Fail one remote slice after its required runner is lost.
 
     A lost slice is never reassigned automatically.  Other slices belonging
@@ -436,11 +436,13 @@ def mark_lost_remote_slice(execution_slice, runner, *, cancelling=False):
     execution_slice.finished_at = now
     execution_slice.exit_code = exit_code
     execution_slice.dispatch_token = ""
+    reason = str(loss_reason or "went offline").strip() or "went offline"
     execution_slice.message = (
-        "Remote runner {} went offline; this execution slice was {} and "
+        "Remote runner {} {}; this execution slice was {} and "
         "was not automatically retried."
     ).format(
         runner_name,
+        reason,
         "cancelled" if cancelling else "failed",
     )
 

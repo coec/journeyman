@@ -2017,6 +2017,34 @@ nav.settings-tabs a.active:hover {
   justify-content: flex-start;
 }
 
+.job-output-tabs {
+  align-items: flex-end;
+  background: var(--panel-background, #fff);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 1rem;
+}
+
+.job-output-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.7rem 0.9rem 0.55rem;
+}
+
+.job-output-tab.active {
+  border-bottom-color: currentColor;
+}
+
+.job-output-tab-indicator {
+  font-size: 0.7em;
+  margin-left: 0.35rem;
+}
+
 .job-output-live {
   background: #111;
   color: #eee;
@@ -2095,6 +2123,12 @@ nav.settings-tabs a.active:hover {
   border-radius: 6px;
   background: white;
   box-shadow: 0 8px 24px rgba(16, 24, 40, 0.14);
+}
+
+/* Keep the final row's Actions menu inside clipped list panels. */
+.repository-list tbody tr:last-child .action-menu-items {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 .action-menu-items form {

@@ -55,6 +55,38 @@ def test_jobs_page_uses_sse_instead_of_two_second_reload(client, app):
     )
 
 
+
+def test_jobs_page_subscribes_to_sse_when_current_rows_are_terminal(client, app):
+    """The Jobs page must notice new work even when no current row is active."""
+    job_id = _queued_job(app)
+
+    with app.app_context():
+        job = db.session.get(Job, job_id)
+        job.status = "successful"
+        db.session.commit()
+
+    response = client.get(
+        "/jobs",
+        headers={"X-Test-Username": "alice"},
+    )
+    html = response.data.decode("utf-8")
+
+    assert_output_equal(
+        response.status_code,
+        200,
+        purpose="Verify the Jobs list renders when all current rows are terminal.",
+    )
+    assert_output_contains(
+        html,
+        "EventSource",
+        purpose="Verify the Jobs page still watches for newly-created work.",
+    )
+    assert_output_contains(
+        html,
+        "/jobs/events",
+        purpose="Verify the Jobs page keeps the Jobs-list SSE subscription active.",
+    )
+
 def test_jobs_events_respects_job_visibility(client, app):
     """The SSE route must use the same per-user visibility boundary as /jobs."""
     _queued_job(app, requested_by="alice")

@@ -54,7 +54,13 @@ from app.services.reactor_configuration import (
     delete_reactor,
     reactor_configuration_document,
 )
-from app.auth import can_launch_package
+from app.auth import (
+    can_launch_package,
+    current_user_can_manage_automation,
+    current_user_can_manage_resources,
+    current_user_is_admin,
+    current_user_is_auditor,
+)
 from app.services.project_execution_preview import (
     ProjectExecutionPreviewError,
     build_project_execution_preview,
@@ -208,8 +214,17 @@ def dispatch_project(project_id):
     project = db.session.get(Project, project_id)
     if project is None:
         return _error(404, "not_found", "Project was not found.")
-    if project.builtin_key and g.authenticated_role != "Administrator":
-        return _error(403, "forbidden", "Administrator access is required for this Project.")
+    if project.builtin_key:
+        from app.services.builtin_automation import REMOTE_RUNNER_BUILTIN_KEY
+
+        if project.builtin_key == REMOTE_RUNNER_BUILTIN_KEY:
+            allowed = current_user_can_manage_resources()
+            authority = "Resource Admin"
+        else:
+            allowed = current_user_can_manage_automation()
+            authority = "Automation Admin"
+        if not allowed:
+            return _error(403, "forbidden", "{} access is required for this built-in Project.".format(authority))
     try:
         job = queue_project_execution(
             project=project,
@@ -223,6 +238,28 @@ def dispatch_project(project_id):
 
 
 
+def _can_dispatch_package(package):
+    """Apply the same local authority rules as the browser Package launcher."""
+
+    from app.services.builtin_automation import (
+        REMOTE_RUNNER_BUILTIN_KEY,
+        is_builtin_package,
+    )
+
+    if package.builtin_key == REMOTE_RUNNER_BUILTIN_KEY:
+        return current_user_can_manage_resources()
+    if is_builtin_package(package):
+        return current_user_can_manage_automation()
+    return can_launch_package(
+        package,
+        username=g.authenticated_username,
+        group_names=g.authenticated_group_names,
+        user_object_guid=None,
+        group_object_guids=g.authenticated_group_object_guids,
+        is_admin=current_user_is_admin(),
+    )
+
+
 @bp.get("/packages")
 def packages():
     name = str(request.args.get("name") or "").strip()
@@ -232,14 +269,7 @@ def packages():
     rows = query.order_by(ProjectPackage.name.asc()).all()
     visible = [
         row for row in rows
-        if can_launch_package(
-            row,
-            username=g.authenticated_username,
-            group_names=g.authenticated_group_names,
-            user_object_guid=None,
-            group_object_guids=g.authenticated_group_object_guids,
-            is_admin=(g.authenticated_role == "Administrator"),
-        )
+        if _can_dispatch_package(row)
     ]
     return jsonify({"packages": [_package_document(row) for row in visible]})
 
@@ -249,14 +279,7 @@ def dispatch_package(package_id):
     package = db.session.get(ProjectPackage, package_id)
     if package is None:
         return _error(404, "not_found", "Package was not found.")
-    if not can_launch_package(
-        package,
-        username=g.authenticated_username,
-        group_names=g.authenticated_group_names,
-        user_object_guid=None,
-        group_object_guids=g.authenticated_group_object_guids,
-        is_admin=(g.authenticated_role == "Administrator"),
-    ):
+    if not _can_dispatch_package(package):
         return _error(403, "forbidden", "You are not authorized to dispatch this Package.")
 
     document = request.get_json(silent=True) or {}
@@ -305,15 +328,21 @@ def _repository_document(repository):
     }
 
 
-def _administrator_required(resource="Repository"):
-    if g.authenticated_role != "Administrator":
-        return _error(403, "forbidden", f"Administrator access is required for {resource} configuration.")
+def _resource_admin_required(resource="Repository"):
+    if not current_user_can_manage_resources():
+        return _error(403, "forbidden", f"Resource Admin access is required for {resource} configuration.")
+    return None
+
+
+def _automation_admin_required(resource="Project"):
+    if not current_user_can_manage_automation():
+        return _error(403, "forbidden", f"Automation Admin access is required for {resource} configuration.")
     return None
 
 
 @bp.get("/repositories")
 def api_repositories():
-    denied = _administrator_required()
+    denied = _resource_admin_required()
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -326,7 +355,7 @@ def api_repositories():
 
 @bp.put("/repositories/by-name")
 def configure_repository_api():
-    denied = _administrator_required()
+    denied = _resource_admin_required()
     if denied:
         return denied
     document = request.get_json(silent=True) or {}
@@ -343,7 +372,7 @@ def configure_repository_api():
 
 @bp.delete("/repositories/by-name")
 def delete_repository_api():
-    denied = _administrator_required()
+    denied = _resource_admin_required()
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -363,7 +392,7 @@ def delete_repository_api():
 
 @bp.get("/credential-configurations")
 def api_credential_configurations():
-    denied = _administrator_required("Credential")
+    denied = _resource_admin_required("Credential")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -376,7 +405,7 @@ def api_credential_configurations():
 
 @bp.put("/credential-configurations/by-name")
 def configure_credential_api():
-    denied = _administrator_required("Credential")
+    denied = _resource_admin_required("Credential")
     if denied:
         return denied
     try:
@@ -395,7 +424,7 @@ def configure_credential_api():
 
 @bp.delete("/credential-configurations/by-name")
 def delete_credential_api():
-    denied = _administrator_required("Credential")
+    denied = _resource_admin_required("Credential")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -453,7 +482,7 @@ def _inventory_configuration_document(inventory):
 
 @bp.get("/inventory-configurations")
 def api_inventory_configurations():
-    denied = _administrator_required("Inventory")
+    denied = _resource_admin_required("Inventory")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -466,7 +495,7 @@ def api_inventory_configurations():
 
 @bp.put("/inventory-configurations/by-name")
 def configure_inventory_api():
-    denied = _administrator_required("Inventory")
+    denied = _resource_admin_required("Inventory")
     if denied:
         return denied
     try:
@@ -482,7 +511,7 @@ def configure_inventory_api():
 
 @bp.delete("/inventory-configurations/by-name")
 def delete_inventory_api():
-    denied = _administrator_required("Inventory")
+    denied = _resource_admin_required("Inventory")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -543,7 +572,7 @@ def _project_configuration_document(project):
 
 @bp.get("/project-configurations")
 def api_project_configurations():
-    denied = _administrator_required("Project")
+    denied = _automation_admin_required("Project")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -556,7 +585,7 @@ def api_project_configurations():
 
 @bp.put("/project-configurations/by-name")
 def configure_project_api():
-    denied = _administrator_required("Project")
+    denied = _automation_admin_required("Project")
     if denied:
         return denied
     try:
@@ -575,7 +604,7 @@ def configure_project_api():
 
 @bp.delete("/project-configurations/by-name")
 def delete_project_api():
-    denied = _administrator_required("Project")
+    denied = _automation_admin_required("Project")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -589,7 +618,7 @@ def delete_project_api():
 
 @bp.get("/package-configurations")
 def api_package_configurations():
-    denied = _administrator_required("Package")
+    denied = _automation_admin_required("Package")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -602,7 +631,7 @@ def api_package_configurations():
 
 @bp.put("/package-configurations/by-name")
 def configure_package_api():
-    denied = _administrator_required("Package")
+    denied = _automation_admin_required("Package")
     if denied:
         return denied
     try:
@@ -621,7 +650,7 @@ def configure_package_api():
 
 @bp.delete("/package-configurations/by-name")
 def delete_package_api():
-    denied = _administrator_required("Package")
+    denied = _automation_admin_required("Package")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -636,7 +665,7 @@ def delete_package_api():
 
 @bp.get("/schedule-configurations")
 def api_schedule_configurations():
-    denied = _administrator_required("Schedule")
+    denied = _automation_admin_required("Schedule")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -655,7 +684,7 @@ def api_schedule_configurations():
 
 @bp.put("/schedule-configurations/by-name")
 def configure_schedule_api():
-    denied = _administrator_required("Schedule")
+    denied = _automation_admin_required("Schedule")
     if denied:
         return denied
     try:
@@ -674,7 +703,7 @@ def configure_schedule_api():
 
 @bp.delete("/schedule-configurations/by-name")
 def delete_schedule_api():
-    denied = _administrator_required("Schedule")
+    denied = _automation_admin_required("Schedule")
     if denied:
         return denied
     project_name = str(request.args.get("project") or "").strip()
@@ -691,7 +720,7 @@ def delete_schedule_api():
 
 @bp.get("/signal-source-configurations")
 def api_signal_source_configurations():
-    denied = _administrator_required("Signal Source")
+    denied = _automation_admin_required("Signal Source")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -704,7 +733,7 @@ def api_signal_source_configurations():
 
 @bp.put("/signal-source-configurations/by-name")
 def configure_signal_source_api():
-    denied = _administrator_required("Signal Source")
+    denied = _automation_admin_required("Signal Source")
     if denied:
         return denied
     try:
@@ -720,7 +749,7 @@ def configure_signal_source_api():
 
 @bp.delete("/signal-source-configurations/by-name")
 def delete_signal_source_api():
-    denied = _administrator_required("Signal Source")
+    denied = _automation_admin_required("Signal Source")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -735,7 +764,7 @@ def delete_signal_source_api():
 
 @bp.get("/reactor-configurations")
 def api_reactor_configurations():
-    denied = _administrator_required("Reactor")
+    denied = _automation_admin_required("Reactor")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -748,7 +777,7 @@ def api_reactor_configurations():
 
 @bp.put("/reactor-configurations/by-name")
 def configure_reactor_api():
-    denied = _administrator_required("Reactor")
+    denied = _automation_admin_required("Reactor")
     if denied:
         return denied
     try:
@@ -764,7 +793,7 @@ def configure_reactor_api():
 
 @bp.delete("/reactor-configurations/by-name")
 def delete_reactor_api():
-    denied = _administrator_required("Reactor")
+    denied = _automation_admin_required("Reactor")
     if denied:
         return denied
     name = str(request.args.get("name") or "").strip()
@@ -782,7 +811,11 @@ def job_info(job_id):
     job = db.session.get(Job, job_id)
     if job is None:
         return _error(404, "not_found", "Job was not found.")
-    if g.authenticated_role != "Administrator" and job.requested_by != g.authenticated_username:
+    if (
+        not current_user_is_admin()
+        and not current_user_is_auditor()
+        and job.requested_by != g.authenticated_username
+    ):
         return _error(403, "forbidden", "You are not authorized to view this Job.")
     return jsonify({"job": _job_document(job)})
 
@@ -792,7 +825,7 @@ def rerun_job_api(job_id):
     job = db.session.get(Job, job_id)
     if job is None:
         return _error(404, "not_found", "Job was not found.")
-    if g.authenticated_role != "Administrator" and job.requested_by != g.authenticated_username:
+    if not current_user_is_admin() and job.requested_by != g.authenticated_username:
         return _error(403, "forbidden", "You are not authorized to rerun this Job.")
     payload = request.get_json(silent=True) or {}
     try:
@@ -816,7 +849,7 @@ def cancel_job_api(job_id):
     job = db.session.get(Job, job_id)
     if job is None:
         return _error(404, "not_found", "Job was not found.")
-    if g.authenticated_role != "Administrator" and job.requested_by != g.authenticated_username:
+    if not current_user_is_admin() and job.requested_by != g.authenticated_username:
         return _error(403, "forbidden", "You are not authorized to cancel this Job.")
 
     result = cancel_job(job, source="Journeyman API")

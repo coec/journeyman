@@ -134,7 +134,11 @@
                   {% endif %}
                 </td>
 
-                <td>
+                <td
+                  class="job-duration"
+                  data-started-at="{{ job.started_at.isoformat() if job.started_at else '' }}"
+                  data-finished-at="{{ job.finished_at.isoformat() if job.finished_at else '' }}"
+                >
                   {% if job.duration_seconds is not none %}
                     {{ job.duration_seconds }}s
                   {% else %}
@@ -218,9 +222,28 @@
   {% endif %}
 {% include "_pagination.html" %}
 </section>
-{% if has_active_work %}
 <script nonce="{{ csp_nonce }}">
 (function () {
+    function updateDurations() {
+        const now = Date.now();
+
+        document.querySelectorAll(".job-duration").forEach(function (cell) {
+            const startedAt = Date.parse(cell.dataset.startedAt || "");
+            if (!Number.isFinite(startedAt)) {
+                cell.textContent = "—";
+                return;
+            }
+
+            const finishedAt = Date.parse(cell.dataset.finishedAt || "");
+            const endAt = Number.isFinite(finishedAt) ? finishedAt : now;
+            const seconds = Math.max(0, Math.floor((endAt - startedAt) / 1000));
+            cell.textContent = seconds + "s";
+        });
+    }
+
+    updateDurations();
+    window.setInterval(updateDurations, 1000);
+
     if (!window.EventSource) {
         return;
     }
@@ -235,6 +258,5 @@
     });
 })();
 </script>
-{% endif %}
 
 {% endblock %}

@@ -1016,11 +1016,16 @@ def can_launch_package(
                 return True
         return False
 
-    # Explicit override is retained for lower-level tests and the break-glass
-    # recovery path.  A normal platform Admin does not automatically gain
-    # Package execution permission.
+    # Platform Admin is an explicit Package-dispatch bypass. This is separate
+    # from Automation Admin and Resource Admin: ordinary users still require a
+    # direct/team Package grant, while break-glass and the development legacy
+    # administrator retain their recovery compatibility behaviour.
     if is_admin is None:
-        is_admin = current_user_is_break_glass() or _development_legacy_admin()
+        is_admin = (
+            current_user_is_admin()
+            or current_user_is_break_glass()
+            or _development_legacy_admin()
+        )
     if is_admin:
         return True
 

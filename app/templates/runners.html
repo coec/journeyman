@@ -196,10 +196,10 @@
             <section>
               <h3>Telemetry</h3>
               <dl class="runner-details-list">
-                <dt>Last heartbeat</dt><dd>{% if runner.last_heartbeat_at %}<span class="utc-datetime" data-utc="{{ runner.last_heartbeat_at.isoformat() }}">{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</dd>
-                <dt>Capacity</dt><dd>{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</dd>
-                <dt>Load 1m / 5m</dt><dd>{% if runner.load_average_1m is not none %}{{ '%.2f'|format(runner.load_average_1m) }}{% else %}—{% endif %} / {% if runner.load_average_5m is not none %}{{ '%.2f'|format(runner.load_average_5m) }}{% else %}—{% endif %}</dd>
-                <dt>CPUs</dt><dd>{{ runner.cpu_count or '—' }}</dd>
+                <dt>Last heartbeat</dt><dd class="runner-details-live-heartbeat">{% if runner.last_heartbeat_at %}<span class="utc-datetime" data-utc="{{ runner.last_heartbeat_at.isoformat() }}">{{ runner.last_heartbeat_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</span>{% else %}Never{% endif %}</dd>
+                <dt>Capacity</dt><dd class="runner-details-live-capacity">{{ runner.running_steps }} / {{ runner.max_concurrent_steps }}</dd>
+                <dt>Load 1m / 5m</dt><dd class="runner-details-live-load">{% if runner.load_average_1m is not none %}{{ '%.2f'|format(runner.load_average_1m) }}{% else %}—{% endif %} / {% if runner.load_average_5m is not none %}{{ '%.2f'|format(runner.load_average_5m) }}{% else %}—{% endif %}</dd>
+                <dt>CPUs</dt><dd class="runner-details-live-cpus">{{ runner.cpu_count or '—' }}</dd>
               </dl>
             </section>
           </div>
@@ -301,6 +301,48 @@
           cpu.textContent = state.cpu_count + " CPU"
             + (state.cpu_count === 1 ? "" : "s");
           loadCell.appendChild(cpu);
+        }
+      }
+
+      const detailsRow = document.getElementById("runner-details-" + state.id);
+      if (detailsRow) {
+        const detailsHeartbeat = detailsRow.querySelector(
+          ".runner-details-live-heartbeat"
+        );
+        if (detailsHeartbeat) {
+          detailsHeartbeat.replaceChildren();
+          if (state.last_heartbeat_at) {
+            const heartbeat = document.createElement("span");
+            heartbeat.className = "utc-datetime";
+            heartbeat.dataset.utc = state.last_heartbeat_at;
+            heartbeat.textContent = state.last_heartbeat_at;
+            detailsHeartbeat.appendChild(heartbeat);
+          } else {
+            detailsHeartbeat.textContent = "Never";
+          }
+        }
+
+        const detailsCapacity = detailsRow.querySelector(
+          ".runner-details-live-capacity"
+        );
+        if (detailsCapacity) {
+          detailsCapacity.textContent = state.running_steps
+            + " / " + state.max_concurrent_steps;
+        }
+
+        const detailsLoad = detailsRow.querySelector(
+          ".runner-details-live-load"
+        );
+        if (detailsLoad) {
+          detailsLoad.textContent = formatLoad(state.load_average_1m)
+            + " / " + formatLoad(state.load_average_5m);
+        }
+
+        const detailsCpus = detailsRow.querySelector(
+          ".runner-details-live-cpus"
+        );
+        if (detailsCpus) {
+          detailsCpus.textContent = state.cpu_count || "—";
         }
       }
     });

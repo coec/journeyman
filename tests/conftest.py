@@ -261,6 +261,9 @@ def app(
                 False
             ),
             "REPOSITORY_ROOT": repository_root,
+            "RUNNER_ARTIFACT_ROOT": (
+                tmp_path / "runner-artifacts"
+            ),
             "LOG_ROOT": log_root,
             "MANAGED_ENVIRONMENT_ROOT": (
                 tmp_path / "environments"

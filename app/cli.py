@@ -122,7 +122,7 @@ def register_scheduler_cli_commands(app):
         """Run the Journeyman Project scheduler worker."""
         import signal
         import time
-        from app.services.runner_recovery import recover_lost_runner_jobs
+        from app.services.runner_recovery import recover_lost_runner_jobs, recover_stale_running_remote_work
         from app.services.job_cancellation import recover_stale_cancelling_jobs
         from app.services.schedules import run_due_schedules
         from app.services.data_retention import purge_expired_protected_data
@@ -146,11 +146,19 @@ def register_scheduler_cli_commands(app):
         while True:
             expire_fallback_activation_if_due()
             recovery = recover_lost_runner_jobs()
+            stale_remote = recover_stale_running_remote_work()
             stale_cancellations = recover_stale_cancelling_jobs()
             if stale_cancellations:
                 click.echo(
                     "Cancellation recovery: cancelled={}".format(
                         len(stale_cancellations)
+                    )
+                )
+            if stale_remote["jobs"] or stale_remote["slices"]:
+                click.echo(
+                    "Stale remote recovery: jobs={jobs}, slices={slices}".format(
+                        jobs=len(stale_remote["jobs"]),
+                        slices=len(stale_remote["slices"]),
                     )
                 )
             if any(recovery.values()):

@@ -160,8 +160,11 @@ Wants=network-online.target
 Type=simple
 User=journeyman
 Group=journeyman
+RuntimeDirectory=journeyman
+RuntimeDirectoryMode=0755
 EnvironmentFile=/etc/journeyman/remote-runner.env
 Environment=PATH=/opt/journeyman/venv314/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment="ANSIBLE_SSH_CONTROL_PATH_DIR=/run/journeyman/ansible-cp"
 ExecStart=/opt/journeyman/venv314/bin/python /opt/journeyman/bin/journeyman-remote-runner
 Restart=on-failure
 RestartSec=5

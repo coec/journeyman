@@ -649,7 +649,42 @@
       <button class="button secondary" type="button" data-output-modal-close>Close</button>
     </div>
 
-    <pre class="job-output-live" id="job-output-live" tabindex="0"></pre>
+    <div class="job-output-tabs" role="tablist" aria-label="Job output streams">
+      <button
+        class="job-output-tab active"
+        id="job-output-tab-stdout"
+        type="button"
+        role="tab"
+        aria-selected="true"
+        aria-controls="job-output-stdout"
+        data-output-tab="stdout"
+      >Stdout</button>
+      <button
+        class="job-output-tab"
+        id="job-output-tab-stderr"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="job-output-stderr"
+        data-output-tab="stderr"
+      >Stderr<span class="job-output-tab-indicator" id="job-output-stderr-indicator" hidden>●</span></button>
+    </div>
+
+    <pre
+      class="job-output-live"
+      id="job-output-stdout"
+      role="tabpanel"
+      aria-labelledby="job-output-tab-stdout"
+      tabindex="0"
+    ></pre>
+    <pre
+      class="job-output-live"
+      id="job-output-stderr"
+      role="tabpanel"
+      aria-labelledby="job-output-tab-stderr"
+      tabindex="0"
+      hidden
+    ></pre>
   </section>
 </div>
 
@@ -670,19 +705,33 @@
   const outputModal = document.getElementById("job-output-modal");
   const outputRunner = document.getElementById("job-output-modal-runner");
   const outputStatus = document.getElementById("job-output-modal-status");
-  const outputView = document.getElementById("job-output-live");
+  const outputStdout = document.getElementById("job-output-stdout");
+  const outputStderr = document.getElementById("job-output-stderr");
+  const outputStderrIndicator = document.getElementById("job-output-stderr-indicator");
+  const outputTabs = Array.from(document.querySelectorAll("[data-output-tab]"));
   const outputCopy = document.getElementById("job-output-copy");
   const outputLatest = document.getElementById("job-output-latest");
   let outputTimer = null;
   let outputUrl = null;
   let outputRequestInProgress = false;
-  let outputCombinedText = "";
+  let outputStdoutText = "";
+  let outputStderrText = "";
+  let activeOutputTab = "stdout";
 
-  function outputIsNearBottom() {
-    return outputView.scrollTop + outputView.clientHeight >= outputView.scrollHeight - 16;
+  function activeOutputView() {
+    return activeOutputTab === "stderr" ? outputStderr : outputStdout;
   }
 
-  function formatSliceOutput(payload) {
+  function activeOutputText() {
+    return activeOutputTab === "stderr" ? outputStderrText : outputStdoutText;
+  }
+
+  function outputIsNearBottom(view) {
+    const target = view || activeOutputView();
+    return target.scrollTop + target.clientHeight >= target.scrollHeight - 16;
+  }
+
+  function formatStdout(payload) {
     const sections = [];
     if (payload.command) {
       sections.push("$ " + payload.command);
@@ -690,10 +739,23 @@
     if (payload.stdout) {
       sections.push(payload.stdout.replace(/\s+$/, ""));
     }
-    if (payload.stderr) {
-      sections.push("[stderr]\n" + payload.stderr.replace(/\s+$/, ""));
-    }
     return sections.join("\n\n");
+  }
+
+  function formatStderr(payload) {
+    return payload.stderr ? payload.stderr.replace(/\s+$/, "") : "";
+  }
+
+  function selectOutputTab(tabName) {
+    activeOutputTab = tabName === "stderr" ? "stderr" : "stdout";
+    outputTabs.forEach(function (tab) {
+      const selected = tab.dataset.outputTab === activeOutputTab;
+      tab.classList.toggle("active", selected);
+      tab.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    outputStdout.hidden = activeOutputTab !== "stdout";
+    outputStderr.hidden = activeOutputTab !== "stderr";
+    outputLatest.hidden = outputIsNearBottom();
   }
 
   async function refreshSliceOutput() {
@@ -712,17 +774,24 @@
         throw new Error("Output request returned HTTP " + response.status);
       }
       const payload = await response.json();
-      const nextText = formatSliceOutput(payload);
-      if (nextText !== outputCombinedText) {
-        outputCombinedText = nextText;
-        outputView.textContent = nextText || "No output has been produced yet.";
+      const nextStdout = formatStdout(payload);
+      const nextStderr = formatStderr(payload);
+      if (nextStdout !== outputStdoutText) {
+        outputStdoutText = nextStdout;
+        outputStdout.textContent = nextStdout || "No stdout has been produced yet.";
       }
+      if (nextStderr !== outputStderrText) {
+        outputStderrText = nextStderr;
+        outputStderr.textContent = nextStderr || "No stderr has been produced.";
+      }
+      outputStderrIndicator.hidden = !nextStderr;
       outputStatus.className = "status status-" + payload.status;
       outputStatus.textContent = String(payload.status || "unknown")
         .replace(/_/g, " ")
         .replace(/\b\w/g, function (letter) { return letter.toUpperCase(); });
       if (follow) {
-        outputView.scrollTop = outputView.scrollHeight;
+        const view = activeOutputView();
+        view.scrollTop = view.scrollHeight;
         outputLatest.hidden = true;
       } else {
         outputLatest.hidden = false;
@@ -756,8 +825,12 @@
     outputRunner.textContent = button.dataset.runner || "";
     outputStatus.className = "status";
     outputStatus.textContent = "Loading...";
-    outputCombinedText = "";
-    outputView.textContent = "Loading...";
+    outputStdoutText = "";
+    outputStderrText = "";
+    outputStdout.textContent = "Loading...";
+    outputStderr.textContent = "Loading...";
+    outputStderrIndicator.hidden = true;
+    selectOutputTab("stdout");
     outputLatest.hidden = true;
     outputModal.hidden = false;
     refreshSliceOutput();
@@ -905,18 +978,29 @@
     button.addEventListener("click", closeOutputModal);
   });
 
+  outputTabs.forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      selectOutputTab(tab.dataset.outputTab);
+    });
+  });
+
   outputLatest.addEventListener("click", function () {
-    outputView.scrollTop = outputView.scrollHeight;
+    const view = activeOutputView();
+    view.scrollTop = view.scrollHeight;
     outputLatest.hidden = true;
   });
 
-  outputView.addEventListener("scroll", function () {
-    outputLatest.hidden = outputIsNearBottom();
+  [outputStdout, outputStderr].forEach(function (view) {
+    view.addEventListener("scroll", function () {
+      if (view === activeOutputView()) {
+        outputLatest.hidden = outputIsNearBottom(view);
+      }
+    });
   });
 
   outputCopy.addEventListener("click", async function () {
     try {
-      await navigator.clipboard.writeText(outputCombinedText);
+      await navigator.clipboard.writeText(activeOutputText());
       outputCopy.textContent = "Copied";
       window.setTimeout(function () {
         outputCopy.textContent = "Copy output";
