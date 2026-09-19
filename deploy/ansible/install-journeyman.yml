@@ -173,6 +173,18 @@
       loop_control:
         label: "{{ item.path }}"
 
+    - name: Pin main-server helper shebangs to configured virtual environment
+      ansible.builtin.lineinfile:
+        path: "{{ journeyman_root }}/bin/{{ item }}"
+        regexp: '^#!.*python3?$'
+        line: "#!{{ journeyman_venv }}/bin/python3"
+        insertafter: BOF
+      loop:
+        - journeyman-environment-builder
+        - journeyman-runner
+        - journeyman-runner-admin
+        - journeyman-service-coordinator
+
     - name: Ensure privileged web-settings helper is executable
       ansible.builtin.file:
         path: /opt/journeyman/scripts/journeyman-apply-web-settings
@@ -210,12 +222,17 @@
 
     - name: Install Journeyman administrative shell profile
       ansible.builtin.copy:
-        src: "{{ journeyman_root }}/deploy/journeyman.bashrc"
         dest: "{{ journeyman_root }}/.bashrc"
-        remote_src: true
         owner: "{{ journeyman_user }}"
         group: "{{ journeyman_group }}"
         mode: '0640'
+        content: |
+          # Journeyman administrative shell environment.
+          export JOURNEYMAN_VENV={{ journeyman_venv | quote }}
+
+          if [ -r "${JOURNEYMAN_VENV}/bin/activate" ]; then
+              . "${JOURNEYMAN_VENV}/bin/activate"
+          fi
 
     - name: Install Journeyman Python dependencies through proxy
       ansible.builtin.command:
@@ -721,6 +738,19 @@
         - journeyman-runner.service
         - journeyman-scheduler.service
         - journeyman-environment-builder.service
+      notify:
+        - Reload systemd
+        - Restart Journeyman services
+
+    - name: Configure Journeyman service virtual environment
+      ansible.builtin.lineinfile:
+        path: "/etc/systemd/system/{{ item }}"
+        regexp: '^Environment=JOURNEYMAN_VENV='
+        line: "Environment=JOURNEYMAN_VENV={{ journeyman_venv }}"
+        insertafter: '^Environment=JOURNEYMAN_CONFIG='
+      loop:
+        - journeyman-web.service
+        - journeyman-scheduler.service
       notify:
         - Reload systemd
         - Restart Journeyman services

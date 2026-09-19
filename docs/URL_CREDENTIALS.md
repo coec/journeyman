@@ -24,13 +24,13 @@ The credential can also store an OAuth token URL, scope, and token prefix. Passw
 Preview the migration:
 
 ```bash
-/opt/journeyman/venv/bin/python scripts/migrate_url_credentials.py
+python scripts/migrate_url_credentials.py
 ```
 
 Commit it only after reviewing the plan:
 
 ```bash
-/opt/journeyman/venv/bin/python scripts/migrate_url_credentials.py --apply
+python scripts/migrate_url_credentials.py --apply
 ```
 
 Satellite credentials are converted in place. A Zabbix credential used against one endpoint is also converted in place and the duplicate endpoint is removed from the Inventory record. If one legacy Zabbix token is shared across several different endpoints, the migration creates endpoint-specific URL credentials and rewires each Inventory so provider semantics are preserved.

@@ -590,6 +590,13 @@
             group: root
             mode: '0755'
 
+        - name: Pin remote runner shebang to configured virtual environment
+          ansible.builtin.lineinfile:
+            path: /opt/journeyman/bin/journeyman-remote-runner
+            regexp: '^#!.*python3?$'
+            line: "#!{{ journeyman_runner_venv }}/bin/python3"
+            insertafter: BOF
+
         - name: Install Journeyman Signal spool helper
           ansible.builtin.copy:
             src: "{{ journeyman_signal_spool_source }}"

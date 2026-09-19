@@ -1,30 +1,50 @@
 # Upgrading Journeyman
 
-This document describes how to upgrade an **existing Journeyman installation based on the latest published GitHub release** to a newer Journeyman release or development build.
+This document describes how to upgrade an **existing Journeyman
+installation based on the latest published GitHub release** to a newer
+Journeyman release or development build.
 
-It assumes Journeyman was originally installed using the supplied Ansible deployment playbook and that the existing inventory and host variables are still available.
+It assumes Journeyman was originally installed using the supplied Ansible
+deployment playbook and that the existing inventory and host variables
+are still available.
 
-The upgrade must preserve the PostgreSQL database, `/etc/journeyman` configuration, credential encryption keys, runner PKI, existing application data, Projects, Packages, Inventories, Credentials, Schedules and Jobs.
+The upgrade must preserve the PostgreSQL database, `/etc/journeyman`
+configuration, credential encryption keys, runner PKI, existing
+application data, Projects, Packages, Inventories, Credentials, Schedules
+and Jobs.
 
 Do **not** treat an upgrade as a fresh installation.
 
 ## 1. Before upgrading
 
-Review the release notes, `CHANGELOG.md`, and any version-specific upgrade notes. If upgrading across more than one released version, review every intervening release.
+Review the release notes, `CHANGELOG.md`, and any version-specific upgrade
+notes. If upgrading across more than one released version, review every
+intervening release.
 
-Retain the existing Ansible inventory and host variables. In particular, retain database, proxy, outbound allow-list, LDAP/AD, runner, TLS/PKI and notification settings.
+Retain the existing Ansible inventory and host variables. In particular,
+retain database, proxy, outbound allow-list, LDAP/AD, runner, TLS/PKI and
+notification settings.
 
 Record the currently installed database revision and services:
+
+Set the application virtual environment path used by this installation. The
+historical default is `/opt/journeyman/venv`; installations using another
+environment, such as `venv314`, should set that path instead:
+
+```bash
+JOURNEYMAN_VENV=/opt/journeyman/venv314
+```
 
 ```bash
 systemctl --no-pager --type=service | grep -i journeyman
 
 cd /opt/journeyman
-source venv/bin/activate
+source ${JOURNEYMAN_VENV}/bin/activate
 flask --app run.py db current
 ```
 
-If the installation uses a different virtual environment such as `venv314`, use that instead.
+Retain the same `journeyman_venv` value in the Ansible inventory or host
+variables used for the upgrade
 
 ## 2. Back up the installation
 
@@ -122,6 +142,13 @@ Remote runners do not normally need to be stopped. They should tolerate temporar
 
 The preferred upgrade method is to rerun the supplied Journeyman deployment playbook using the **existing inventory and host variables**.
 
+If the installation uses a non-default application virtual environment, retain
+that value explicitly. For example:
+
+```yaml
+journeyman_venv: /opt/journeyman/venv314
+```
+
 The deployment must be treated as an in-place upgrade. It must not remove or regenerate:
 
 ```text
@@ -143,13 +170,16 @@ Restore only installation-specific files that are deliberately stored inside the
 
 Do **not** copy the old Python virtual environment over the new release. Prefer allowing the deployment playbook to recreate or update it.
 
+Configure `journeyman_venv` to the desired path and allow the deployment
+playbook to create or update that environment.
+
 ## 6. Update Python dependencies
 
 If the deployment playbook does not do this automatically:
 
 ```bash
 cd /opt/journeyman
-source venv/bin/activate
+source "${JOURNEYMAN_VENV}/bin/activate"
 
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
@@ -193,13 +223,10 @@ Avoid running operational commands as `root` when they create persistent Journey
 For example, a manual scheduler run should use the service account:
 
 ```bash
-sudo -u journeyman \
-  /opt/journeyman/venv/bin/flask \
+sudo -u journeyman "${JOURNEYMAN_VENV}/bin/flask" \
   --app /opt/journeyman/run.py \
   run-scheduler --once
 ```
-
-Adjust the virtual environment path as required.
 
 ## 9. Start Journeyman
 
@@ -244,8 +271,22 @@ Verify the database revision:
 
 ```bash
 cd /opt/journeyman
-source venv/bin/activate
+source "${JOURNEYMAN_VENV}/bin/activate"
 flask --app run.py db current
+```
+
+Verify that the installed services and helper scripts use the expected
+application environment:
+
+```bash
+systemctl cat journeyman-web
+systemctl cat journeyman-scheduler
+
+head -1 /opt/journeyman/bin/journeyman-*
+
+test -x "${JOURNEYMAN_VENV}/bin/python3"
+test -x "${JOURNEYMAN_VENV}/bin/gunicorn"
+test -x "${JOURNEYMAN_VENV}/bin/flask"
 ```
 
 Log in and confirm that existing Projects, Packages, Inventories, Credentials, Environments, Runners, Schedules, Jobs and application settings remain present.
@@ -350,6 +391,7 @@ Upgrade:
 [ ] Stop web service
 [ ] Install new application code
 [ ] Update/recreate Python environment
+[ ] Confirm journeyman_venv matches the installed application environment
 [ ] Apply database migrations
 [ ] Check ownership and permissions
 [ ] Reload systemd if required
@@ -360,6 +402,7 @@ After:
 
 ```text
 [ ] Services are healthy
+[ ] systemd units and helper scripts use the expected application environment
 [ ] Database is at the expected migration revision
 [ ] Existing application settings remain present
 [ ] Existing Credentials decrypt successfully
@@ -383,4 +426,3 @@ Before installing a development build over the latest GitHub release:
 - assume database downgrade may require restoring the database backup.
 
 Record the Git commit used for the deployed build as part of the upgrade change record.
-

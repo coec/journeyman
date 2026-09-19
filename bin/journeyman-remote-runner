@@ -1,4 +1,4 @@
-#!/opt/journeyman/venv314/bin/python3
+#!/usr/bin/env python3
 """Journeyman remote execution agent.
 
 The agent authenticates to the central Journeyman API, claims one assigned Job,

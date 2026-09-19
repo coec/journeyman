@@ -310,7 +310,7 @@ def _inventory_script_bytes(payload):
         payload
     ).decode("ascii")
 
-    script = '''#!/opt/journeyman/venv/bin/python3
+    script = '''#!/usr/bin/env python3
 
 import base64
 import json
