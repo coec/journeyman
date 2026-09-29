@@ -1840,18 +1840,8 @@ def prepare_ansible_workspace_environment(environment, workspace):
     result["ANSIBLE_HOME"] = str(ansible_home)
     result["ANSIBLE_LOCAL_TEMP"] = str(local_temp)
     result["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(control_path)
-
-    # ``delegate_to: localhost`` uses Ansible's POSIX shell remote_tmp
-    # setting for module staging.  The runner service account's normal
-    # ~/.ansible path is intentionally read-only under ProtectSystem=strict.
-    # Use a per-Job /tmp path instead.  This value is also safe for ordinary
-    # POSIX managed hosts because /tmp is target-local; Windows shell plugins
-    # retain their normal %TEMP% behaviour.
-    remote_temp = "/tmp/.ansible-journeyman-{}".format(
-        Path(workspace).name
-    )
-    result["ANSIBLE_REMOTE_TEMP"] = remote_temp
-    result["ANSIBLE_REMOTE_TMP"] = remote_temp
+    result["ANSIBLE_REMOTE_TEMP"] = "/tmp"
+    result["ANSIBLE_REMOTE_TMP"] = "/tmp"
     return result
 
 
