@@ -19,6 +19,15 @@ def test_url_credential_normalises_bearer_defaults():
     assert data["token_prefix"] == "Bearer"
 
 
+def test_url_credential_accepts_ftp_with_basic_authentication():
+    data = normalise_url_credential_data(
+        {"url": "ftp://ftp.example.org/incoming/", "auth_mode": "basic", "password": "secret"},
+        username="ftp-user",
+    )
+    assert data["url"] == "ftp://ftp.example.org/incoming"
+    assert data["auth_mode"] == "basic"
+
+
 def test_url_credential_supports_oauth_client_credentials():
     data = normalise_url_credential_data(
         {

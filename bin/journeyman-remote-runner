@@ -41,7 +41,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 LOGGER = logging.getLogger("journeyman-remote-runner")
-VERSION = "0.21"
+VERSION = "0.24"
 KEY_INFO = b"journeyman remote execution data v1"
 STOP = False
 
@@ -1950,12 +1950,89 @@ class CallbackModule(CallbackBase):
 '''
 
 
+JOURNEYMAN_STATS_CALLBACK = r'''
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
+import json
+import os
+import tempfile
+
+from ansible.plugins.callback import CallbackBase
+
+
+DOCUMENTATION = r"""
+callback: journeyman_stats
+short_description: Write Ansible custom statistics for Journeyman
+version_added: "1.0.0"
+type: aggregate
+requirements:
+  - Set JOURNEYMAN_STATS_FILE in the playbook process environment.
+"""
+
+
+class CallbackModule(CallbackBase):
+    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = "aggregate"
+    CALLBACK_NAME = "journeyman_stats"
+    CALLBACK_NEEDS_ENABLED = True
+
+    def v2_playbook_on_stats(self, stats):
+        destination = os.environ.get("JOURNEYMAN_STATS_FILE", "").strip()
+        if not destination:
+            return
+
+        payload = {"custom": stats.custom or {}}
+        directory = os.path.dirname(destination)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=".journeyman-stats-",
+            suffix=".json",
+            dir=directory,
+            text=True,
+        )
+
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(payload, output, ensure_ascii=False, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_path, destination)
+        except Exception:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            raise
+'''
+
+def read_custom_stats(path):
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Unable to read Ansible custom statistics: {}".format(exc))
+    if not isinstance(payload, dict):
+        raise RuntimeError("Ansible custom statistics payload is not an object.")
+    return payload
+
+
 def prepare_remote_shell_callback(workspace):
     callback_directory = workspace / "callback_plugins"
     callback_directory.mkdir(mode=0o700, exist_ok=True)
     path = callback_directory / "journeyman_remote_shell.py"
     path.write_text(REMOTE_SHELL_CALLBACK, encoding="utf-8")
     os.chmod(path, 0o600)
+    stats_callback_path = callback_directory / "journeyman_stats.py"
+    stats_callback_path.write_text(JOURNEYMAN_STATS_CALLBACK, encoding="utf-8")
+    os.chmod(stats_callback_path, 0o600)
     return callback_directory
 
 
@@ -2243,6 +2320,61 @@ def _render_custom_credential_extra_vars(data):
     return render(extra_vars)
 
 
+def materialize_url_credential_extra_vars(
+    step, execution_type, credentials, mapping, workspace
+):
+    """Materialize one URL / API credential as namespaced Ansible extra vars."""
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+    credential_ids = mapping.get("credential_snapshot_ids") or []
+    url_credentials = []
+    for snapshot_id in credential_ids:
+        credential = credentials.get(int(snapshot_id))
+        if credential is None:
+            raise RuntimeError(
+                "Execution data is missing credential snapshot {}.".format(snapshot_id)
+            )
+        if credential.get("type") == "url":
+            url_credentials.append(credential)
+    if not url_credentials:
+        return None
+    if len(url_credentials) > 1:
+        raise RuntimeError(
+            "Remote step {} has more than one URL / API credential."
+            .format(step["position"])
+        )
+
+    credential = url_credentials[0]
+    data = credential.get("data") or {}
+    variables = {
+        "url_auth_url": str(data.get("url") or ""),
+        "url_auth_mode": str(data.get("auth_mode") or "none"),
+    }
+    username = str(credential.get("username") or "").strip()
+    if username:
+        variables["url_auth_username"] = username
+    for source, target in (
+        ("password", "url_auth_password"),
+        ("token", "url_auth_token"),
+        ("token_prefix", "url_auth_token_prefix"),
+        ("token_url", "url_auth_token_url"),
+        ("scope", "url_auth_scope"),
+    ):
+        value = data.get(source)
+        if value:
+            variables[target] = str(value)
+
+    private_directory = workspace / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private_directory / "url-credential-step-{}.json".format(step["position"])
+    path.write_text(
+        json.dumps(variables, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
+
 def materialize_custom_credential_extra_vars(
     step, execution_type, credentials, mapping, workspace
 ):
@@ -2325,6 +2457,7 @@ def build_command(
     machine_extra_vars_path=None,
     windows_extra_vars_path=None,
     custom_extra_vars_path=None,
+    url_extra_vars_path=None,
     step_extra_vars_path=None,
 ):
     artifact = (repository / step["playbook"]).resolve()
@@ -2397,6 +2530,17 @@ def build_command(
             )
         command.extend(
             ["--extra-vars", "@{}".format(custom_extra_vars_path)]
+        )
+
+    if url_extra_vars_path is not None:
+        url_extra_vars_path = Path(url_extra_vars_path)
+        if not url_extra_vars_path.is_file():
+            raise RuntimeError(
+                "URL credential extra-vars file does not exist: {}"
+                .format(url_extra_vars_path)
+            )
+        command.extend(
+            ["--extra-vars", "@{}".format(url_extra_vars_path)]
         )
 
     command.append(str(artifact))
@@ -2639,6 +2783,13 @@ def execute_job(manifest):
             host_results_path = workspace / "private" / (
                 "step-{}-host-results.json".format(step["position"])
             )
+            stats_path = workspace / "private" / (
+                "step-{}-stats.json".format(step["position"])
+            )
+            try:
+                stats_path.unlink()
+            except FileNotFoundError:
+                pass
             if manifest["execution_type"] in {"ansible", "remote_shell"}:
                 callback_directory = prepare_remote_shell_callback(workspace)
                 existing_callback_paths = environment.get("ANSIBLE_CALLBACK_PLUGINS", "")
@@ -2653,10 +2804,13 @@ def execute_job(manifest):
                 ]
                 if "journeyman_remote_shell" not in enabled:
                     enabled.append("journeyman_remote_shell")
+                if "journeyman_stats" not in enabled:
+                    enabled.append("journeyman_stats")
                 environment["ANSIBLE_CALLBACKS_ENABLED"] = ",".join(enabled)
                 environment["JOURNEYMAN_REMOTE_SHELL_RESULTS_FILE"] = str(
                     host_results_path
                 )
+                environment["JOURNEYMAN_STATS_FILE"] = str(stats_path)
                 if manifest["execution_type"] == "ansible":
                     environment["JOURNEYMAN_HOST_RESULTS_STATUS_ONLY"] = "1"
             step_extra_vars_path = materialize_step_extra_vars(
@@ -2684,6 +2838,13 @@ def execute_job(manifest):
                 mapping,
                 workspace,
             )
+            url_extra_vars_path = materialize_url_credential_extra_vars(
+                step,
+                manifest["execution_type"],
+                credentials,
+                mapping,
+                workspace,
+            )
 
             command = build_command(
                 step,
@@ -2695,6 +2856,7 @@ def execute_job(manifest):
                 machine_extra_vars_path=machine_extra_vars_path,
                 windows_extra_vars_path=windows_extra_vars_path,
                 custom_extra_vars_path=custom_extra_vars_path,
+                url_extra_vars_path=url_extra_vars_path,
                 step_extra_vars_path=step_extra_vars_path,
             )
             rc, stdout, stderr, cancelled = run_process(
@@ -2714,7 +2876,8 @@ def execute_job(manifest):
             )
             results.append({"position": step["position"], "status": status, "exit_code": rc,
                             "command": " ".join(command), "stdout": stdout, "stderr": stderr,
-                            "host_results": host_results})
+                            "host_results": host_results,
+                            "custom_stats": read_custom_stats(stats_path) if status == "successful" else {}})
             completed[int(step["position"])] = status
 
             if (

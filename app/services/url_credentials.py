@@ -54,6 +54,7 @@ def normalise_url_credential_data(data, *, username=""):
             str(data.get("url") or "").strip().rstrip("/"),
             purpose="URL credential",
             require_https=False,
+            allowed_schemes={"http", "https", "ftp"},
         )
     except OutboundSecurityError as exc:
         raise URLCredentialError(str(exc)) from exc

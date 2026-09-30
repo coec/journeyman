@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from app.services.job_inventory_snapshot import read_job_inventory_snapshot_data
-from app.services.job_stats import build_step_extra_vars
+from app.services.job_stats import build_step_extra_vars, propagated_stats_for_step
 
 
 ENVELOPE_VERSION = 1
@@ -79,6 +79,7 @@ def build_execution_data_payload(job):
         if job.package_snapshot is not None
         else {}
     )
+    steps_by_position = {step.position: step for step in job.steps}
     return {
         "version": 1,
         "job_id": job.id,
@@ -107,7 +108,7 @@ def build_execution_data_payload(job):
                 ],
                 "extra_vars": build_step_extra_vars(
                     base_extra_vars,
-                    {},
+                    propagated_stats_for_step(step, steps_by_position),
                     step_extra_vars=step.get_extra_vars(),
                 ),
             }

@@ -139,6 +139,47 @@ def build_step_extra_vars(
     result.update(step_values)
 
     if propagated_stats:
-        result[_RESERVED_EXTRA_VAR] = _json_safe_copy(propagated_stats)
+        safe_stats = _json_safe_copy(propagated_stats)
+
+        # Match AAP/Tower workflow semantics for global set_stats values: make
+        # them directly available to downstream steps.  Keep the namespaced
+        # journeyman_stats view as well for provenance and per-host values.
+        for namespace in safe_stats.values():
+            if not isinstance(namespace, dict):
+                continue
+            for key, value in namespace.items():
+                if key != "_hosts":
+                    result[key] = deepcopy(value)
+
+        result[_RESERVED_EXTRA_VAR] = safe_stats
 
     return result
+
+
+def dependency_ancestors(step, steps_by_position):
+    result = set()
+    stack = list(step.get_dependency_positions())
+    while stack:
+        position = stack.pop()
+        if position in result:
+            continue
+        result.add(position)
+        dependency = steps_by_position.get(position)
+        if dependency is not None:
+            stack.extend(dependency.get_dependency_positions())
+    return result
+
+
+def propagated_stats_for_step(step, steps_by_position):
+    """Return successful ancestor set_stats data for a downstream step."""
+    propagated = {}
+    for position in sorted(dependency_ancestors(step, steps_by_position)):
+        ancestor = steps_by_position.get(position)
+        if ancestor is None or ancestor.status != "successful":
+            continue
+        propagated = add_step_stats(
+            propagated,
+            ancestor,
+            ancestor.get_custom_stats(),
+        )
+    return propagated

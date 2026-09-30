@@ -37,7 +37,9 @@ from app.credential_types import (  # noqa: E402
     CREDENTIAL_TYPE_ENVIRONMENT_VARIABLES,
     CREDENTIAL_TYPE_MACHINE,
     CREDENTIAL_TYPE_WINDOWS,
+    CREDENTIAL_TYPE_URL,
     CREDENTIAL_TYPE_CUSTOM,
+    CREDENTIAL_TYPE_URL,
 )
 from app.models import Job, JobStep, JobStepExecutionSlice, JobStepHostResult, Runner  # noqa: E402
 from app.services.job_inventory_snapshot import (  # noqa: E402
@@ -1383,6 +1385,53 @@ def materialize_machine_credential_extra_vars(step, job_directory):
     return variables_path
 
 
+def materialize_url_credential_extra_vars(step, job_directory):
+    """Materialize one URL / API credential using namespaced Ansible variables."""
+
+    job = getattr(step, "job", None)
+    execution_type = (
+        getattr(step, "execution_type", None)
+        or getattr(job, "execution_type", "ansible")
+        or "ansible"
+    )
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+
+    credentials = [
+        snapshot
+        for snapshot in (getattr(step, "credential_snapshots", None) or [])
+        if snapshot.credential_type == CREDENTIAL_TYPE_URL
+    ]
+    if not credentials:
+        return None
+    if len(credentials) > 1:
+        raise RuntimeError(
+            "JobStep {} has more than one URL / API credential.".format(step.id)
+        )
+
+    snapshot = credentials[0]
+    data = snapshot.get_credential_data() or {}
+    variables = {
+        "url_auth_url": str(data.get("url") or ""),
+        "url_auth_mode": str(data.get("auth_mode") or "none"),
+        "url_auth_username": str(snapshot.username or ""),
+        "url_auth_password": str(data.get("password") or ""),
+        "url_auth_token": str(data.get("token") or ""),
+        "url_auth_token_prefix": str(data.get("token_prefix") or ""),
+        "url_auth_token_url": str(data.get("token_url") or ""),
+        "url_auth_scope": str(data.get("scope") or ""),
+    }
+
+    private_directory = Path(job_directory) / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private_directory / "url-credential-step-{}.json".format(step.id)
+    path.write_text(
+        json.dumps(variables, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
+
 
 def materialize_windows_credential_extra_vars(step, job_directory):
     """Materialize one Windows credential using namespaced Ansible variables."""
@@ -1438,6 +1487,60 @@ def materialize_windows_credential_extra_vars(step, job_directory):
     )
     os.chmod(variables_path, 0o600)
     return variables_path
+
+
+def materialize_url_credential_extra_vars(step, job_directory):
+    """Materialize one URL / API credential as namespaced Ansible extra vars."""
+    job = getattr(step, "job", None)
+    execution_type = (
+        getattr(step, "execution_type", None)
+        or getattr(job, "execution_type", "ansible")
+        or "ansible"
+    )
+    if execution_type not in {"ansible", "remote_shell"}:
+        return None
+
+    credentials = [
+        snapshot
+        for snapshot in (getattr(step, "credential_snapshots", None) or [])
+        if snapshot.credential_type == CREDENTIAL_TYPE_URL
+    ]
+    if not credentials:
+        return None
+    if len(credentials) > 1:
+        raise RuntimeError(
+            "JobStep {} has more than one URL / API credential.".format(step.id)
+        )
+
+    snapshot = credentials[0]
+    data = snapshot.get_credential_data()
+    variables = {
+        "url_auth_url": str(data.get("url") or ""),
+        "url_auth_mode": str(data.get("auth_mode") or "none"),
+    }
+    username = str(snapshot.username or "").strip()
+    if username:
+        variables["url_auth_username"] = username
+    for source, target in (
+        ("password", "url_auth_password"),
+        ("token", "url_auth_token"),
+        ("token_prefix", "url_auth_token_prefix"),
+        ("token_url", "url_auth_token_url"),
+        ("scope", "url_auth_scope"),
+    ):
+        value = data.get(source)
+        if value:
+            variables[target] = str(value)
+
+    private_directory = Path(job_directory) / "private"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = private_directory / "url-credential-step-{}.json".format(step.id)
+    path.write_text(
+        json.dumps(variables, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+    return path
 
 
 def materialize_custom_credential_extra_vars(step, job_directory):
@@ -1530,6 +1633,7 @@ def build_command(
     machine_extra_vars_path=None,
     windows_extra_vars_path=None,
     custom_extra_vars_path=None,
+    url_extra_vars_path=None,
     limit_override=None,
 ):
     repository_root = repository_path.resolve()
@@ -1663,6 +1767,24 @@ def build_command(
                 .format(custom_extra_vars_path)
             )
         command.extend(["--extra-vars", "@{}".format(custom_extra_vars_path)])
+
+    if url_extra_vars_path is not None:
+        url_extra_vars_path = Path(url_extra_vars_path)
+        if not url_extra_vars_path.is_file():
+            raise RuntimeError(
+                "URL credential extra-vars file does not exist: {}"
+                .format(url_extra_vars_path)
+            )
+        command.extend(["--extra-vars", "@{}".format(url_extra_vars_path)])
+
+    if url_extra_vars_path is not None:
+        url_extra_vars_path = Path(url_extra_vars_path)
+        if not url_extra_vars_path.is_file():
+            raise RuntimeError(
+                "URL credential extra-vars file does not exist: {}"
+                .format(url_extra_vars_path)
+            )
+        command.extend(["--extra-vars", "@{}".format(url_extra_vars_path)])
 
     command.append(str(playbook_path))
 
@@ -1985,6 +2107,10 @@ def execute_step(
         step,
         repository_path.resolve().parent.parent,
     )
+    url_extra_vars_path = materialize_url_credential_extra_vars(
+        step,
+        repository_path.resolve().parent.parent,
+    )
 
     command = build_command(
         step,
@@ -1994,6 +2120,7 @@ def execute_step(
         machine_extra_vars_path,
         windows_extra_vars_path,
         custom_extra_vars_path,
+        url_extra_vars_path=url_extra_vars_path,
         limit_override=limit_override,
     )
 

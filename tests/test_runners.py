@@ -1812,3 +1812,49 @@ def test_remote_runner_materializes_windows_credential(tmp_path):
         "win_ansible_winrm_transport": "kerberos",
     }
     assert (variables_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_remote_runner_materializes_url_credential(tmp_path):
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / "bin"
+        / "journeyman-remote-runner"
+    )
+    remote_runner = runpy.run_path(str(runner_path))
+    materialize = remote_runner[
+        "materialize_url_credential_extra_vars"
+    ]
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    credentials = {
+        11: {
+            "snapshot_id": 11,
+            "type": "url",
+            "username": "ftp-user",
+            "data": {
+                "url": "ftp://ftp.example.test/incoming",
+                "auth_mode": "basic",
+                "password": "ftp-secret",
+            },
+        }
+    }
+    mapping = {"credential_snapshot_ids": [11]}
+    step = {"position": 4}
+
+    variables_path = materialize(
+        step,
+        "ansible",
+        credentials,
+        mapping,
+        workspace,
+    )
+
+    values = json.loads(variables_path.read_text(encoding="utf-8"))
+    assert values == {
+        "url_auth_mode": "basic",
+        "url_auth_password": "ftp-secret",
+        "url_auth_url": "ftp://ftp.example.test/incoming",
+        "url_auth_username": "ftp-user",
+    }
+    assert (variables_path.stat().st_mode & 0o777) == 0o600

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app import db
 from app.models import JobStepHostResult
+from app.services.job_stats import JobStatsError, normalise_ansible_custom_stats
 
 FINAL_SLICE_STATUSES = {"successful", "failed", "cancelled"}
 TERMINAL_STEP_STATUSES = {"successful", "failed", "cancelled", "blocked", "skipped"}
@@ -291,6 +292,14 @@ def _complete_slice(execution_slice, payload, *, runner=None, local=False):
         execution_slice.command = str(result.get("command") or "")[:4000]
         execution_slice.stdout = _trim(result.get("stdout"))
         execution_slice.stderr = _trim(result.get("stderr"))
+        try:
+            execution_slice.set_custom_stats(
+                normalise_ansible_custom_stats(result.get("custom_stats") or {})
+                if requested_status == "successful"
+                else {}
+            )
+        except JobStatsError:
+            return False, "invalid_custom_stats"
     execution_slice.dispatch_token = ""
 
     step = execution_slice.step

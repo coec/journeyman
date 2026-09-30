@@ -133,8 +133,15 @@ def _reject_local_special_address(hostname):
         )
 
 
-def validate_outbound_url(url, *, purpose="outbound service", require_https=True):
-    """Validate scheme, credentials and sysadmin-owned destination allowlist."""
+def validate_outbound_url(
+    url, *, purpose="outbound service", require_https=True, allowed_schemes=None
+):
+    """Validate scheme, credentials and sysadmin-owned destination allowlist.
+
+    ``allowed_schemes`` is intended for credential storage and other callers
+    that deliberately support non-HTTP URL schemes.  Existing callers retain
+    the historical HTTP/HTTPS-only behaviour when it is omitted.
+    """
 
     value = str(url or "").strip()
     _validate_outbound_text_bounds(value, purpose)
@@ -143,11 +150,17 @@ def validate_outbound_url(url, *, purpose="outbound service", require_https=True
     except ValueError as exc:
         raise OutboundSecurityError("{} URL is invalid.".format(purpose)) from exc
 
-    if require_https and secure_transport_enforced() and parsed.scheme.lower() != "https":
+    scheme = parsed.scheme.lower()
+    if allowed_schemes is not None:
+        allowed = {str(item).strip().lower() for item in allowed_schemes if str(item).strip()}
+        if scheme not in allowed:
+            schemes = " or ".join("{}://".format(item) for item in sorted(allowed))
+            raise OutboundSecurityError("{} URL must use {}.".format(purpose, schemes))
+    elif require_https and secure_transport_enforced() and scheme != "https":
         raise OutboundSecurityError("{} URL must use https://.".format(purpose))
-    if require_https and not secure_transport_enforced() and parsed.scheme.lower() not in {"http", "https"}:
+    elif require_https and not secure_transport_enforced() and scheme not in {"http", "https"}:
         raise OutboundSecurityError("{} URL must use http:// or https://.".format(purpose))
-    if not require_https and parsed.scheme.lower() not in {"http", "https"}:
+    elif not require_https and scheme not in {"http", "https"}:
         raise OutboundSecurityError("{} URL must use http:// or https://.".format(purpose))
     if not parsed.hostname:
         raise OutboundSecurityError("{} URL must contain a hostname.".format(purpose))
@@ -161,7 +174,7 @@ def validate_outbound_url(url, *, purpose="outbound service", require_https=True
     hostname = parsed.hostname.lower().rstrip(".")
     _reject_local_special_address(hostname)
     try:
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        port = parsed.port or {"https": 443, "http": 80, "ftp": 21}.get(scheme)
     except ValueError as exc:
         raise OutboundSecurityError(
             "{} URL contains an invalid port.".format(purpose)

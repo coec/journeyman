@@ -81,6 +81,10 @@ def test_stats_propagate_under_step_name_namespace():
         extra_vars["journeyman_stats"]["provision_vm"]["hostname"]
         == "host42"
     )
+    # Global set_stats values also follow AAP/Tower workflow semantics and
+    # are directly consumable by downstream playbooks.
+    assert extra_vars["hostname"] == "host42"
+    assert "_hosts" not in extra_vars
 
 
 def test_duplicate_step_names_receive_stable_suffix():
