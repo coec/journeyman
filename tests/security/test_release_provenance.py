@@ -49,8 +49,14 @@ def test_release_provenance_contains_locked_transitive_dependency_inventory(tmp_
         (row["name"].casefold(), row["version"])
         for row in manifest["dependency_lock"]["dependencies"]
     }
+    # The lock is refreshed during security updates; provenance must follow it.
+    werkzeug_version = next(
+        line.strip().split("==", 1)[1]
+        for line in (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
+        if line.strip().casefold().startswith("werkzeug==")
+    )
     assert ("flask", "3.1.3") in packages
-    assert ("werkzeug", "3.1.8") in packages
+    assert ("werkzeug", werkzeug_version) in packages
     assert ("psycopg", "3.3.4") in packages
 
     assert manifest["dependency_lock"]["path"] == "requirements-postgresql.lock"
@@ -65,7 +71,7 @@ def test_release_provenance_contains_locked_transitive_dependency_inventory(tmp_
     }
     assert ("journeyman", version) in sbom_packages
     assert ("flask", "3.1.3") in sbom_packages
-    assert ("werkzeug", "3.1.8") in sbom_packages
+    assert ("werkzeug", werkzeug_version) in sbom_packages
     assert ("psycopg", "3.3.4") in sbom_packages
 
 

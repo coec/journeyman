@@ -338,7 +338,17 @@ def test_remote_runner_environment_sync_has_writable_runner_local_root():
     assert "ReadWritePaths=/etc/journeyman/runner-pki" in legacy_unit
     assert "ReadWritePaths=/etc/journeyman/runner-pki" in instance_unit
     assert "ProtectSystem=full" in playbook
-    assert playbook.count("ReadWritePaths={{ journeyman_runner_pki_root }}") == 2    
+    # Only inspect the two runner unit definitions; other management tasks may
+    # legitimately declare the same writable PKI directory.
+    regular_unit_task = playbook.split(
+        "- name: Install Journeyman remote runner systemd unit", 1
+    )[1].split("- name: Install Journeyman remote runner instance systemd template", 1)[0]
+    instance_unit_task = playbook.split(
+        "- name: Install Journeyman remote runner instance systemd template", 1
+    )[1].split("- name: Check for existing runner registration during install", 1)[0]
+    for unit_task in (regular_unit_task, instance_unit_task):
+        assert "ProtectSystem=full" in unit_task
+        assert "ReadWritePaths={{ journeyman_runner_pki_root }}" in unit_task
     assert (
         "ReadWritePaths=/var/lib/journeyman/remote-jobs "
         "/var/spool/journeyman/signals /opt/journeyman/environments"
@@ -446,9 +456,10 @@ def test_remote_runner_uses_writable_posix_remote_tmp_for_local_delegation():
         root / "bin" / "journeyman-remote-runner"
     ).read_text(encoding="utf-8")
 
-    assert 'result["ANSIBLE_REMOTE_TEMP"] = remote_temp' in remote_runner
-    assert 'result["ANSIBLE_REMOTE_TMP"] = remote_temp' in remote_runner
-    assert '"/tmp/.ansible-journeyman-{}".format(' in remote_runner
+    # Ansible itself creates private ansible-tmp-* directories beneath /tmp.
+    # The runner only needs to select a writable parent for local delegation.
+    assert 'result["ANSIBLE_REMOTE_TEMP"] = "/tmp"' in remote_runner
+    assert 'result["ANSIBLE_REMOTE_TMP"] = "/tmp"' in remote_runner
 
 
 def test_remote_runner_heartbeat_applies_server_reported_capacity(monkeypatch, tmp_path):

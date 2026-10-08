@@ -895,9 +895,8 @@ def test_remote_runner_uses_writable_paths_for_ansible_runtime(tmp_path, monkeyp
     assert environment["ANSIBLE_HOME"] == str(ansible_home)
     assert environment["ANSIBLE_LOCAL_TEMP"] == str(ansible_home / "tmp")
     assert environment["ANSIBLE_SSH_CONTROL_PATH_DIR"] == str(control_path)
-    expected_remote_temp = "/tmp/.ansible-journeyman-job-1-slice-1"
-    assert environment["ANSIBLE_REMOTE_TEMP"] == expected_remote_temp
-    assert environment["ANSIBLE_REMOTE_TMP"] == expected_remote_temp
+    assert environment["ANSIBLE_REMOTE_TEMP"] == "/tmp"
+    assert environment["ANSIBLE_REMOTE_TMP"] == "/tmp"
     assert (ansible_home / "tmp").is_dir()
     assert control_path.is_dir()
     assert ((ansible_home / "tmp").stat().st_mode & 0o777) == 0o700
