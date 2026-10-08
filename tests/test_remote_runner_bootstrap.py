@@ -184,7 +184,14 @@ def test_systemd_template_supports_multiple_remote_runner_instances():
     assert "EnvironmentFile=/etc/journeyman/remote-runner-%i.env" in unit
     assert "Description=Journeyman Remote Job Runner (%i)" in unit
     assert "ProtectSystem=full" in unit
-    assert "ReadWritePaths=" not in unit
+    assert "ReadWritePaths=/etc/journeyman/runner-pki" in unit
+
+
+def test_legacy_installer_allows_runner_certificate_renewal():
+    root = Path(__file__).resolve().parents[1]
+    playbook = (root / "deploy" / "ansible" / "install-remote-runner.yml").read_text()
+    assert "ProtectSystem=strict" in playbook
+    assert "{{ journeyman_signal_spool_root }} {{ journeyman_runner_pki_root }}" in playbook
 
 
 def test_builtin_management_separates_logical_runner_name_from_ssh_target():
@@ -328,9 +335,10 @@ def test_remote_runner_environment_sync_has_writable_runner_local_root():
     assert "/opt/journeyman/environments" in playbook
     assert "ProtectSystem=full" in legacy_unit
     assert "ProtectSystem=full" in instance_unit
-    assert "ReadWritePaths=" not in legacy_unit
-    assert "ReadWritePaths=" not in instance_unit
+    assert "ReadWritePaths=/etc/journeyman/runner-pki" in legacy_unit
+    assert "ReadWritePaths=/etc/journeyman/runner-pki" in instance_unit
     assert "ProtectSystem=full" in playbook
+    assert playbook.count("ReadWritePaths={{ journeyman_runner_pki_root }}") == 2    
     assert (
         "ReadWritePaths=/var/lib/journeyman/remote-jobs "
         "/var/spool/journeyman/signals /opt/journeyman/environments"
