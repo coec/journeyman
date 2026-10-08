@@ -28,8 +28,8 @@ pyasn1==0.6.4
 pycparser==2.23
 PyYAML==6.0.3
 requests==2.33.0
-urllib3==2.7.0
+urllib3==2.8.0
 SQLAlchemy==2.0.51
 typing_extensions==4.16.0
-Werkzeug==3.1.8
+Werkzeug==3.1.9
 WTForms==3.2.2
