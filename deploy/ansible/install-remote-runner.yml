@@ -235,7 +235,7 @@
           PrivateTmp=true
           NoNewPrivileges=true
           ProtectSystem=strict
-          ReadWritePaths={{ journeyman_runner_work_root }} {{ journeyman_signal_spool_root }}
+          ReadWritePaths={{ journeyman_runner_work_root }} {{ journeyman_signal_spool_root }} {{ journeyman_runner_pki_root }}
 
           [Install]
           WantedBy=multi-user.target
