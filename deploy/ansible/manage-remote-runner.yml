@@ -800,6 +800,8 @@
               Description=Journeyman Remote Job Runner
               After=network-online.target
               Wants=network-online.target
+              # Certificate renewal installs a replacement identity in /etc.
+              ReadWritePaths={{ journeyman_runner_pki_root }}
 
               [Service]
               Type=simple
@@ -813,7 +815,8 @@
               PrivateTmp=true
               NoNewPrivileges=true
               ProtectSystem=full
-
++              # Certificate renewal installs a replacement identity in /etc.
++              ReadWritePaths={{ journeyman_runner_pki_root }}
               [Install]
               WantedBy=multi-user.target
           when: not (journeyman_runner_named_instance | bool)
@@ -842,6 +845,8 @@
               PrivateTmp=true
               NoNewPrivileges=true
               ProtectSystem=full
+              # Each named runner needs to replace its certificate in /etc.
+              ReadWritePaths={{ journeyman_runner_pki_root }}
 
               [Install]
               WantedBy=multi-user.target
