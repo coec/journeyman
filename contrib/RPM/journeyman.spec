@@ -17,7 +17,6 @@ Requires:       ansible-core
 Requires:       git
 Requires:       python3
 Requires:       python3-pip
-Requires:       python3-virtualenv
 Requires:       openssl
 
 %description
