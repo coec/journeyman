@@ -1580,20 +1580,25 @@ nav.settings-tabs a.active:hover {
 .help-tooltip-content {
   background: #1f2937;
   border-radius: 0.35rem;
+  box-sizing: border-box;
   color: #fff;
   display: none;
   font-size: 0.82rem;
   font-weight: 400;
-  left: 50%;
+  left: 0;
   line-height: 1.35;
-  max-width: min(32rem, 80vw);
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 2rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.75rem;
-  position: absolute;
+  position: fixed;
   text-align: left;
-  top: calc(100% + 0.45rem);
-  transform: translateX(-50%);
-  width: max-content;
-  z-index: 50;
+  top: 0;
+  transform: none;
+  width: min(32rem, calc(100vw - 2rem));
+  z-index: 10000;
 }
 
 .help-tooltip-content span,
@@ -1601,6 +1606,7 @@ nav.settings-tabs a.active:hover {
   display: block;
   margin-top: 0.35rem;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .help-tooltip:hover .help-tooltip-content,

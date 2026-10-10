@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import date
 import re
 
 from app.services.safe_regex import UnsafeRegexError, safe_fullmatch
@@ -16,6 +17,7 @@ from app.models.project_package import (
     PACKAGE_DISPLAY_OPERATIONAL_TARGET,
     PACKAGE_INPUT_BOOLEAN,
     PACKAGE_INPUT_CHOICE,
+    PACKAGE_INPUT_DATE,
     PACKAGE_INPUT_EMAIL_ADDRESSES,
     PACKAGE_INPUT_FILE_PATH,
     PACKAGE_INPUT_URL,
@@ -216,6 +218,9 @@ def _format_display_value(
     ):
         return ", ".join(value)
 
+    if package_input.input_type == PACKAGE_INPUT_CHOICE and isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+
     if (
         package_input.input_type
         == PACKAGE_INPUT_CHOICE
@@ -277,6 +282,24 @@ def _submitted_value(
 
     input_type = package_input.input_type
 
+    if input_type == PACKAGE_INPUT_CHOICE and package_input.get_validation().get("multiple"):
+        raw_values = form.getlist(field_name) if hasattr(form, "getlist") else form.get(field_name, [])
+        if isinstance(raw_values, str):
+            raw_values = [raw_values]
+        values = []
+        allowed = {_choice_key(c["value"]) for c in (allowed_choices if allowed_choices is not None else package_input.get_choices())}
+        for raw in raw_values:
+            if not raw:
+                continue
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError) as exc:
+                raise PackageLaunchError("{} contains an invalid choice.".format(package_input.label)) from exc
+            if _choice_key(value) not in allowed or _choice_key(value) in {_choice_key(v) for v in values}:
+                raise PackageLaunchError("{} contains invalid or duplicate choices.".format(package_input.label))
+            values.append(value)
+        return values or None
+
     if input_type == PACKAGE_INPUT_BOOLEAN:
         return (
             form.get(field_name)
@@ -305,6 +328,13 @@ def _submitted_value(
     if not raw_value:
         return None
 
+    if input_type == PACKAGE_INPUT_DATE:
+        try:
+            if date.fromisoformat(raw_value).isoformat() != raw_value:
+                raise ValueError()
+        except ValueError as exc:
+            raise PackageLaunchError("{} must be a valid YYYY-MM-DD date.".format(package_input.label)) from exc
+        return raw_value
     if input_type in {PACKAGE_INPUT_TEXT, PACKAGE_INPUT_PASSWORD}:
         return raw_value
     if input_type == PACKAGE_INPUT_URL:
@@ -363,6 +393,16 @@ def _submitted_value(
     )
 
 
+def _date_output_value(package_input, value):
+    """Format an already-validated ISO date for execution, not form display."""
+    if package_input.input_type != PACKAGE_INPUT_DATE or value is None:
+        return value
+    output_format = package_input.get_validation().get("output_format")
+    if not output_format:
+        return value
+    return date.fromisoformat(value).strftime(output_format)
+
+
 def _validate_value(
     package_input,
     value,
@@ -375,7 +415,17 @@ def _validate_value(
         package_input.get_validation()
     )
 
-    if package_input.input_type in {
+    if package_input.input_type == PACKAGE_INPUT_DATE:
+        for key, comparison in (("minimum_date", lambda v, b: v < b), ("maximum_date", lambda v, b: v > b)):
+            bound = validation.get(key)
+            if bound and comparison(value, bound):
+                errors.append("{} is outside the permitted date range.".format(package_input.label))
+    elif package_input.input_type == PACKAGE_INPUT_CHOICE and validation.get("multiple"):
+        for key, comparison in (("minimum_selections", lambda n, b: n < b), ("maximum_selections", lambda n, b: n > b)):
+            bound = validation.get(key)
+            if bound is not None and comparison(len(value), bound):
+                errors.append("{} does not meet the selection count limit.".format(package_input.label))
+    elif package_input.input_type in {
         PACKAGE_INPUT_TEXT,
         PACKAGE_INPUT_PASSWORD,
     }:
@@ -588,15 +638,18 @@ def _field_for_template(
     )
 
     selected_choice_key = ""
+    selected_choice_keys = []
+    multiple = bool(package_input.get_validation().get("multiple"))
 
     if (
         package_input.input_type
         == PACKAGE_INPUT_CHOICE
         and value is not None
     ):
-        selected_choice_key = (
-            _choice_key(value)
-        )
+        if multiple and isinstance(value, list):
+            selected_choice_keys = [_choice_key(v) for v in value]
+        else:
+            selected_choice_key = _choice_key(value)
 
     template_value = ""
 
@@ -607,6 +660,7 @@ def _field_for_template(
         not in {
             PACKAGE_INPUT_BOOLEAN,
             PACKAGE_INPUT_CHOICE,
+    PACKAGE_INPUT_DATE,
         }
     ):
         if (
@@ -649,9 +703,11 @@ def _field_for_template(
         "value": template_value,
         "checked": bool(value),
         "choices": choices,
-        "selected_choice_key": (
-            selected_choice_key
-        ),
+        "selected_choice_key": selected_choice_key,
+        "selected_choice_keys": selected_choice_keys,
+        "multiple": multiple,
+        "minimum_date": package_input.get_validation().get("minimum_date", ""),
+        "maximum_date": package_input.get_validation().get("maximum_date", ""),
         "dynamic_host_input": (
             str(dynamic_spec.get("host_input") or "").strip()
             if dynamic_spec
@@ -853,7 +909,7 @@ def prepare_package_launch(
                 ):
                     execution_vars[
                         package_input.variable_name
-                    ] = value
+                    ] = _date_output_value(package_input, value)
 
                 elif (
                     package_input.binding_type
@@ -974,7 +1030,9 @@ def package_default_answer_form(package):
             if field.get("checked"):
                 form[name] = "true"
         elif input_type == PACKAGE_INPUT_CHOICE:
-            if field.get("selected_choice_key"):
+            if field.get("multiple"):
+                form[name] = list(field.get("selected_choice_keys", []))
+            elif field.get("selected_choice_key"):
                 form[name] = field["selected_choice_key"]
         elif field.get("value") not in (None, ""):
             form[name] = str(field["value"])

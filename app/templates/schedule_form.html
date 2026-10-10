@@ -57,11 +57,11 @@
         {% if field.input_type == 'boolean' %}
         <label class="checkbox-label"><input type="checkbox" name="{{ field.html_name }}" value="true" {% if field.checked %}checked{% endif %}> {{ field.label }}</label>
         {% elif field.input_type == 'choice' %}
-        <label>{{ field.label }}<select name="{{ field.html_name }}" {% if field.required %}required{% endif %}><option value="">Select a value</option>{% for choice in field.choices %}<option value="{{ choice.key }}" {% if choice.key == field.selected_choice_key %}selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select></label>
+        <label>{{ field.label }}<select name="{{ field.html_name }}" {% if field.multiple %}multiple size="6"{% endif %} {% if field.required %}required{% endif %}>{% if not field.multiple %}<option value="">Select a value</option>{% endif %}{% for choice in field.choices %}<option value="{{ choice.key }}" {% if choice.key == field.selected_choice_key or choice.key in field.selected_choice_keys %}selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select></label>
         {% elif field.input_type == 'email_addresses' %}
         <label>{{ field.label }}<textarea name="{{ field.html_name }}" rows="4" {% if field.required %}required{% endif %}>{{ field.value }}</textarea></label>
         {% else %}
-        <label>{{ field.label }}<input type="{% if field.input_type == 'password' %}password{% elif field.input_type == 'integer' %}number{% elif field.input_type == 'url' %}url{% else %}text{% endif %}" name="{{ field.html_name }}" value="{{ field.value }}" autocomplete="{% if field.is_secret %}new-password{% else %}off{% endif %}" {% if field.required and not (schedule and field.is_secret) %}required{% endif %}></label>
+        <label>{{ field.label }}<input type="{% if field.input_type == 'password' %}password{% elif field.input_type == 'integer' %}number{% elif field.input_type == 'url' %}url{% elif field.input_type == 'date' %}date{% else %}text{% endif %}" name="{{ field.html_name }}" value="{{ field.value }}" autocomplete="{% if field.is_secret %}new-password{% else %}off{% endif %}" {% if field.required and not (schedule and field.is_secret) %}required{% endif %}></label>
         {% endif %}
         {% if field.help_text %}<small class="field-help">{{ field.help_text }}</small>{% endif %}
       </div>

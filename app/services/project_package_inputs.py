@@ -1,4 +1,5 @@
 import json
+from datetime import date
 import re
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ from app.models.project_package import (
     PACKAGE_DISPLAY_OPERATIONAL_TARGET,
     PACKAGE_INPUT_BOOLEAN,
     PACKAGE_INPUT_CHOICE,
+    PACKAGE_INPUT_DATE,
     PACKAGE_INPUT_EMAIL_ADDRESSES,
     PACKAGE_INPUT_FILE_PATH,
     PACKAGE_INPUT_URL,
@@ -53,8 +55,9 @@ VALIDATION_KEYS_BY_TYPE = {
     },
     PACKAGE_INPUT_BOOLEAN: set(),
     PACKAGE_INPUT_CHOICE: {
-        "choices_from_hostvar",
+        "choices_from_hostvar", "multiple", "minimum_selections", "maximum_selections",
     },
+    PACKAGE_INPUT_DATE: {"minimum_date", "maximum_date", "output_format"},
 }
 
 SCALAR_TYPES = (
@@ -534,16 +537,23 @@ def _validate_default_value(
                 .format(field_label)
             ]
 
+    elif input_type == PACKAGE_INPUT_DATE:
+        try:
+            if not isinstance(default_value, str) or date.fromisoformat(default_value).isoformat() != default_value:
+                raise ValueError()
+        except ValueError:
+            return ["{} must be an ISO date (YYYY-MM-DD).".format(field_label)]
+
     elif input_type == PACKAGE_INPUT_CHOICE:
         allowed_values = {
             _choice_key(choice["value"])
             for choice in choices
         }
 
-        if (
-            _choice_key(default_value)
-            not in allowed_values
-        ):
+        if isinstance(default_value, list):
+            if len({_choice_key(v) for v in default_value}) != len(default_value) or any(_choice_key(v) not in allowed_values for v in default_value):
+                return ["{} contains invalid or duplicate choices.".format(field_label)]
+        elif _choice_key(default_value) not in allowed_values:
             return [
                 "{} must match one of the "
                 "configured choices."
@@ -699,7 +709,45 @@ def _validate_validation_rules(
                     "Input {} validation pattern is unsafe: {}."
                     .format(row_number, exc)
                 )
-
+    if input_type == PACKAGE_INPUT_CHOICE:
+        if "multiple" in validation and not isinstance(validation["multiple"], bool):
+            errors.append("Input {} multiple must be a boolean.".format(row_number))
+        for key in ("minimum_selections", "maximum_selections"):
+            if key in validation and (type(validation[key]) is not int or validation[key] < 0):
+                errors.append("Input {} {} must be a non-negative integer.".format(row_number, key))
+        if (type(validation.get("minimum_selections")) is int and
+            type(validation.get("maximum_selections")) is int and
+            validation["minimum_selections"] > validation["maximum_selections"]):
+            errors.append("Input {} minimum_selections exceeds maximum_selections.".format(row_number))
+        if not validation.get("multiple") and any(k in validation for k in ("minimum_selections", "maximum_selections")):
+            errors.append("Input {} selection limits require multiple: true.".format(row_number))
+    if input_type == PACKAGE_INPUT_DATE:
+        if "output_format" in validation:
+            fmt = validation["output_format"]
+            if not isinstance(fmt, str) or not fmt or len(fmt) > 128:
+                errors.append("Input {} output_format must be a non-empty string (maximum 128 characters).".format(row_number))
+            else:
+                # Deliberately limited, portable strftime subset. Reject unknown
+                # directives instead of allowing platform-dependent behaviour.
+                allowed = {"Y", "y", "m", "d", "b", "B", "a", "A", "j", "%"}
+                index = 0
+                while index < len(fmt):
+                    if fmt[index] == "%":
+                        index += 1
+                        if index >= len(fmt) or fmt[index] not in allowed:
+                            errors.append("Input {} output_format contains an unsupported strftime directive.".format(row_number))
+                            break
+                    index += 1
+        for key in ("minimum_date", "maximum_date"):
+            if key in validation:
+                try:
+                    value = validation[key]
+                    if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+                        raise ValueError()
+                except ValueError:
+                    errors.append("Input {} {} must be YYYY-MM-DD.".format(row_number, key))
+        if all(isinstance(validation.get(k), str) for k in ("minimum_date", "maximum_date")) and validation["minimum_date"] > validation["maximum_date"]:
+            errors.append("Input {} minimum_date exceeds maximum_date.".format(row_number))
     dynamic_choices = validation.get("choices_from_hostvar")
     if dynamic_choices is not None:
         if not isinstance(dynamic_choices, dict):
@@ -1188,6 +1236,10 @@ def validate_package_input_rows(
                 )
             )
 
+        if input_type == PACKAGE_INPUT_CHOICE and isinstance(default_value, list) and not validation.get("multiple"):
+            errors.append("{} list default requires multiple: true.".format(prefix))
+        if input_type == PACKAGE_INPUT_CHOICE and validation.get("multiple") and default_value is not None and not isinstance(default_value, list):
+            errors.append("{} multi-select default must be a YAML list.".format(prefix))
         dynamic_choices = validation.get("choices_from_hostvar")
         if input_type == PACKAGE_INPUT_CHOICE:
             if not choices and not isinstance(dynamic_choices, dict):

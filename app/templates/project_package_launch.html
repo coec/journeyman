@@ -87,6 +87,7 @@ Dispatch {{ package.name }} · Journeyman
 
             <select
               name="{{ field.html_name }}"
+              {% if field.multiple %}multiple size="{{ [field.choices | length, 8] | min }}"{% endif %}
               {% if field.dynamic_host_input %}
                 data-dynamic-host-input="{{ field.dynamic_host_input }}"
                 data-dynamic-choices='{{ field.dynamic_choices_by_host | tojson }}'
@@ -95,14 +96,12 @@ Dispatch {{ package.name }} · Journeyman
                 required
               {% endif %}
             >
-              <option value="">
-                Select a value
-              </option>
+              {% if not field.multiple %}<option value="">Select a value</option>{% endif %}
 
               {% for choice in field.choices %}
                 <option
                   value="{{ choice.key }}"
-                  {% if choice.key == field.selected_choice_key %}
+                  {% if choice.key == field.selected_choice_key or choice.key in field.selected_choice_keys %}
                     selected
                   {% endif %}
                 >
@@ -112,6 +111,8 @@ Dispatch {{ package.name }} · Journeyman
             </select>
           </label>
 
+        {% elif field.input_type == "date" %}
+          <label>{{ field.label }}<input type="date" name="{{ field.html_name }}" value="{{ field.value }}" {% if field.minimum_date %}min="{{ field.minimum_date }}"{% endif %} {% if field.maximum_date %}max="{{ field.maximum_date }}"{% endif %} {% if field.required %}required{% endif %}></label>
         {% elif field.input_type == "email_addresses" %}
           <label>
             {{ field.label }}
@@ -219,6 +220,12 @@ Dispatch {{ package.name }} · Journeyman
 
     if (inputType === "boolean") {
       return control.checked;
+    }
+
+    if (inputType === "choice" && control.multiple) {
+      return Array.from(control.selectedOptions).map(function (option) {
+        try { return JSON.parse(option.value); } catch (error) { return null; }
+      });
     }
 
     if (!control.value) {

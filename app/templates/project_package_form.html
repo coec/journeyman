@@ -437,7 +437,7 @@
                   ("text", "Text"),
                   ("integer", "Integer"),
                   ("boolean", "Boolean"),
-                  ("choice", "Choice"),
+                  ("choice", "Choice"), ("date", "Date"),
                   ("password", "Password / secret"),
                   ("email_addresses", "Email address(es)"), ("url", "URL"), ("file_path", "File path")
                 ) %}
@@ -621,22 +621,28 @@
                 >
                   ?
                   <span class="help-tooltip-content" role="tooltip">
-                    <strong>Validation examples</strong>
-                    <span><b>Text:</b> minimum_length, maximum_length and pattern.</span>
-                    <span><b>Integer:</b> minimum and maximum.</span>
-                    <span><b>Choice:</b> static Choices, or choices_from_hostvar for a dependent inventory-host field.</span>
-                    <span><b>Email address(es):</b> every supplied address is validated automatically.</span>
+                    <strong>Validation options</strong>
+                    <span><b>Text:</b> minimum_length, maximum_length, pattern.</span>
+                    <span><b>Integer:</b> minimum, maximum.</span>
+                    <span><b>Date:</b> minimum_date, maximum_date (YYYY-MM-DD), output_format (Python strftime). Default output is YYYY-MM-DD; the playbook or script receives a formatted string.</span>
+                    <span><b>Choice:</b> multiple (true/false), minimum_selections, maximum_selections; static choices or choices_from_hostvar for inventory-derived choices.</span>
+                    <span><b>Email address(es):</b> supplied addresses are validated automatically.</span>
                     <code>minimum_length: 3
 maximum_length: 40
 pattern: '^[A-Za-z0-9._-]+$'</code>
                     <code>minimum: 1
 maximum: 300</code>
+                    <code>minimum_date: '2026-01-01'
+maximum_date: '2030-12-31'
+output_format: '%d/%m/%Y'</code>
+                    <code>multiple: true
+minimum_selections: 1
+maximum_selections: 5</code>
                     <code>choices_from_hostvar:
   host_input: device
   path: zabbix.network_interfaces
   value_key: name
   label_keys: [name, alias]</code>
-                  </span>
                 </span>
               </span>
 
@@ -646,11 +652,6 @@ maximum: 300</code>
                 spellcheck="false"
                 placeholder="minimum: 1&#10;maximum: 300"
               >{{ input.validation_yaml }}</textarea>
-
-              <small>
-                Text: minimum_length, maximum_length, pattern.
-                Integer: minimum, maximum.
-              </small>
             </label>
 
             <label>
@@ -666,20 +667,25 @@ maximum: 300</code>
                     <strong>Condition options</strong>
                     <span><b>visible_when:</b> show this input only when its condition matches.</span>
                     <span><b>required_when:</b> require this input only when its condition matches.</span>
-                    <span>A normal YAML mapping is an implicit <b>AND</b>. A YAML list used as a variable value means that variable may equal any value in the list.</span>
+                    <span>A YAML mapping is an implicit <b>AND</b>. A YAML list used as a variable value matches any listed value.</span>
                     <span><b>all:</b> every nested condition must match.</span>
                     <span><b>any:</b> at least one nested condition must match.</span>
                     <span><b>not:</b> the nested condition must not match.</span>
                     <span>Conditions may be nested and may reference only inputs appearing above this one.</span>
                     <code>required_when:
   any:
-    - desc: true
-    - var_action: shutnoshut
+    - pb_action: create
+    - pb_action: edit
 
 visible_when:
-  not:
-    var_action: shutnoshut</code>
-                  </span>
+  any:
+    - pb_action: create
+    - pb_action: edit</code>
+                    <code>visible_when:
+  all:
+    - pb_action: create
+    - not:
+        allow_login_shell: false</code>
                 </span>
               </span>
 
@@ -689,11 +695,6 @@ visible_when:
                 spellcheck="false"
                 placeholder="required_when:&#10;  any:&#10;    - desc: true&#10;    - var_action: shutnoshut"
               >{{ input.conditions_yaml }}</textarea>
-
-              <small>
-                Supports visible_when and required_when. A
-                condition may reference an earlier input.
-              </small>
             </label>
           </div>
         </section>
@@ -855,6 +856,7 @@ visible_when:
           <option value="integer">Integer</option>
           <option value="boolean">Boolean</option>
           <option value="choice">Choice</option>
+          <option value="date">Date</option>
           <option value="password">
             Password / secret
           </option>
@@ -979,18 +981,28 @@ visible_when:
           <span class="help-tooltip" tabindex="0" aria-label="Validation help">
             ?
             <span class="help-tooltip-content" role="tooltip">
-              <strong>Validation examples</strong>
-              <span><b>Text:</b> minimum_length, maximum_length and pattern.</span>
-              <span><b>Integer:</b> minimum and maximum.</span>
-              <span><b>Choice:</b> static Choices, or choices_from_hostvar for a dependent inventory-host field.</span>
-              <code>minimum: 1
+              <strong>Validation options</strong>
+                    <span><b>Text:</b> minimum_length, maximum_length, pattern.</span>
+                    <span><b>Integer:</b> minimum, maximum.</span>
+                    <span><b>Date:</b> minimum_date, maximum_date (YYYY-MM-DD), output_format (Python strftime). Default output is YYYY-MM-DD; the playbook or script receives a formatted string.</span>
+                    <span><b>Choice:</b> multiple (true/false), minimum_selections, maximum_selections; static choices or choices_from_hostvar for inventory-derived choices.</span>
+                    <span><b>Email address(es):</b> supplied addresses are validated automatically.</span>
+                    <code>minimum_length: 3
+maximum_length: 40
+pattern: '^[A-Za-z0-9._-]+$'</code>
+                    <code>minimum: 1
 maximum: 300</code>
-              <code>choices_from_hostvar:
+                    <code>minimum_date: '2026-01-01'
+maximum_date: '2030-12-31'
+output_format: '%d/%m/%Y'</code>
+                    <code>multiple: true
+minimum_selections: 1
+maximum_selections: 5</code>
+                    <code>choices_from_hostvar:
   host_input: device
   path: zabbix.network_interfaces
   value_key: name
   label_keys: [name, alias]</code>
-            </span>
           </span>
         </span>
         <textarea
@@ -1008,20 +1020,27 @@ maximum: 300</code>
             ?
             <span class="help-tooltip-content" role="tooltip">
               <strong>Condition options</strong>
-              <span><b>visible_when:</b> visible when its condition matches.</span>
-              <span><b>required_when:</b> required when its condition matches.</span>
-              <span>A normal mapping means <b>AND</b>; a list used as a variable value means any listed value may match.</span>
-              <span><b>all:</b> all nested conditions must match. <b>any:</b> one or more must match. <b>not:</b> the nested condition must not match.</span>
-              <span>Conditions may be nested and may reference only earlier inputs.</span>
-              <code>required_when:
+                    <span><b>visible_when:</b> show this input only when its condition matches.</span>
+                    <span><b>required_when:</b> require this input only when its condition matches.</span>
+                    <span>A YAML mapping is an implicit <b>AND</b>. A YAML list used as a variable value matches any listed value.</span>
+                    <span><b>all:</b> every nested condition must match.</span>
+                    <span><b>any:</b> at least one nested condition must match.</span>
+                    <span><b>not:</b> the nested condition must not match.</span>
+                    <span>Conditions may be nested and may reference only inputs appearing above this one.</span>
+                    <code>required_when:
   any:
-    - desc: true
-    - var_action: shutnoshut
+    - pb_action: create
+    - pb_action: edit
 
 visible_when:
-  not:
-    var_action: shutnoshut</code>
-            </span>
+  any:
+    - pb_action: create
+    - pb_action: edit</code>
+                    <code>visible_when:
+  all:
+    - pb_action: create
+    - not:
+        allow_login_shell: false</code>
           </span>
         </span>
         <textarea
@@ -1449,6 +1468,60 @@ visible_when:
   }, true);
 
   updatePackageInputNumbers();
+
+  function positionHelpTooltip(trigger) {
+    const tooltip = trigger.querySelector(".help-tooltip-content");
+    if (!tooltip) return;
+
+    const margin = 16;
+    const gap = 8;
+    const rect = trigger.getBoundingClientRect();
+
+    // Measure the actual tooltip dimensions.
+    const width = tooltip.offsetWidth;
+    const height = tooltip.offsetHeight;
+
+    const left = Math.max(
+      margin,
+      Math.min(
+        rect.left,
+        window.innerWidth - width - margin
+      )
+    );
+
+    const below = window.innerHeight - rect.bottom - margin;
+    const above = rect.top - margin;
+
+    let top;
+
+    if (below >= height || below >= above) {
+      top = rect.bottom + gap;
+    } else {
+      top = rect.top - height - gap;
+    }
+
+    top = Math.max(
+      margin,
+      Math.min(top, window.innerHeight - height - margin)
+    );
+
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  }
+
+document.addEventListener("mouseover", (event) => {
+  const trigger = event.target.closest(".help-tooltip");
+  if (trigger) {
+    positionHelpTooltip(trigger);
+  }
+});
+
+document.addEventListener("focusin", (event) => {
+  const trigger = event.target.closest(".help-tooltip");
+  if (trigger) {
+    positionHelpTooltip(trigger);
+  }
+});
 </script>
 
 {% endblock %}
