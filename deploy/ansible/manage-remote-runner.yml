@@ -132,29 +132,17 @@
     journeyman_runner_user: journeyman
     journeyman_runner_group: journeyman
     journeyman_runner_home: /var/lib/journeyman
-    # A logical name different from the SSH host selects the development
-    # multi-instance layout. Existing one-runner-per-host installs keep the
-    # legacy paths and service name for compatibility.
-    journeyman_runner_named_instance: >-
-      {{ (journeyman_runner_name | string | trim) != (journeyman_runner_host | string | trim) }}
-    journeyman_runner_work_root: >-
-      {{ '/var/lib/journeyman/remote-jobs-' ~ journeyman_runner_name if journeyman_runner_named_instance | bool else '/var/lib/journeyman/remote-jobs' }}
-    journeyman_signal_spool_root: >-
-      {{ '/var/spool/journeyman/signals-' ~ journeyman_runner_name if journeyman_runner_named_instance | bool else '/var/spool/journeyman/signals' }}
-    journeyman_runner_environment_root: >-
-      {{ '/opt/journeyman/environments-' ~ journeyman_runner_name if journeyman_runner_named_instance | bool else '/opt/journeyman/environments' }}
-    # SNMP listener processes are host-scoped, but each logical runner reports
-    # the fingerprint of only the Sources assigned to that runner.
-    journeyman_snmp_sources_file: >-
-      {{ '/etc/journeyman/snmp-sources-' ~ journeyman_runner_name ~ '.json' if journeyman_runner_named_instance | bool else '/etc/journeyman/snmp-sources.json' }}
+    # One enrolled runner per physical host, independent of logical runner name.
+    journeyman_runner_work_root: /var/lib/journeyman/remote-jobs
+    journeyman_signal_spool_root: /var/spool/journeyman/signals
+    journeyman_runner_environment_root: /opt/journeyman/environments
+    journeyman_snmp_sources_file: /etc/journeyman/snmp-sources.json
     journeyman_runner_install_root: /opt/journeyman
     journeyman_runner_config_root: /etc/journeyman
-    journeyman_runner_config: >-
-      {{ '/etc/journeyman/remote-runner-' ~ journeyman_runner_name ~ '.env' if journeyman_runner_named_instance | bool else '/etc/journeyman/remote-runner.env' }}
-    journeyman_runner_service_name: >-
-      {{ 'journeyman-remote-runner@' ~ journeyman_runner_name if journeyman_runner_named_instance | bool else 'journeyman-remote-runner' }}
+    journeyman_runner_config: /etc/journeyman/remote-runner.env
+    journeyman_runner_service_name: journeyman-remote-runner
     journeyman_runner_python_package: python3.14
-    journeyman_runner_venv: /opt/journeyman/venv314
+    journeyman_runner_venv: /opt/journeyman/venv
     journeyman_runner_python: /usr/bin/python3.14
     journeyman_runner_source: /opt/journeyman/bin/journeyman-remote-runner
     journeyman_signal_spool_source: /opt/journeyman/bin/journeyman-signal-spool
@@ -198,10 +186,29 @@
       when: journeyman_manage_action == 'install'
       no_log: true
 
-    # A Runner can transition between the historical one-runner-per-host
-    # layout and a named systemd instance when its logical name changes.
-    # Reconcile by UUID, not hostname or service name: a physical host may
-    # legitimately run other named Journeyman runners at the same time.
+    # Validate physical-host identity before installing any software or issuing
+    # recovery tokens. Legacy named registrations are migrated by UUID.
+    - name: Install remote runner layout migration helper
+      ansible.builtin.copy:
+        src: /opt/journeyman/scripts/journeyman-runner-layout
+        dest: /usr/local/sbin/journeyman-runner-layout
+        owner: root
+        group: root
+        mode: '0755'
+      delegate_to: "{{ journeyman_runner_host }}"
+      when: journeyman_manage_action in ['install', 'update']
+
+    - name: Validate remote runner registration layout before changing anything
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['/usr/local/sbin/journeyman-runner-layout', '--action', journeyman_manage_action]
+            + (['--expected-uuid', journeyman_expected_runner_uuid] if journeyman_manage_action == 'update' else [])
+          }}
+      delegate_to: "{{ journeyman_runner_host }}"
+      changed_when: false
+      when: journeyman_manage_action in ['install', 'update']
+
     - name: Find existing remote runner registration files before update
       ansible.builtin.find:
         paths: /etc/journeyman
@@ -315,6 +322,20 @@
         - journeyman_manage_action == 'update'
         - item.rc == 0
         - (item.stdout | default('0', true) | trim | int) > 0
+
+    - name: Migrate enrolled remote runner to canonical layout
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/journeyman-runner-layout
+          - --action
+          - update
+          - --expected-uuid
+          - "{{ journeyman_expected_runner_uuid }}"
+          - --apply
+      delegate_to: "{{ journeyman_runner_host }}"
+      register: journeyman_layout_migration
+      changed_when: "'Migrated ' in journeyman_layout_migration.stdout"
+      when: journeyman_manage_action == 'update'
 
     # Check the registration file before Update changes any software on the
     # remote host. If it has been lost, prepare a one-time recovery token on
@@ -582,6 +603,12 @@
             }}
           no_log: "{{ journeyman_pip_proxy_required | default(false) | bool }}"
 
+        - name: Verify runner Python environment before switching service
+          ansible.builtin.command:
+            argv: ["{{ journeyman_runner_venv }}/bin/python3", -c, "import cryptography"]
+          become_user: "{{ journeyman_runner_user }}"
+          changed_when: false
+
         - name: Install Journeyman remote runner executable
           ansible.builtin.copy:
             src: "{{ journeyman_runner_source }}"
@@ -589,13 +616,6 @@
             owner: root
             group: root
             mode: '0755'
-
-        - name: Pin remote runner shebang to configured virtual environment
-          ansible.builtin.lineinfile:
-            path: /opt/journeyman/bin/journeyman-remote-runner
-            regexp: '^#!.*python3?$'
-            line: "#!{{ journeyman_runner_venv }}/bin/python3"
-            insertafter: BOF
 
         - name: Install Journeyman Signal spool helper
           ansible.builtin.copy:
@@ -789,68 +809,13 @@
             state: restarted
           loop: "{{ journeyman_host_snmp_sources }}"
 
-        - name: Install Journeyman remote runner systemd unit
+        - name: Install canonical remote runner systemd unit
           ansible.builtin.copy:
+            src: /opt/journeyman/deploy/systemd/journeyman-remote-runner.service
             dest: /etc/systemd/system/journeyman-remote-runner.service
             owner: root
             group: root
             mode: '0644'
-            content: |
-              [Unit]
-              Description=Journeyman Remote Job Runner
-              After=network-online.target
-              Wants=network-online.target
-              # Certificate renewal installs a replacement identity in /etc.
-              ReadWritePaths={{ journeyman_runner_pki_root }}
-
-              [Service]
-              Type=simple
-              User={{ journeyman_runner_user }}
-              Group={{ journeyman_runner_group }}
-              EnvironmentFile=/etc/journeyman/remote-runner.env
-              Environment=PATH={{ journeyman_runner_venv }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-              ExecStart={{ journeyman_runner_venv }}/bin/python3 /opt/journeyman/bin/journeyman-remote-runner
-              Restart=on-failure
-              RestartSec=5
-              PrivateTmp=true
-              NoNewPrivileges=true
-              ProtectSystem=full
-+              # Certificate renewal installs a replacement identity in /etc.
-+              ReadWritePaths={{ journeyman_runner_pki_root }}
-              [Install]
-              WantedBy=multi-user.target
-          when: not (journeyman_runner_named_instance | bool)
-
-        - name: Install Journeyman remote runner instance systemd template
-          ansible.builtin.copy:
-            dest: /etc/systemd/system/journeyman-remote-runner@.service
-            owner: root
-            group: root
-            mode: '0644'
-            content: |
-              [Unit]
-              Description=Journeyman Remote Job Runner (%i)
-              After=network-online.target
-              Wants=network-online.target
-
-              [Service]
-              Type=simple
-              User={{ journeyman_runner_user }}
-              Group={{ journeyman_runner_group }}
-              EnvironmentFile=/etc/journeyman/remote-runner-%i.env
-              Environment=PATH={{ journeyman_runner_venv }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-              ExecStart={{ journeyman_runner_venv }}/bin/python3 /opt/journeyman/bin/journeyman-remote-runner
-              Restart=on-failure
-              RestartSec=5
-              PrivateTmp=true
-              NoNewPrivileges=true
-              ProtectSystem=full
-              # Each named runner needs to replace its certificate in /etc.
-              ReadWritePaths={{ journeyman_runner_pki_root }}
-
-              [Install]
-              WantedBy=multi-user.target
-          when: journeyman_runner_named_instance | bool
 
         - name: Check for existing runner registration during install
           ansible.builtin.stat:
@@ -1004,6 +969,17 @@
           delay: 2
           until: journeyman_runner_service_status.rc == 0
 
+        - name: Remove unsupported remote runner instance unit template
+          ansible.builtin.file:
+            path: /etc/systemd/system/journeyman-remote-runner@.service
+            state: absent
+          when: journeyman_manage_action == 'update'
+
+        - name: Reload systemd after removing obsolete instance template
+          ansible.builtin.systemd_service:
+            daemon_reload: true
+          when: journeyman_manage_action == 'update'
+
         - name: Remove obsolete runner registration after successful layout transition
           ansible.builtin.file:
             path: "{{ item.path }}"
@@ -1104,25 +1080,12 @@
             - journeyman_runner_mainpid.rc == 0
             - (journeyman_runner_mainpid.stdout | default('0', true) | trim | int) > 0
 
-        - name: Remove named runner instance registration and work data
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "{{ journeyman_runner_config }}"
-            - "{{ journeyman_runner_work_root }}"
-            - "{{ journeyman_signal_spool_root }}"
-            - "{{ journeyman_snmp_sources_file }}"
-            - "{{ journeyman_runner_environment_root }}"
-          when: journeyman_runner_named_instance | bool
-
         - name: Find Journeyman SNMP receiver units for removal
           ansible.builtin.find:
             paths: /etc/systemd/system
             patterns: 'journeyman-snmptrapd-*.service'
             file_type: file
           register: journeyman_remove_snmp_units
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Stop and disable Journeyman SNMP receivers
           ansible.builtin.systemd_service:
@@ -1131,14 +1094,12 @@
             enabled: false
           loop: "{{ journeyman_remove_snmp_units.files }}"
           failed_when: false
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Remove Journeyman SNMP receiver units
           ansible.builtin.file:
             path: "{{ item.path }}"
             state: absent
           loop: "{{ journeyman_remove_snmp_units.files }}"
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Remove full-host Journeyman runner systemd units
           ansible.builtin.file:
@@ -1147,7 +1108,6 @@
           loop:
             - /etc/systemd/system/journeyman-remote-runner.service
             - /etc/systemd/system/journeyman-remote-runner@.service
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Reload systemd after runner unit removal
           ansible.builtin.systemd_service:
@@ -1161,7 +1121,6 @@
             - "{{ journeyman_runner_install_root }}"
             - "{{ journeyman_runner_config_root }}"
             - "{{ journeyman_runner_home }}"
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Remove Journeyman runner service account
           ansible.builtin.user:
@@ -1169,14 +1128,12 @@
             state: absent
             remove: true
             force: true
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Remove Journeyman runner service group
           ansible.builtin.group:
             name: "{{ journeyman_runner_group }}"
             state: absent
           failed_when: false
-          when: not (journeyman_runner_named_instance | bool)
 
         - name: Reload systemd after runner software removal
           ansible.builtin.systemd_service:

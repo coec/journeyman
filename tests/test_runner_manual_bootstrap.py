@@ -28,9 +28,9 @@ def test_resource_admin_can_generate_manual_runner_bootstrap(app, client):
     assert "ReadWritePaths=" in body
     assert "/etc/journeyman/runner-pki" in body
     assert "umask 027" in body
-    assert "chown -R root:journeyman /opt/journeyman/venv314" in body
-    assert "chmod -R g+rX,o-rwx /opt/journeyman/venv314" in body
-    assert "runuser -u journeyman -- /opt/journeyman/venv314/bin/python" in body
+    assert "chown -R root:journeyman /opt/journeyman/venv" in body
+    assert "chmod -R g+rX,o-rwx /opt/journeyman/venv" in body
+    assert "runuser -u journeyman -- /opt/journeyman/venv/bin/python" in body
     assert "systemctl is-active --quiet journeyman-remote-runner" in body
     assert "Journeyman remote runner failed to become active." in body
 

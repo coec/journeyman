@@ -11,7 +11,7 @@
     journeyman_runner_install_root: /opt/journeyman
     journeyman_runner_config_root: /etc/journeyman
     journeyman_runner_config: /etc/journeyman/remote-runner.env
-    journeyman_runner_venv: /opt/journeyman/venv314
+    journeyman_runner_venv: /opt/journeyman/venv
     journeyman_runner_executable: /opt/journeyman/bin/journeyman-remote-runner
 
     # true: remove the Runner row from the control-plane database. Journeyman

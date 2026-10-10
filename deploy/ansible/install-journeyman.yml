@@ -49,6 +49,15 @@
           journeyman_fqdn, journeyman_database_password,
           journeyman_tls_fullchain_src and journeyman_tls_key_src are required.
 
+    - name: Require the canonical application Python environment
+      ansible.builtin.assert:
+        that:
+          - journeyman_root == '/opt/journeyman'
+          - journeyman_venv == '/opt/journeyman/venv'
+        fail_msg: >-
+          Journeyman 2.0 uses /opt/journeyman/venv exclusively. Remove custom
+          journeyman_root/journeyman_venv overrides before deploying.
+
     - name: Validate fallback administrator lifetime
       ansible.builtin.assert:
         that:
@@ -172,18 +181,6 @@
       loop: "{{ journeyman_bin_helpers.files }}"
       loop_control:
         label: "{{ item.path }}"
-
-    - name: Pin main-server helper shebangs to configured virtual environment
-      ansible.builtin.lineinfile:
-        path: "{{ journeyman_root }}/bin/{{ item }}"
-        regexp: '^#!.*python3?$'
-        line: "#!{{ journeyman_venv }}/bin/python3"
-        insertafter: BOF
-      loop:
-        - journeyman-environment-builder
-        - journeyman-runner
-        - journeyman-runner-admin
-        - journeyman-service-coordinator
 
     - name: Ensure privileged web-settings helper is executable
       ansible.builtin.file:
@@ -724,6 +721,15 @@
       register: journeyman_controller_identity
       changed_when: "'created' in (journeyman_controller_identity.stdout | lower)"
 
+    - name: Validate canonical application runtime before changing services
+      ansible.builtin.command:
+        argv:
+          - /opt/journeyman/venv/bin/python3
+          - -c
+          - "import flask, sqlalchemy, cryptography"
+      become_user: "{{ journeyman_user }}"
+      changed_when: false
+
     - name: Install Journeyman systemd units
       ansible.builtin.copy:
         src: "{{ journeyman_root }}/deploy/systemd/{{ item }}"
@@ -738,19 +744,6 @@
         - journeyman-runner.service
         - journeyman-scheduler.service
         - journeyman-environment-builder.service
-      notify:
-        - Reload systemd
-        - Restart Journeyman services
-
-    - name: Configure Journeyman service virtual environment
-      ansible.builtin.lineinfile:
-        path: "/etc/systemd/system/{{ item }}"
-        regexp: '^Environment=JOURNEYMAN_VENV='
-        line: "Environment=JOURNEYMAN_VENV={{ journeyman_venv }}"
-        insertafter: '^Environment=JOURNEYMAN_CONFIG='
-      loop:
-        - journeyman-web.service
-        - journeyman-scheduler.service
       notify:
         - Reload systemd
         - Restart Journeyman services

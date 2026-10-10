@@ -27,24 +27,20 @@ notification settings.
 
 Record the currently installed database revision and services:
 
-Set the application virtual environment path used by this installation. The
-historical default is `/opt/journeyman/venv`; installations using another
-environment, such as `venv314`, should set that path instead:
-
-```bash
-JOURNEYMAN_VENV=/opt/journeyman/venv314
-```
+Journeyman 2.0 uses **one** application environment path, regardless of
+Python version: `/opt/journeyman/venv`. The installer builds it if missing.
+Do not rename an existing Python venv to this path (virtual environments can
+contain absolute shebangs); retain `venv314` as a rollback copy until validated.
 
 ```bash
 systemctl --no-pager --type=service | grep -i journeyman
-
 cd /opt/journeyman
-source ${JOURNEYMAN_VENV}/bin/activate
-flask --app run.py db current
+/opt/journeyman/venv/bin/flask --app run.py db current
 ```
 
-Retain the same `journeyman_venv` value in the Ansible inventory or host
-variables used for the upgrade
+If only the legacy venv exists, inspect the current database revision with
+that environment before running the new installer. Remove any old
+`journeyman_venv` host-var override.
 
 ## 2. Back up the installation
 
@@ -142,12 +138,8 @@ Remote runners do not normally need to be stopped. They should tolerate temporar
 
 The preferred upgrade method is to rerun the supplied Journeyman deployment playbook using the **existing inventory and host variables**.
 
-If the installation uses a non-default application virtual environment, retain
-that value explicitly. For example:
-
-```yaml
-journeyman_venv: /opt/journeyman/venv314
-```
+The installer now always uses `/opt/journeyman/venv`. Remove previous
+noncanonical `journeyman_venv` settings from inventory/host vars.
 
 The deployment must be treated as an in-place upgrade. It must not remove or regenerate:
 
@@ -426,3 +418,31 @@ Before installing a development build over the latest GitHub release:
 - assume database downgrade may require restoring the database backup.
 
 Record the Git commit used for the deployed build as part of the upgrade change record.
+
+## Journeyman 2.0 canonical runner layout
+
+For each remote runner, standard paths are:
+
+- `/opt/journeyman/venv` (runner agent Python; managed execution environments remain separate)
+- `/etc/journeyman/remote-runner.env` (registration)
+- `journeyman-remote-runner.service` (systemd service)
+- `/run/journeyman/ansible-cp` (systemd-managed runtime directory)
+- `/etc/journeyman/runner-pki` (existing identity, NEVER delete on update)
+
+Use **Manage Remote Runner → Update** to migrate a previously named-instance
+runner. The update verifies the UUID against the registered runner, refuses
+multiple registrations on one host, stops its old instance, moves existing
+work/environment/spool paths only when there are no conflicts, and backs up
+the old environment file with a `.migrated-<timestamp>` suffix. It does not
+re-register the runner or rotate the private key unless the normal recovery
+mechanism is needed. Do not delete old `venv314` directories until jobs,
+heartbeats, certificate renewal and environment sync have been verified.
+
+**Do not run both named and canonical service instances simultaneously.**
+If the migration refuses an ambiguous registration or conflicting data path,
+resolve it manually before retrying; it will not merge or overwrite data.
+
+On the controller, rerun `install-journeyman.yml` after deploying updated RPM
+files so `/opt/journeyman/venv` is populated and systemd units are updated.
+Verify `journeyman-runner`, `journeyman-environment-builder`, scheduler and web
+before updating remote nodes.

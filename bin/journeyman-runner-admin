@@ -4,6 +4,12 @@
 import argparse
 import json
 import sys
+
+# RPM may normalise the shebang to /usr/bin/python3. Select the application
+# virtual environment before importing Flask or other runtime dependencies.
+from _journeyman_app_bootstrap import ensure_application_venv
+
+ensure_application_venv()
 from pathlib import Path
 
 JOURNEYMAN_ROOT = Path("/opt/journeyman")

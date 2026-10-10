@@ -1,0 +1,174 @@
+#!/usr/bin/python3
+"""Migrate one enrolled remote runner to canonical host-scoped paths.
+
+Standard-library only: usable before the runner's Python environment exists.
+Never parses registration files as shell, never re-enrols or touches runner PKI.
+The original config is backed up with a non-.env suffix for operator rollback.
+"""
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+CONFIG_DIR = Path('/etc/journeyman')
+CANONICAL_CONFIG = CONFIG_DIR / 'remote-runner.env'
+DIR_MAPPINGS = {
+    'JOURNEYMAN_REMOTE_WORK_ROOT': Path('/var/lib/journeyman/remote-jobs'),
+    'JOURNEYMAN_SIGNAL_SPOOL_ROOT': Path('/var/spool/journeyman/signals'),
+    'JOURNEYMAN_ENVIRONMENT_ROOT': Path('/opt/journeyman/environments'),
+    'JOURNEYMAN_SNMP_SOURCES_FILE': CONFIG_DIR / 'snmp-sources.json',
+}
+
+
+class MigrationError(Exception):
+    pass
+
+
+def registrations():
+    return sorted(
+        (path for path in CONFIG_DIR.glob('remote-runner*.env')
+         if path.name == 'remote-runner.env' or
+         (path.name.startswith('remote-runner-') and path.name.endswith('.env'))),
+        key=str,
+    )
+
+
+def read_registration(path):
+    values = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if not line or line.lstrip().startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key] = value.strip().strip('"\'')
+    return values
+
+
+def plan(expected_uuid=None, action='update'):
+    files = registrations()
+    if len(files) > 1:
+        raise MigrationError(
+            'Multiple runner registrations on one host: {}. '
+            'Resolve manually; no identities will be merged.'.format(', '.join(map(str, files)))
+        )
+    if not files:
+        if action == 'install':
+            return None, [], None
+        # An update can recover a missing registration using the control-plane token.
+        return None, [], None
+    path = files[0]
+    if action == 'install':
+        raise MigrationError('Runner already enrolled at {}. Use Update instead.'.format(path))
+    values = read_registration(path)
+    uuid = values.get('JOURNEYMAN_RUNNER_UUID', '')
+    if not uuid or (expected_uuid and uuid != expected_uuid):
+        raise MigrationError('Runner UUID mismatch/missing in {}. Refusing migration.'.format(path))
+    # Preserve PKI paths verbatim. Missing certificates are handled by the
+    # existing Journeyman recovery/re-enrolment flow, not by layout migration.
+    if path == CANONICAL_CONFIG:
+        for key, canonical in DIR_MAPPINGS.items():
+            configured = values.get(key)
+            if configured and Path(configured) != canonical:
+                raise MigrationError(
+                    'Canonical runner config still uses a noncanonical {}: {}'.format(key, configured)
+                )
+        return path, [], None
+    suffix = path.name[len('remote-runner-'):-len('.env')]
+    if not suffix or '/' in suffix or '..' in suffix:
+        raise MigrationError('Invalid legacy runner instance name')
+    moves = []
+    for key, destination in DIR_MAPPINGS.items():
+        source_value = values.get(key)
+        if not source_value:
+            continue
+        source = Path(source_value)
+        if not source.is_absolute():
+            raise MigrationError('Relative {} not supported'.format(key))
+        if source == destination:
+            continue
+        # Refuse unusual paths rather than moving operator-managed data.
+        parent = destination.parent
+        if source.parent != parent or not source.name.startswith(destination.name + '-'):
+            raise MigrationError('Unexpected legacy {} path: {}'.format(key, source))
+        if source.is_symlink() or destination.is_symlink():
+            raise MigrationError('Refusing symlinked runner data path: {}'.format(source))
+        if source.exists() and destination.exists():
+            if destination.is_file() or any(destination.iterdir()):
+                raise MigrationError('Both {} and {} contain data; resolve manually.'.format(source, destination))
+        moves.append((key, source, destination))
+    return path, moves, suffix
+
+
+def apply(expected_uuid=None, action='update'):
+    config, moves, suffix = plan(expected_uuid=expected_uuid, action=action)
+    if config is None or config == CANONICAL_CONFIG:
+        return 'Already canonical or no registration present'
+    unit = 'journeyman-remote-runner@{}.service'.format(suffix)
+    # The legacy env might belong to a named instance OR an incorrectly
+    # installed untemplated service (the October 2026 failure mode).
+    # Stop loaded units only; systemctl stop on a missing unit would otherwise
+    # fail even when its registration is valid.
+    for candidate in (unit, 'journeyman-remote-runner.service'):
+        result = subprocess.run(
+            ['systemctl', 'show', '--property=LoadState', '--value', candidate],
+            check=True, text=True, capture_output=True,
+        )
+        if result.stdout.strip() not in ('loaded', 'masked'):
+            continue
+        subprocess.run(['systemctl', 'stop', candidate], check=True)
+        if candidate == unit:
+            subprocess.run(['systemctl', 'disable', candidate], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for key, source, destination in moves:
+        if source.exists():
+            if destination.is_dir() and not any(destination.iterdir()):
+                destination.rmdir()
+            source.rename(destination)
+    values = read_registration(config)
+    raw = config.read_text(encoding='utf-8')
+    for key, source, destination in moves:
+        previous = values[key]
+        raw = raw.replace('{}={}'.format(key, previous), '{}={}'.format(key, destination))
+    # If optional env entries were previously missing, ensure defaults apply.
+    for key, destination in DIR_MAPPINGS.items():
+        if key not in values:
+            raw += '{}={}\n'.format(key, destination)
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    backup = config.with_name(config.name + '.migrated-' + timestamp)
+    if backup.exists():
+        raise MigrationError('Backup already exists: {}'.format(backup))
+    shutil.copy2(config, backup)
+    temp = CANONICAL_CONFIG.with_suffix('.env.tmp')
+    with temp.open('x', encoding='utf-8') as stream:
+        stream.write(raw)
+    shutil.copystat(config, temp)
+    os.replace(temp, CANONICAL_CONFIG)
+    config.unlink()
+    return 'Migrated {} to {}; backup {}'.format(config, CANONICAL_CONFIG, backup)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--expected-uuid', default='')
+    parser.add_argument('--action', choices=('install', 'update'), default='update')
+    parser.add_argument('--apply', action='store_true')
+    args = parser.parse_args()
+    try:
+        path, moves, _ = plan(args.expected_uuid, args.action)
+        if args.apply:
+            if os.geteuid() != 0:
+                raise MigrationError('Migration requires root')
+            print(apply(args.expected_uuid, args.action))
+        else:
+            print('Registration: {}; path moves: {}'.format(path or 'none', len(moves)))
+    except (MigrationError, OSError, subprocess.CalledProcessError) as exc:
+        print('Runner layout migration refused: {}'.format(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

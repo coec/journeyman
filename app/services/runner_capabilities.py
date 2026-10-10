@@ -88,49 +88,29 @@ def snmp_source_configuration(runner):
 
 
 def runner_signal_spool_root(runner):
-    """Return the Signal spool path used by a runner on its physical host."""
+    """Signal spool is host-scoped, regardless of logical runner name."""
 
-    name = str(runner.name or "").strip()
-    hostname = str(runner.hostname or "").strip()
-    if name and hostname and name != hostname:
-        return "/var/spool/journeyman/signals-{}".format(name)
     return "/var/spool/journeyman/signals"
 
 
 def snmp_host_configuration(runner):
-    """Return all enabled SNMP listeners required on ``runner``'s host.
+    """Return SNMP listeners owned by the one runner installed on this host."""
 
-    SNMP listeners are physical-host resources.  Multiple logical development
-    runners may share one host, so reconciliation must include Sources assigned
-    to every Runner reporting that hostname while preserving each Source's
-    per-runner spool destination.
-    """
-
-    hostname = str(runner.hostname or "").strip()
-    if not hostname:
-        peer_runners = [runner]
-    else:
-        peer_runners = (
-            Runner.query
-            .filter(Runner.hostname == hostname)
-            .order_by(Runner.id.asc())
-            .all()
-        )
-    rows = []
-    for peer in peer_runners:
+    return [
+        {
+            "source_uuid": source.source_uuid,
+            "port": int(source.snmp_port or 162),
+            "runner_name": runner.name,
+            "signal_spool_root": runner_signal_spool_root(runner),
+        }
         for source in (
             SignalSource.query
-            .filter_by(runner_id=peer.id, enabled=True, source_type="snmp_trap")
+            .filter_by(runner_id=runner.id, enabled=True, source_type="snmp_trap")
             .order_by(SignalSource.source_uuid.asc())
             .all()
-        ):
-            rows.append({
-                "source_uuid": source.source_uuid,
-                "port": int(source.snmp_port or 162),
-                "runner_name": peer.name,
-                "signal_spool_root": runner_signal_spool_root(peer),
-            })
-    return sorted(rows, key=lambda item: item["source_uuid"])
+        )
+    ]
+
 
 def configuration_fingerprint(value):
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")

@@ -11,7 +11,7 @@
     journeyman_runner_work_root: /var/lib/journeyman/remote-jobs
     journeyman_signal_spool_root: /var/spool/journeyman/signals
     journeyman_runner_install_root: /opt/journeyman
-    journeyman_runner_venv: /opt/journeyman/venv314
+    journeyman_runner_venv: /opt/journeyman/venv
     journeyman_runner_python: /usr/bin/python3.14
     journeyman_runner_source: /opt/journeyman/bin/journeyman-remote-runner
     journeyman_signal_spool_source: /opt/journeyman/bin/journeyman-signal-spool
@@ -103,6 +103,35 @@
           Underlying error: {{ journeyman_runner_tls_preflight.msg | default('unknown error') }}
 
   tasks:
+    - name: Require canonical remote runner layout
+      ansible.builtin.assert:
+        that:
+          - journeyman_runner_venv == '/opt/journeyman/venv'
+          - journeyman_runner_config == '/etc/journeyman/remote-runner.env'
+        fail_msg: >-
+          Remote runners use /opt/journeyman/venv and
+          /etc/journeyman/remote-runner.env exclusively.
+
+    - name: Check for existing runner registrations
+      ansible.builtin.find:
+        paths: /etc/journeyman
+        patterns:
+          - remote-runner.env
+          - remote-runner-*.env
+        file_type: file
+      register: existing_runner_files
+
+    - name: Refuse an ambiguous or legacy runner installation
+      ansible.builtin.assert:
+        that:
+          - >-
+            (existing_runner_files.files | length == 0) or
+            (existing_runner_files.files | length == 1 and
+             (existing_runner_files.files[0].path | basename) == 'remote-runner.env')
+        fail_msg: >-
+          Legacy or multiple registrations detected. Migrate the existing
+          runner using Manage Remote Runner -> Update before this installer.
+
     - name: Create Journeyman runner group
       ansible.builtin.group:
         name: "{{ journeyman_runner_group }}"
@@ -139,6 +168,10 @@
           owner: "{{ journeyman_runner_user }}"
           group: "{{ journeyman_runner_group }}"
           mode: "0750"
+        - path: /opt/journeyman/environments
+          owner: "{{ journeyman_runner_user }}"
+          group: "{{ journeyman_runner_group }}"
+          mode: "0750"
         - path: "{{ journeyman_runner_work_root }}"
           owner: "{{ journeyman_runner_user }}"
           group: "{{ journeyman_runner_group }}"
@@ -153,7 +186,6 @@
         name:
           - python3
           - python3-pip
-          - python3-virtualenv
           - ansible-core
         state: present
       become: true
@@ -187,6 +219,12 @@
         executable: "{{ journeyman_runner_venv }}/bin/pip"
         extra_args: "{{ journeyman_runner_pip_extra_args | default(omit, true) }}"
 
+    - name: Verify remote runner Python dependencies before installing service
+      ansible.builtin.command:
+        argv: ["{{ journeyman_runner_venv }}/bin/python3", -c, "import cryptography"]
+      changed_when: false
+      become_user: "{{ journeyman_runner_user }}"
+
     - name: Install Journeyman remote runner executable
       ansible.builtin.copy:
         src: "{{ journeyman_runner_source }}"
@@ -196,13 +234,6 @@
         mode: "0755"
       notify: Restart Journeyman remote runner
 
-    - name: Pin remote runner shebang to configured virtual environment
-      ansible.builtin.lineinfile:
-        path: /opt/journeyman/bin/journeyman-remote-runner
-        regexp: '^#!.*python3?$'
-        line: "#!{{ journeyman_runner_venv }}/bin/python3"
-        insertafter: BOF
-
     - name: Install Journeyman Signal spool helper
       ansible.builtin.copy:
         src: "{{ journeyman_signal_spool_source }}"
@@ -211,34 +242,13 @@
         group: root
         mode: "0755"
 
-    - name: Install Journeyman remote runner systemd unit
+    - name: Install canonical Journeyman remote runner systemd unit
       ansible.builtin.copy:
+        src: /opt/journeyman/deploy/systemd/journeyman-remote-runner.service
         dest: /etc/systemd/system/journeyman-remote-runner.service
         owner: root
         group: root
         mode: "0644"
-        content: |
-          [Unit]
-          Description=Journeyman Remote Job Runner
-          After=network-online.target
-          Wants=network-online.target
-
-          [Service]
-          Type=simple
-          User={{ journeyman_runner_user }}
-          Group={{ journeyman_runner_group }}
-          EnvironmentFile={{ journeyman_runner_config }}
-          Environment=PATH={{ journeyman_runner_venv }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-          ExecStart={{ journeyman_runner_venv }}/bin/python3 /opt/journeyman/bin/journeyman-remote-runner
-          Restart=on-failure
-          RestartSec=5
-          PrivateTmp=true
-          NoNewPrivileges=true
-          ProtectSystem=strict
-          ReadWritePaths={{ journeyman_runner_work_root }} {{ journeyman_signal_spool_root }} {{ journeyman_runner_pki_root }}
-
-          [Install]
-          WantedBy=multi-user.target
       notify:
         - Reload systemd
         - Restart Journeyman remote runner

@@ -28,14 +28,15 @@ def _source_file(relative_path):
     return path.read_bytes()
 
 
-def _payload_block(name, destination, data):
+def _payload_block(name, destination, data, mode="0755"):
     encoded = base64.b64encode(data).decode("ascii")
     digest = hashlib.sha256(data).hexdigest()
-    return """cat > /tmp/{name}.b64 <<'JOURNEYMAN_PAYLOAD'\n{encoded}\nJOURNEYMAN_PAYLOAD\nbase64 -d /tmp/{name}.b64 > {destination}\nrm -f /tmp/{name}.b64\necho '{digest}  {destination}' | sha256sum -c -\nchmod 0755 {destination}\n""".format(
+    return """cat > /tmp/{name}.b64 <<'JOURNEYMAN_PAYLOAD'\n{encoded}\nJOURNEYMAN_PAYLOAD\nbase64 -d /tmp/{name}.b64 > {destination}\nrm -f /tmp/{name}.b64\necho '{digest}  {destination}' | sha256sum -c -\nchmod {mode} {destination}\n""".format(
         name=name,
         encoded=encoded,
         destination=shlex.quote(destination),
         digest=digest,
+        mode=mode,
     )
 
 
@@ -98,6 +99,12 @@ SERVER_CA_FILE=__SERVER_CA_FILE__
 __PROXY_EXPORTS__
 
 echo "Bootstrapping Journeyman runner ${RUNNER_NAME} against ${SERVER_URL}"
+for old_config in /etc/journeyman/remote-runner.env /etc/journeyman/remote-runner-*.env; do
+  [[ ! -e "${old_config}" ]] || {
+    echo "Existing runner registration ${old_config}; use update, not bootstrap." >&2
+    exit 1
+  }
+done
 dnf -y install python3.14 ansible-core
 
 getent group journeyman >/dev/null || groupadd --system journeyman
@@ -106,21 +113,22 @@ install -d -o root -g root -m 0755 /opt/journeyman/bin
 install -d -o root -g journeyman -m 0750 /etc/journeyman
 install -d -o journeyman -g journeyman -m 0700 /etc/journeyman/runner-pki
 install -d -o journeyman -g journeyman -m 0750 /var/lib/journeyman
+install -d -o journeyman -g journeyman -m 0750 /opt/journeyman/environments
 install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-jobs
 install -d -o journeyman -g journeyman -m 2770 /var/spool/journeyman/signals
 
 PYTHON=/usr/bin/python3.14
 [[ -x ${PYTHON} ]] || { echo 'python3.14 was installed but /usr/bin/python3.14 is unavailable.' >&2; exit 1; }
-${PYTHON} -m venv /opt/journeyman/venv314
-/opt/journeyman/venv314/bin/pip install --upgrade cryptography
+${PYTHON} -m venv /opt/journeyman/venv
+/opt/journeyman/venv/bin/pip install --upgrade cryptography
 
 # Keep the runtime owned by root while allowing the unprivileged runner service
 # account to traverse/read the virtual environment and its installed modules.
-chown -R root:journeyman /opt/journeyman/venv314
-chmod -R g+rX,o-rwx /opt/journeyman/venv314
+chown -R root:journeyman /opt/journeyman/venv
+chmod -R g+rX,o-rwx /opt/journeyman/venv
 
 command -v runuser >/dev/null 2>&1 || { echo 'runuser is required to validate the runner service account.' >&2; exit 1; }
-runuser -u journeyman -- /opt/journeyman/venv314/bin/python - <<'PYTHON_CHECK'
+runuser -u journeyman -- /opt/journeyman/venv/bin/python - <<'PYTHON_CHECK'
 import cryptography
 print("Runner Python runtime OK; cryptography {}".format(cryptography.__version__))
 PYTHON_CHECK
@@ -136,7 +144,7 @@ if [[ -n "${SERVER_CA_FILE}" ]]; then
 fi
 
 JOURNEYMAN_REGISTRATION_TOKEN="${REGISTRATION_TOKEN}" \
-  /opt/journeyman/venv314/bin/python /opt/journeyman/bin/journeyman-remote-runner register \
+  /opt/journeyman/venv/bin/python /opt/journeyman/bin/journeyman-remote-runner register \
     --server "${SERVER_URL}" \
     --token-env JOURNEYMAN_REGISTRATION_TOKEN \
     --config /etc/journeyman/remote-runner.env \
@@ -150,33 +158,7 @@ JOURNEYMAN_REGISTRATION_TOKEN="${REGISTRATION_TOKEN}" \
 chown root:journeyman /etc/journeyman/remote-runner.env
 chmod 0640 /etc/journeyman/remote-runner.env
 
-cat > /etc/systemd/system/journeyman-remote-runner.service <<'UNIT'
-[Unit]
-Description=Journeyman Remote Job Runner
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=journeyman
-Group=journeyman
-RuntimeDirectory=journeyman
-RuntimeDirectoryMode=0755
-EnvironmentFile=/etc/journeyman/remote-runner.env
-Environment=PATH=/opt/journeyman/venv314/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-Environment="ANSIBLE_SSH_CONTROL_PATH_DIR=/run/journeyman/ansible-cp"
-ExecStart=/opt/journeyman/venv314/bin/python /opt/journeyman/bin/journeyman-remote-runner
-Restart=on-failure
-RestartSec=5
-PrivateTmp=true
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/journeyman/remote-jobs /var/spool/journeyman/signals /etc/journeyman/runner-pki
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
+__UNIT_PAYLOAD__
 systemctl daemon-reload
 systemctl enable --now journeyman-remote-runner
 
@@ -223,6 +205,12 @@ echo 'Journeyman remote runner bootstrap completed.'
             "journeyman-remote-runner",
             "/opt/journeyman/bin/journeyman-remote-runner",
             _source_file("bin/journeyman-remote-runner"),
+        ),
+        "__UNIT_PAYLOAD__": _payload_block(
+            "journeyman-remote-runner-service",
+            "/etc/systemd/system/journeyman-remote-runner.service",
+            _source_file("deploy/systemd/journeyman-remote-runner.service"),
+            mode="0644",
         ),
         "__SIGNAL_PAYLOAD__": _payload_block(
             "journeyman-signal-spool",
@@ -311,17 +299,13 @@ RUNNER_CA_CERTIFICATE=$(sed -n 's/^JOURNEYMAN_RUNNER_CA_CERTIFICATE=//p' "${CONF
 [[ -n "${RUNNER_CERTIFICATE}" && -r "${RUNNER_CERTIFICATE}" ]] || { echo 'Existing runner certificate is missing or unreadable.' >&2; exit 1; }
 [[ -n "${RUNNER_CA_CERTIFICATE}" && -r "${RUNNER_CA_CERTIFICATE}" ]] || { echo 'Existing runner CA certificate is missing or unreadable.' >&2; exit 1; }
 
-if [[ "${CONFIG_FILE}" == '/etc/journeyman/remote-runner.env' ]]; then
-  SERVICE_UNIT='journeyman-remote-runner.service'
-else
-  instance=${CONFIG_FILE#/etc/journeyman/remote-runner-}
-  instance=${instance%.env}
-  SERVICE_UNIT="journeyman-remote-runner@${instance}.service"
-fi
+SERVICE_UNIT=journeyman-remote-runner.service
+__MIGRATION_PAYLOAD__
+/usr/local/sbin/journeyman-runner-layout --expected-uuid "${EXPECTED_UUID}" --action update
 
 CURRENT_VERSION='unknown'
 if [[ -x /opt/journeyman/bin/journeyman-remote-runner ]]; then
-  CURRENT_VERSION=$(/opt/journeyman/bin/journeyman-remote-runner --version 2>/dev/null || echo unknown)
+  CURRENT_VERSION=$(/opt/journeyman/venv/bin/python3 /opt/journeyman/bin/journeyman-remote-runner --version 2>/dev/null || echo unknown)
 fi
 echo "Updating Journeyman runner ${RUNNER_NAME} (${EXPECTED_UUID}); current version ${CURRENT_VERSION}."
 
@@ -332,13 +316,13 @@ install -d -o root -g root -m 0755 /opt/journeyman/bin
 
 PYTHON=/usr/bin/python3.14
 [[ -x ${PYTHON} ]] || { echo 'python3.14 was installed but /usr/bin/python3.14 is unavailable.' >&2; exit 1; }
-if [[ ! -x /opt/journeyman/venv314/bin/python ]]; then
-  ${PYTHON} -m venv /opt/journeyman/venv314
+if [[ ! -x /opt/journeyman/venv/bin/python ]]; then
+  ${PYTHON} -m venv /opt/journeyman/venv
 fi
-/opt/journeyman/venv314/bin/pip install --upgrade cryptography
-chown -R root:journeyman /opt/journeyman/venv314
-chmod -R g+rX,o-rwx /opt/journeyman/venv314
-runuser -u journeyman -- /opt/journeyman/venv314/bin/python - <<'PYTHON_CHECK'
+/opt/journeyman/venv/bin/pip install --upgrade cryptography
+chown -R root:journeyman /opt/journeyman/venv
+chmod -R g+rX,o-rwx /opt/journeyman/venv
+runuser -u journeyman -- /opt/journeyman/venv/bin/python - <<'PYTHON_CHECK'
 import cryptography
 print("Runner Python runtime OK; cryptography {}".format(cryptography.__version__))
 PYTHON_CHECK
@@ -356,8 +340,16 @@ done
 __RUNNER_PAYLOAD__
 __SIGNAL_PAYLOAD__
 __SNMP_PAYLOAD__
+__UNIT_PAYLOAD__
+/usr/local/sbin/journeyman-runner-layout --expected-uuid "${EXPECTED_UUID}" --action update --apply
+CONFIG_FILE=/etc/journeyman/remote-runner.env
+# Missing optional legacy directories must still exist before systemd's
+# ProtectSystem=strict/ReadWritePaths mount namespace is established.
+install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-jobs
+install -d -o journeyman -g journeyman -m 2770 /var/spool/journeyman/signals
+install -d -o journeyman -g journeyman -m 0750 /opt/journeyman/environments
 
-NEW_VERSION=$(/opt/journeyman/bin/journeyman-remote-runner --version)
+NEW_VERSION=$(/opt/journeyman/venv/bin/python3 /opt/journeyman/bin/journeyman-remote-runner --version)
 echo "Bundled runner version: ${NEW_VERSION}"
 
 systemctl daemon-reload
@@ -391,7 +383,7 @@ if [[ ${runner_active} -ne 1 ]]; then
   exit 1
 fi
 
-INSTALLED_VERSION=$(/opt/journeyman/bin/journeyman-remote-runner --version)
+INSTALLED_VERSION=$(/opt/journeyman/venv/bin/python3 /opt/journeyman/bin/journeyman-remote-runner --version)
 if [[ "${INSTALLED_VERSION}" != "${NEW_VERSION}" ]]; then
   echo "Runner version verification failed: expected ${NEW_VERSION}, got ${INSTALLED_VERSION}." >&2
   exit 1
@@ -416,6 +408,17 @@ echo "Journeyman remote runner update completed (${CURRENT_VERSION} -> ${INSTALL
             "journeyman-remote-runner",
             "/opt/journeyman/bin/journeyman-remote-runner",
             _source_file("bin/journeyman-remote-runner"),
+        ),
+        "__MIGRATION_PAYLOAD__": _payload_block(
+            "journeyman-runner-layout",
+            "/usr/local/sbin/journeyman-runner-layout",
+            _source_file("scripts/journeyman-runner-layout"),
+        ),
+        "__UNIT_PAYLOAD__": _payload_block(
+            "journeyman-remote-runner-service",
+            "/etc/systemd/system/journeyman-remote-runner.service",
+            _source_file("deploy/systemd/journeyman-remote-runner.service"),
+            mode="0644",
         ),
         "__SIGNAL_PAYLOAD__": _payload_block(
             "journeyman-signal-spool",

@@ -9,7 +9,7 @@ Before=journeyman-web.service journeyman-scheduler.service journeyman-runner.ser
 Type=oneshot
 WorkingDirectory=/opt/journeyman
 Environment=JOURNEYMAN_CONFIG=/etc/journeyman/journeyman.yml
-ExecStart=/opt/journeyman/bin/journeyman-service-coordinator prepare
+ExecStart=/opt/journeyman/venv/bin/python3 /opt/journeyman/bin/journeyman-service-coordinator prepare
 RemainAfterExit=yes
 
 [Install]

@@ -20,7 +20,7 @@
     journeyman_etc: /etc/journeyman
     journeyman_config_file: /etc/journeyman/journeyman.yml
     journeyman_default_environment_root: /opt/journeyman/environments
-    journeyman_python: /opt/journeyman/venv314/bin/python
+    journeyman_python: /opt/journeyman/venv/bin/python
     journeyman_backup_format_version: 1
     journeyman_services:
       - journeyman.service

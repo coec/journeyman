@@ -177,34 +177,34 @@ def test_unregister_remote_runner_uses_credentials_from_environment_file(tmp_pat
     assert result["status"] == "deleted"
 
 
-def test_systemd_template_supports_multiple_remote_runner_instances():
+def test_canonical_runner_service_owns_runtime_directory():
     root = Path(__file__).resolve().parents[1]
-    unit = (root / "deploy" / "systemd" / "journeyman-remote-runner@.service").read_text()
+    unit = (root / "deploy" / "systemd" / "journeyman-remote-runner.service").read_text()
+    assert "EnvironmentFile=/etc/journeyman/remote-runner.env" in unit
+    assert "RuntimeDirectory=journeyman/ansible-cp" in unit
+    assert "ExecStart=/opt/journeyman/venv/bin/python3" in unit
+    assert "ReadWritePaths=" in unit
+    assert not (root / "deploy" / "systemd" / "journeyman-remote-runner@.service").exists()
 
-    assert "EnvironmentFile=/etc/journeyman/remote-runner-%i.env" in unit
-    assert "Description=Journeyman Remote Job Runner (%i)" in unit
-    assert "ProtectSystem=full" in unit
-    assert "ReadWritePaths=/etc/journeyman/runner-pki" in unit
 
-
-def test_legacy_installer_allows_runner_certificate_renewal():
+def test_remote_runner_install_uses_canonical_systemd_unit():
     root = Path(__file__).resolve().parents[1]
     playbook = (root / "deploy" / "ansible" / "install-remote-runner.yml").read_text()
-    assert "ProtectSystem=strict" in playbook
-    assert "{{ journeyman_signal_spool_root }} {{ journeyman_runner_pki_root }}" in playbook
+    assert "/opt/journeyman/deploy/systemd/journeyman-remote-runner.service" in playbook
+    assert "journeyman_runner_venv: /opt/journeyman/venv" in playbook
 
 
-def test_builtin_management_separates_logical_runner_name_from_ssh_target():
+def test_management_uses_one_service_and_config_per_host():
     root = Path(__file__).resolve().parents[1]
     playbook = (root / "deploy" / "ansible" / "manage-remote-runner.yml").read_text()
-
     assert 'delegate_to: "{{ journeyman_runner_host }}"' in playbook
     assert '- --name\n          - "{{ journeyman_runner_name }}"' in playbook
-    assert '- --runner\n          - "{{ journeyman_runner_name }}"' in playbook
-    assert "remote-runner-' ~ journeyman_runner_name ~ '.env'" in playbook
-    assert "journeyman-remote-runner@' ~ journeyman_runner_name" in playbook
+    assert 'journeyman_runner_service_name: journeyman-remote-runner' in playbook
+    assert 'journeyman_runner_config: /etc/journeyman/remote-runner.env' in playbook
+    assert 'journeyman_runner_venv: /opt/journeyman/venv' in playbook
+    assert 'journeyman_runner_named_instance' not in playbook
     assert '- --signal-spool-root' in playbook
-    assert 'when: not (journeyman_runner_named_instance | bool)' in playbook
+    assert 'journeyman-runner-layout' in playbook
 
 
 def test_prepare_install_does_not_reuse_same_host_for_explicit_logical_name():
@@ -258,14 +258,14 @@ def test_builtin_management_persists_credential_references_on_prepare():
     assert "runner.management_pip_proxy_credential_id = proxy_id" in admin
 
 
-def test_named_runner_snmp_receivers_are_host_scoped_but_fingerprints_are_instance_scoped():
+def test_runner_snmp_receivers_are_host_scoped():
     root = Path(__file__).resolve().parents[1]
     playbook = (root / "deploy" / "ansible" / "manage-remote-runner.yml").read_text()
     remote_runner = (root / "bin" / "journeyman-remote-runner").read_text()
     admin = (root / "bin" / "journeyman-runner-admin").read_text()
 
     assert "journeyman_snmp_sources_file" in playbook
-    assert "snmp-sources-' ~ journeyman_runner_name ~ '.json'" in playbook
+    assert "journeyman_snmp_sources_file: /etc/journeyman/snmp-sources.json" in playbook
     assert "JOURNEYMAN_SNMP_SOURCES_FILE={{ journeyman_snmp_sources_file }}" in playbook
     assert ").host_snmp_sources" in playbook
     assert "Environment=JOURNEYMAN_SIGNAL_SPOOL_ROOT={{ item.signal_spool_root }}" in playbook
@@ -274,7 +274,7 @@ def test_named_runner_snmp_receivers_are_host_scoped_but_fingerprints_are_instan
     assert '"host_snmp_sources": snmp_host_configuration(runner)' in admin
 
     snmp_section = playbook.split("- name: Store desired SNMP Source configuration", 1)[1].split(
-        "- name: Install Journeyman remote runner systemd unit", 1
+        "- name: Install canonical remote runner systemd unit", 1
     )[0]
     assert "when: not (journeyman_runner_named_instance | bool)" not in snmp_section
 
@@ -326,42 +326,21 @@ def test_update_repairs_missing_registration_before_remote_mutation():
 def test_remote_runner_environment_sync_has_writable_runner_local_root():
     root = Path(__file__).resolve().parents[1]
     playbook = (root / "deploy" / "ansible" / "manage-remote-runner.yml").read_text()
-    legacy_unit = (root / "deploy" / "systemd" / "journeyman-remote-runner.service").read_text()
-    instance_unit = (root / "deploy" / "systemd" / "journeyman-remote-runner@.service").read_text()
-    remote_runner = (root / "bin" / "journeyman-remote-runner").read_text()
-
+    unit = (root / "deploy" / "systemd" / "journeyman-remote-runner.service").read_text()
     assert "journeyman_runner_environment_root" in playbook
     assert "JOURNEYMAN_ENVIRONMENT_ROOT={{ journeyman_runner_environment_root }}" in playbook
     assert "/opt/journeyman/environments" in playbook
-    assert "ProtectSystem=full" in legacy_unit
-    assert "ProtectSystem=full" in instance_unit
-    assert "ReadWritePaths=/etc/journeyman/runner-pki" in legacy_unit
-    assert "ReadWritePaths=/etc/journeyman/runner-pki" in instance_unit
-    assert "ProtectSystem=full" in playbook
-    # Only inspect the two runner unit definitions; other management tasks may
-    # legitimately declare the same writable PKI directory.
-    regular_unit_task = playbook.split(
-        "- name: Install Journeyman remote runner systemd unit", 1
-    )[1].split("- name: Install Journeyman remote runner instance systemd template", 1)[0]
-    instance_unit_task = playbook.split(
-        "- name: Install Journeyman remote runner instance systemd template", 1
-    )[1].split("- name: Check for existing runner registration during install", 1)[0]
-    for unit_task in (regular_unit_task, instance_unit_task):
-        assert "ProtectSystem=full" in unit_task
-        assert "ReadWritePaths={{ journeyman_runner_pki_root }}" in unit_task
-    assert (
-        "ReadWritePaths=/var/lib/journeyman/remote-jobs "
-        "/var/spool/journeyman/signals /opt/journeyman/environments"
-        not in playbook
+    assert "ProtectSystem=strict" in unit
+    assert "ReadWritePaths=" in unit
+    assert "/etc/journeyman/runner-pki" in unit
+    assert "RuntimeDirectory=journeyman/ansible-cp" in unit
+    assert "Remove obsolete runner registration after successful layout transition" in playbook
+    assert playbook.index("- name: Validate remote runner registration layout") < playbook.index(
+        "- name: Migrate enrolled remote runner to canonical layout"
     )
-    assert (
-        "ReadWritePaths=/var/lib/journeyman /var/spool/journeyman "
-        "/opt/journeyman/environments-%i"
-        not in playbook
+    assert playbook.index("- name: Migrate enrolled remote runner to canonical layout") < playbook.index(
+        "- name: Install or update remote runner"
     )
-    assert 'api("/api/runners/environments/claim")' in remote_runner
-    assert "synchronize_execution_environment" in remote_runner
-    assert 'VERSION = "0.24"' in remote_runner
 
 
 def test_environment_sync_runner_api_endpoints_bypass_interactive_login():

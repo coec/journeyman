@@ -48,7 +48,7 @@ Run migrations as the Journeyman service account:
 
 ```bash
 cd /opt/journeyman
-sudo -u journeyman /opt/journeyman/venv314/bin/flask --app run.py db upgrade
+sudo -u journeyman /opt/journeyman/venv/bin/flask --app run.py db upgrade
 ```
 
 Then verify the database file exists and is not writable by unrelated users:

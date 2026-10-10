@@ -10,6 +10,12 @@ import shutil
 import signal
 import subprocess
 import sys
+
+# RPM may normalise the shebang to /usr/bin/python3. Select the application
+# virtual environment before importing Flask or other runtime dependencies.
+from _journeyman_app_bootstrap import ensure_application_venv
+
+ensure_application_venv()
 import tempfile
 import threading
 import time
