@@ -7,7 +7,7 @@
 
 Name:           journeyman
 Version:        2.0.0
-Release:        4{?dist}
+Release:        4%{?dist}
 Summary:        Journeyman deployment source and Ansible installer
 License:        Apache-2.0
 URL:            https://github.com/coec/journeyman

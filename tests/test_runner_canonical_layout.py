@@ -119,7 +119,7 @@ def test_canonical_service_unit_and_interpreter_paths():
     assert 'RuntimeDirectory=journeyman/ansible-cp' in unit
     assert 'ExecStart=/opt/journeyman/venv/bin/python3 ' in unit
     assert 'ProtectSystem=strict' in unit
-    assert 'ReadWritePaths=' in unit
+    assert 'ReadWritePaths=/var/lib/journeyman/remote-runner ' in unit
     for name in ('journeyman-runner', 'journeyman-environment-builder'):
         control_unit = (ROOT / ('deploy/systemd/' + name + '.service')).read_text()
         assert 'ExecStart=/opt/journeyman/venv/bin/python3 ' in control_unit
@@ -128,3 +128,77 @@ def test_canonical_service_unit_and_interpreter_paths():
 def test_migration_script_compiles():
     result = subprocess.run(['python3', '-m', 'py_compile', str(MIGRATION)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_migrates_legacy_named_snmp_file_with_identical_canonical_copy(tmp_path, monkeypatch):
+    migration, _ = fixture_layout(tmp_path, monkeypatch)
+    legacy_config = register(migration)
+    legacy_snmp = migration.CONFIG_DIR / 'snmp-sources-benupd19.json'
+    canonical_snmp = migration.DIR_MAPPINGS['JOURNEYMAN_SNMP_SOURCES_FILE']
+    legacy_snmp.write_text('[]\n')
+    canonical_snmp.write_text('[]\n')
+    legacy_config.write_text(
+        legacy_config.read_text() +
+        'JOURNEYMAN_SNMP_SOURCES_FILE=' + str(legacy_snmp) + '\n'
+    )
+    assert migration.plan('uuid-A')[0] == legacy_config
+    migration.apply('uuid-A')
+    assert canonical_snmp.read_text() == '[]\n'
+    assert legacy_snmp.read_text() == '[]\n'
+    assert 'JOURNEYMAN_SNMP_SOURCES_FILE=' + str(canonical_snmp) in migration.CANONICAL_CONFIG.read_text()
+
+
+def test_refuses_conflicting_named_snmp_files(tmp_path, monkeypatch):
+    migration, _ = fixture_layout(tmp_path, monkeypatch)
+    legacy_config = register(migration)
+    legacy_snmp = migration.CONFIG_DIR / 'snmp-sources-benupd19.json'
+    canonical_snmp = migration.DIR_MAPPINGS['JOURNEYMAN_SNMP_SOURCES_FILE']
+    legacy_snmp.write_text('["old"]\n')
+    canonical_snmp.write_text('["new"]\n')
+    legacy_config.write_text(
+        legacy_config.read_text() +
+        'JOURNEYMAN_SNMP_SOURCES_FILE=' + str(legacy_snmp) + '\n'
+    )
+    with pytest.raises(migration.MigrationError, match='contain data'):
+        migration.plan('uuid-A')
+
+
+def test_migration_repairs_relocated_ansible_entrypoints(tmp_path, monkeypatch):
+    migration, _ = fixture_layout(tmp_path, monkeypatch)
+    register(migration)
+    canonical = migration.DIR_MAPPINGS['JOURNEYMAN_ENVIRONMENT_ROOT']
+    previous = canonical.with_name('environments-benupd19')
+    old_bin = previous / '4-modern-ansible' / 'bin'
+    old_bin.mkdir(parents=True)
+    playbook = old_bin / 'ansible-playbook'
+    playbook.write_bytes(
+        ('#!' + str(old_bin / 'python') + '\n').encode() + b'print("test")\n'
+    )
+    playbook.chmod(0o755)
+    other = old_bin / 'unrelated'
+    other.write_text('#!/usr/bin/python3\nprint("untouched")\n')
+
+    migration.apply('uuid-A')
+    new_bin = canonical / '4-modern-ansible' / 'bin'
+    assert (new_bin / 'ansible-playbook').read_bytes().startswith(
+        ('#!' + str(new_bin / 'python') + '\n').encode()
+    )
+    assert (new_bin / 'unrelated').read_text() == '#!/usr/bin/python3\nprint("untouched")\n'
+    assert (new_bin / 'ansible-playbook').stat().st_mode & 0o111
+    assert not previous.exists()
+    # Idempotent if the same directory is inspected again.
+    assert migration.repair_relocated_environment_entrypoints(previous, canonical) == 0
+
+
+def test_runner_installers_create_writable_completion_spool():
+    root = ROOT
+    assert '/var/lib/journeyman/remote-runner/completions' in (
+        root / 'deploy/ansible/manage-remote-runner.yml'
+    ).read_text()
+    assert '/var/lib/journeyman/remote-runner/completions' in (
+        root / 'deploy/ansible/install-remote-runner.yml'
+    ).read_text()
+    bootstrap = (root / 'app/services/runner_bootstrap.py').read_text()
+    assert bootstrap.count(
+        'install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-runner/completions'
+    ) >= 2

@@ -115,6 +115,7 @@ install -d -o journeyman -g journeyman -m 0700 /etc/journeyman/runner-pki
 install -d -o journeyman -g journeyman -m 0750 /var/lib/journeyman
 install -d -o journeyman -g journeyman -m 0750 /opt/journeyman/environments
 install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-jobs
+install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-runner/completions
 install -d -o journeyman -g journeyman -m 2770 /var/spool/journeyman/signals
 
 PYTHON=/usr/bin/python3.14
@@ -346,6 +347,7 @@ CONFIG_FILE=/etc/journeyman/remote-runner.env
 # Missing optional legacy directories must still exist before systemd's
 # ProtectSystem=strict/ReadWritePaths mount namespace is established.
 install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-jobs
+install -d -o journeyman -g journeyman -m 0700 /var/lib/journeyman/remote-runner/completions
 install -d -o journeyman -g journeyman -m 2770 /var/spool/journeyman/signals
 install -d -o journeyman -g journeyman -m 0750 /opt/journeyman/environments
 

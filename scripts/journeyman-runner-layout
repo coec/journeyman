@@ -89,17 +89,69 @@ def plan(expected_uuid=None, action='update'):
             raise MigrationError('Relative {} not supported'.format(key))
         if source == destination:
             continue
-        # Refuse unusual paths rather than moving operator-managed data.
-        parent = destination.parent
-        if source.parent != parent or not source.name.startswith(destination.name + '-'):
+        # The JSON receiver config uses snmp-sources-<runner>.json, whereas
+        # directories use <canonical-directory>-<runner>.
+        if key == 'JOURNEYMAN_SNMP_SOURCES_FILE':
+            expected_source = destination.with_name(
+                '{}-{}{}'.format(destination.stem, suffix, destination.suffix)
+            )
+        else:
+            expected_source = destination.with_name(destination.name + '-' + suffix)
+        if source != expected_source:
             raise MigrationError('Unexpected legacy {} path: {}'.format(key, source))
         if source.is_symlink() or destination.is_symlink():
             raise MigrationError('Refusing symlinked runner data path: {}'.format(source))
         if source.exists() and destination.exists():
+            if (key == 'JOURNEYMAN_SNMP_SOURCES_FILE'
+                    and source.is_file() and destination.is_file()
+                    and source.read_bytes() == destination.read_bytes()):
+                # Both files already contain the same receiver definitions.
+                # Keep the old file as a rollback copy; update the registration
+                # to refer to the canonical file without overwriting it.
+                moves.append((key, source, destination))
+                continue
             if destination.is_file() or any(destination.iterdir()):
                 raise MigrationError('Both {} and {} contain data; resolve manually.'.format(source, destination))
         moves.append((key, source, destination))
     return path, moves, suffix
+
+
+
+def repair_relocated_environment_entrypoints(source_root, destination_root):
+    """Fix entry-point shebangs after moving a managed Environment venv.
+
+    Python console scripts contain absolute interpreter paths. The runner has
+    been stopped by apply() before this runs. Only scripts referring to the
+    exact former Environment root are modified; other files are untouched.
+    This is repeatable if migration was interrupted after moving the root.
+    """
+    if not destination_root.is_dir():
+        return 0
+    repaired = 0
+    for environment in sorted(destination_root.iterdir()):
+        if environment.is_symlink() or not environment.is_dir():
+            continue
+        binary_dir = environment / 'bin'
+        if binary_dir.is_symlink() or not binary_dir.is_dir():
+            continue
+        old_prefix = ('#!' + str(source_root / environment.name / 'bin') + '/').encode('utf-8')
+        new_prefix = ('#!' + str(destination_root / environment.name / 'bin') + '/').encode('utf-8')
+        for script in binary_dir.iterdir():
+            if script.is_symlink() or not script.is_file():
+                continue
+            with script.open('rb') as handle:
+                first_line = handle.readline(4096)
+            if not first_line.startswith(old_prefix):
+                continue
+            # Rewrite only the interpreter path in the shebang; preserve file
+            # metadata and the rest of each generated entry-point script.
+            with script.open('r+b') as handle:
+                data = handle.read()
+                handle.seek(0)
+                handle.write(new_prefix + data[len(old_prefix):])
+                handle.truncate()
+            repaired += 1
+    return repaired
 
 
 def apply(expected_uuid=None, action='update'):
@@ -124,9 +176,18 @@ def apply(expected_uuid=None, action='update'):
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for key, source, destination in moves:
         if source.exists():
+            if (key == 'JOURNEYMAN_SNMP_SOURCES_FILE'
+                    and destination.is_file()
+                    and source.read_bytes() == destination.read_bytes()):
+                continue
             if destination.is_dir() and not any(destination.iterdir()):
                 destination.rmdir()
             source.rename(destination)
+        if key == 'JOURNEYMAN_ENVIRONMENT_ROOT':
+            # A renamed venv can look healthy but every console entry point
+            # still names its old interpreter, producing ENOENT at execution.
+            # Also repair a previously interrupted migration on retry.
+            repair_relocated_environment_entrypoints(source, destination)
     values = read_registration(config)
     raw = config.read_text(encoding='utf-8')
     for key, source, destination in moves:

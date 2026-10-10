@@ -515,6 +515,7 @@
             - { path: /etc/journeyman, owner: root, group: "{{ journeyman_runner_group }}", mode: '0750' }
             - { path: "{{ journeyman_runner_home }}", owner: "{{ journeyman_runner_user }}", group: "{{ journeyman_runner_group }}", mode: '0750' }
             - { path: "{{ journeyman_runner_work_root }}", owner: "{{ journeyman_runner_user }}", group: "{{ journeyman_runner_group }}", mode: '0700' }
+            - { path: /var/lib/journeyman/remote-runner/completions, owner: "{{ journeyman_runner_user }}", group: "{{ journeyman_runner_group }}", mode: '0700' }
             - { path: "{{ journeyman_signal_spool_root }}", owner: "{{ journeyman_runner_user }}", group: "{{ journeyman_runner_group }}", mode: '2770' }
 
         - name: Install required runner Python
