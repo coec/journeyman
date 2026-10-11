@@ -52,6 +52,9 @@ from app.services.job_inventory_snapshot import (  # noqa: E402
     materialize_job_inventory_snapshot,
 )
 from app.services.audit import record_audit_event  # noqa: E402
+from app.services.ansible_role_dependencies import (  # noqa: E402
+    install_repository_roles,
+)
 from app.services.runners import update_local_runner_heartbeat  # noqa: E402
 from app.services.job_stats import (  # noqa: E402
     JobStatsError,
@@ -601,6 +604,13 @@ def create_repository_workspace(
                 actual_commit,
             )
         )
+
+    # Match AAP Project updates: role requirements are resolved into the
+    # immutable per-Job checkout, not a shared roles directory.
+    install_repository_roles(
+        destination / "roles" / "requirements.yml",
+        destination / "roles",
+    )
 
     LOGGER.info(
         "Prepared repository snapshot %s: %s at %s",

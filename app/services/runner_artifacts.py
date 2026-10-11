@@ -5,11 +5,15 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tarfile
 from pathlib import Path
 
 from flask import current_app
 
 from app.services.git import GitError, safe_repository_dir
+from app.services.ansible_role_dependencies import (
+    RoleDependencyError, install_repository_roles,
+)
 
 
 class RunnerArtifactError(RuntimeError):
@@ -85,6 +89,76 @@ def _run_git(args, cwd):
         raise RunnerArtifactError(message)
 
 
+
+def _add_resolved_roles(source_archive, destination_archive, resolved_roles):
+    """Bundle roles into the commit archive without changing the Git checkout."""
+    with tarfile.open(source_archive, "r:gz") as source, tarfile.open(
+        destination_archive, "w:gz"
+    ) as output:
+        existing = set()
+        for member in source:
+            existing.add(member.name.rstrip("/"))
+            stream = source.extractfile(member) if member.isfile() else None
+            output.addfile(member, stream)
+            if stream is not None:
+                stream.close()
+
+        for role in sorted(resolved_roles.iterdir()):
+            if not role.is_dir() or role.is_symlink() or role.name == ".git":
+                raise RunnerArtifactError("Resolved role contains an unsupported entry.")
+            role_prefix = "roles/{}".format(role.name)
+            if any(
+                name == role_prefix or name.startswith(role_prefix + "/")
+                for name in existing
+            ):
+                raise RunnerArtifactError(
+                    "Resolved role {!r} conflicts with files tracked in Git."
+                    .format(role.name)
+                )
+
+            def validate_role_member(info):
+                if info.name.split("/")[-1] == ".git":
+                    return None
+                if not (info.isfile() or info.isdir()):
+                    raise RunnerArtifactError(
+                        "Resolved role contains an unsafe link or special file."
+                    )
+                return info
+
+            output.add(str(role), arcname=role_prefix, filter=validate_role_member)
+
+
+def _include_role_dependencies(archive_path, scratch_directory):
+    """Read requirements from the pinned commit, install, then repackage."""
+    with tarfile.open(archive_path, "r:gz") as archive:
+        try:
+            member = archive.getmember("roles/requirements.yml")
+        except KeyError:
+            return
+        if not member.isfile():
+            raise RunnerArtifactError("roles/requirements.yml must be a regular file.")
+        if member.size > 1024 * 1024:
+            raise RunnerArtifactError("roles/requirements.yml is too large.")
+        with archive.extractfile(member) as stream:
+            requirements_bytes = stream.read()
+
+    requirements = scratch_directory / "requirements.yml"
+    requirements.write_bytes(requirements_bytes)
+    roles_directory = scratch_directory / "resolved-roles"
+    try:
+        installed = install_repository_roles(requirements, roles_directory)
+    except RoleDependencyError as exc:
+        raise RunnerArtifactError(str(exc)) from exc
+    if not installed:
+        return
+    if not roles_directory.exists() or not any(roles_directory.iterdir()):
+        raise RunnerArtifactError("Role installation returned no roles.")
+
+    merged_path = scratch_directory / "repository-with-roles.tar.gz"
+    _add_resolved_roles(archive_path, merged_path, roles_directory)
+    merged_path.replace(archive_path)
+
+
 def _sha256_and_size(path):
     digest = hashlib.sha256()
     size = 0
@@ -130,11 +204,24 @@ def prepare_repository_artifact(snapshot):
                 ["archive", "--format=tar.gz", "--output", str(temporary_path), commit],
                 repository_path,
             )
+            with tempfile.TemporaryDirectory(
+                prefix=".repository-roles-", dir=str(destination.parent)
+            ) as scratch:
+                _include_role_dependencies(temporary_path, Path(scratch))
             os.chmod(temporary_path, 0o600)
-            temporary_path.replace(destination)
-        except Exception:
+            # Another execution slice can prepare this same Job concurrently.
+            # Publish only if absent: never replace an artefact already handed
+            # to a runner, even when mutable role branches have advanced.
+            try:
+                os.link(temporary_path, destination)
+            except FileExistsError:
+                pass
+        except (OSError, tarfile.TarError) as exc:
+            raise RunnerArtifactError(
+                "Unable to assemble the repository and its role dependencies."
+            ) from exc
+        finally:
             temporary_path.unlink(missing_ok=True)
-            raise
 
     checksum, size = _sha256_and_size(destination)
     return {

@@ -305,6 +305,66 @@ def test_step_limit_input_offers_effective_inventory_hosts(
     assert app.test_preview_calls[-1]["step_limit_override"] == ""
     assert app.test_preview_calls[-1]["refresh_inventory_sources"] is False
 
+
+def test_step_limit_is_optional_for_package_dispatch_even_when_marked_required(
+    app,
+    client,
+    seeded_packages,
+):
+    with app.app_context():
+        package = db.session.get(ProjectPackage, seeded_packages["user_package"])
+        device = next(
+            item for item in package.inputs
+            if item.id == seeded_packages["user_device_input"]
+        )
+        device.binding_type = "step_limit"
+        device.required = True  # Existing Packages may already require it.
+        device.set_conditions({"required_when": {"password": "unused"}})
+        db.session.commit()
+
+    launch_url = "/packages/{}/launch".format(seeded_packages["user_package"])
+    get_response = client.get(launch_url, headers=identity_headers("alice"))
+    assert get_response.status_code == 200
+    body = response_text(get_response)
+    field = re.search(
+        r'<div\s+class="package-launch-field".*?data-variable-name="device".*?</div>',
+        body,
+        re.DOTALL,
+    )
+    assert field is not None
+    assert 'data-base-required="false"' in field.group()
+    assert '"required_when"' not in field.group()
+    assert re.search(r"\srequired(?:\s|>)", field.group()) is None
+
+    form = package_launch_form(seeded_packages)
+    device_field_name = "package_value_{}".format(
+        seeded_packages["user_device_input"]
+    )
+    form.pop(device_field_name)
+    # Blank and absent values both mean no Package override.
+    for posted_form in (form, {**form, device_field_name: ""}):
+        response = client.post(
+            launch_url, data=posted_form, headers=identity_headers("alice")
+        )
+        assert response.status_code == 200
+        assert "Review Package Dispatch" in response_text(response)
+        preview_call = app.test_preview_calls[-1]
+        assert preview_call["refresh_inventory_sources"] is True
+        assert preview_call["raw_step_limit_override"] is None
+        assert preview_call["step_limit_override"] == ""
+
+    response = client.post(
+        launch_url,
+        data=package_launch_form(seeded_packages, device="execution-host.example"),
+        headers=identity_headers("alice"),
+    )
+    assert response.status_code == 200
+    preview_call = app.test_preview_calls[-1]
+    assert preview_call["refresh_inventory_sources"] is True
+    assert preview_call["raw_step_limit_override"] == "execution-host.example"
+    assert preview_call["step_limit_override"] == "execution-host.example"
+
+
 def test_unauthorised_user_cannot_post_package_values(
     app,
     client,

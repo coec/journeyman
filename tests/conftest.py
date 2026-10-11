@@ -392,6 +392,9 @@ def app(
         journeyman_app.test_preview_calls.append(
             {
                 "project_id": project.id,
+                # Preserve the original argument: None inherits Project step
+                # limits, while an explicit "" removes those limits.
+                "raw_step_limit_override": step_limit_override,
                 "step_limit_override": (
                     effective_limit
                 ),

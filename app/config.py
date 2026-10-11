@@ -342,6 +342,15 @@ class Config:
         os.environ.get("JOURNEYMAN_RUNNER_RUNTIME_AUDIT_SCAN_INTERVAL_SECONDS", "300")
     )
 
+    # Role requirements from Git Projects are resolved inside Job snapshots.
+    RUNNER_ROLE_GALAXY_EXECUTABLE = os.environ.get(
+        "JOURNEYMAN_RUNNER_ROLE_GALAXY_EXECUTABLE", "ansible-galaxy"
+    )
+
+    RUNNER_ROLE_INSTALL_TIMEOUT_SECONDS = int(
+        os.environ.get("JOURNEYMAN_RUNNER_ROLE_INSTALL_TIMEOUT_SECONDS", "900")
+    )
+
     GIT_COMMAND_TIMEOUT_SECONDS = int(
         os.environ.get(
             "JOURNEYMAN_GIT_TIMEOUT_SECONDS",

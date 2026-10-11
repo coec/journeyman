@@ -50,6 +50,8 @@ _SETTING_MAP = {
     ("environments", "python_interpreters"): "JOURNEYMAN_ENVIRONMENT_PYTHONS",
     ("execution", "job_timeout_seconds"): "JOURNEYMAN_JOB_TIMEOUT_SECONDS",
     ("execution", "git_timeout_seconds"): "JOURNEYMAN_GIT_TIMEOUT_SECONDS",
+    ("execution", "role_galaxy_executable"): "JOURNEYMAN_RUNNER_ROLE_GALAXY_EXECUTABLE",
+    ("execution", "role_install_timeout_seconds"): "JOURNEYMAN_RUNNER_ROLE_INSTALL_TIMEOUT_SECONDS",
     ("retention", "job_days"): "JOURNEYMAN_JOB_RETENTION_DAYS",
     ("retention", "reaction_days"): "JOURNEYMAN_REACTION_RETENTION_DAYS",
     ("retention", "inventory_cache_seconds"): "JOURNEYMAN_INVENTORY_CACHE_RETENTION_SECONDS",

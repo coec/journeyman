@@ -202,6 +202,23 @@ def _condition_matches(
     return all(results)
 
 
+def _input_required(package_input, visible, values_by_variable):
+    """Step limits are optional overrides of the Project's configured limit."""
+
+    if package_input.binding_type == PACKAGE_BINDING_STEP_LIMIT:
+        return False
+
+    required_when = package_input.get_conditions().get("required_when")
+    return bool(
+        package_input.required
+        or (
+            visible
+            and required_when is not None
+            and _condition_matches(required_when, values_by_variable)
+        )
+    )
+
+
 def _format_display_value(
     package_input,
     value,
@@ -672,6 +689,14 @@ def _field_for_template(
         else:
             template_value = str(value)
 
+    display_conditions = package_input.get_conditions()
+    if package_input.binding_type == PACKAGE_BINDING_STEP_LIMIT:
+        # The JavaScript condition updater must not re-require an optional limit.
+        display_conditions = {
+            key: value for key, value in display_conditions.items()
+            if key != "required_when"
+        }
+
     return {
         "id": package_input.id,
         "variable_name": (
@@ -697,9 +722,7 @@ def _field_for_template(
         "binding_type": (
             package_input.binding_type
         ),
-        "conditions": (
-            package_input.get_conditions()
-        ),
+        "conditions": display_conditions,
         "value": template_value,
         "checked": bool(value),
         "choices": choices,
@@ -734,10 +757,6 @@ def package_launch_fields(package, *, runtime_values=None, inventory_hostvars=No
             "visible_when"
         )
 
-        required_when = conditions.get(
-            "required_when"
-        )
-
         visible = (
             visible_when is None
             or _condition_matches(
@@ -746,17 +765,7 @@ def package_launch_fields(package, *, runtime_values=None, inventory_hostvars=No
             )
         )
 
-        required = (
-            package_input.required
-            or (
-                visible
-                and required_when is not None
-                and _condition_matches(
-                    required_when,
-                    values_by_variable,
-                )
-            )
-        )
+        required = _input_required(package_input, visible, values_by_variable)
 
         value = None
 
@@ -838,10 +847,6 @@ def prepare_package_launch(
             "visible_when"
         )
 
-        required_when = conditions.get(
-            "required_when"
-        )
-
         visible = (
             visible_when is None
             or _condition_matches(
@@ -850,17 +855,7 @@ def prepare_package_launch(
             )
         )
 
-        required = (
-            package_input.required
-            or (
-                visible
-                and required_when is not None
-                and _condition_matches(
-                    required_when,
-                    values_by_variable,
-                )
-            )
-        )
+        required = _input_required(package_input, visible, values_by_variable)
 
         value = None
         submitted_value_valid = True
@@ -1135,19 +1130,11 @@ def package_inventory_binding_fields(package, binding_names, *, runtime_values=N
     for package_input in selected_inputs:
         conditions = package_input.get_conditions()
         visible_when = conditions.get("visible_when")
-        required_when = conditions.get("required_when")
         visible = (
             visible_when is None
             or _condition_matches(visible_when, values_by_variable)
         )
-        required = (
-            package_input.required
-            or (
-                visible
-                and required_when is not None
-                and _condition_matches(required_when, values_by_variable)
-            )
-        )
+        required = _input_required(package_input, visible, values_by_variable)
 
         value = None
         if visible:
@@ -1210,19 +1197,11 @@ def prepare_inventory_binding_values(
 
         conditions = package_input.get_conditions()
         visible_when = conditions.get("visible_when")
-        required_when = conditions.get("required_when")
         visible = (
             visible_when is None
             or _condition_matches(visible_when, values_by_variable)
         )
-        required = (
-            package_input.required
-            or (
-                visible
-                and required_when is not None
-                and _condition_matches(required_when, values_by_variable)
-            )
-        )
+        required = _input_required(package_input, visible, values_by_variable)
 
         value = None
         submitted_value_valid = True
