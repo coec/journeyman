@@ -925,6 +925,9 @@ def queue_project_execution(
                 refresh_inventory_after=(
                     project_step.refresh_inventory_after
                 ),
+                inventory_refresh_after_policy=(
+                    project_step.inventory_refresh_after_policy
+                ),
                 depends_on_json=project_step.depends_on_json or "[]",
                 oversight_required_before=any(
                     dependency in oversight_after_positions

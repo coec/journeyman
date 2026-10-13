@@ -78,6 +78,7 @@ def project_configuration_params(project):
             "failure_only": bool(step.failure_only),
             "refresh_repository": bool(step.refresh_repository),
             "refresh_inventory_after": bool(step.refresh_inventory_after),
+            "inventory_refresh_after_policy": step.inventory_refresh_after_policy,
             "oversight_after": bool(step.oversight_after),
             "depends_on": [
                 project.steps[position - 1].name
@@ -102,6 +103,7 @@ def project_configuration_params(project):
         "credentials": [credential.name for credential in project.credentials],
         "max_parallel_steps": project.max_parallel_steps,
         "concurrency_policy": project.concurrency_policy or "unrestricted",
+        "inventory_refresh_policy": project.inventory_refresh_policy or "if_missing",
         "oversight_required_between_all_steps": bool(
             project.oversight_required_between_all_steps
         ),

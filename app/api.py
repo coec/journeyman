@@ -291,7 +291,8 @@ def dispatch_package(package_id):
         preview = build_project_execution_preview(
             package.project,
             refresh_repositories=True,
-            refresh_inventory_sources=True,
+            refresh_inventory_sources=False,
+            inventory_refresh_policy=(package.project.inventory_refresh_policy or "if_missing"),
             step_limit_override=prepared.execution_data.step_limit or None,
             inventory_bindings=prepared.execution_data.inventory_bindings,
         )

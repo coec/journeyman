@@ -162,6 +162,10 @@ class Project(db.Model):
         default=4,
     )
 
+    inventory_refresh_policy = db.Column(
+        db.String(16), nullable=False, default="if_missing"
+    )
+
     concurrency_policy = db.Column(
         db.String(32),
         nullable=False,

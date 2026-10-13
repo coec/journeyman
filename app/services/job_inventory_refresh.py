@@ -6,6 +6,7 @@ from app.services.inventory_resolver import (
     InventoryResolutionError,
     refresh_inventory,
 )
+from app.services.inventory_refresh_policy import resolve_with_policy
 from app.services.job_inventory_snapshot import (
     JobInventorySnapshotError,
     delete_job_inventory_snapshot_path,
@@ -246,13 +247,19 @@ def refresh_job_inventories_after_step(job, trigger_step):
                 )
 
             try:
-                inventory_data = refresh_inventory(
+                inventory_data = resolve_with_policy(
                     inventory,
+                    (
+                        "always" if trigger_step.refresh_inventory_after
+                        and trigger_step.inventory_refresh_after_policy == "never"
+                        else trigger_step.inventory_refresh_after_policy or "never"
+                    ),
                     bindings=(
                         job.package_snapshot.get_inventory_bindings()
                         if job.package_snapshot is not None
                         else None
                     ),
+                    refreshed=refreshed_inventory_data,
                 )
             except InventoryResolutionError as exc:
                 raise JobInventoryRefreshError(

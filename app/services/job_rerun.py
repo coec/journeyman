@@ -444,6 +444,7 @@ def rerun_job(source_job, *, requested_by, source="Journeyman API", scope=RERUN_
             continue_on_failure=source.continue_on_failure,
             failure_only=source.failure_only,
             refresh_inventory_after=source.refresh_inventory_after,
+            inventory_refresh_after_policy=source.inventory_refresh_after_policy,
             depends_on_json=source.depends_on_json,
             oversight_required_before=source.oversight_required_before,
             oversight_approved=not source.oversight_required_before,

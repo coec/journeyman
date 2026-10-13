@@ -32,6 +32,8 @@ _MULTI_VALUE_FORM_FIELDS = frozenset({
     "step_remote_shell_become",
     "step_refresh_repository",
     "step_refresh_inventory_after",
+    "step_inventory_refresh_after_policy",
+    "step_inventory_refresh_after_policy",
     "step_credentials_override",
     "package_input_row",
     "package_permission_row",

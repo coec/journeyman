@@ -80,6 +80,17 @@
         </div>
 
         <label class="inventory-field">
+            Inventory refresh before dispatch
+            <select name="inventory_refresh_policy">
+                {% set policy = form_data.inventory_refresh_policy|default('if_missing') %}
+                <option value="never" {% if policy == 'never' %}selected{% endif %}>Never refresh</option>
+                <option value="if_missing" {% if policy == 'if_missing' %}selected{% endif %}>Refresh if cache missing</option>
+                <option value="always" {% if policy == 'always' %}selected{% endif %}>Always refresh</option>
+            </select>
+            <small>Uses cached source inventories by default; refreshes missing caches before previewing the job.</small>
+        </label>
+
+        <label class="inventory-field">
             Default Inventory
             <select name="inventory_id">
                 <option value="">None</option>
@@ -352,10 +363,15 @@
                     <small>Synchronizes this step's repository before previewing and snapshotting the job.</small>
                 </label>
 
-                <label class="checkbox-label">
-                    <input type="checkbox" class="step-refresh-inventory-after" name="step_refresh_inventory_after" value="{{ loop.index0 }}" {% if step.refresh_inventory_after %}checked{% endif %}>
-                    Refresh inventories after this step succeeds
-                    <small>Re-resolves inventories used by dependent later steps so newly created or registered hosts can be used without starting a new Job.</small>
+                <label>
+                    Inventory refresh after this step succeeds
+                    <select class="step-refresh-inventory-after" name="step_inventory_refresh_after_policy">
+                        {% set after_policy = step.inventory_refresh_after_policy|default('always' if step.refresh_inventory_after else 'never') %}
+                        <option value="never" {% if after_policy == 'never' %}selected{% endif %}>Never refresh</option>
+                        <option value="if_missing" {% if after_policy == 'if_missing' %}selected{% endif %}>Refresh if cache missing</option>
+                        <option value="always" {% if after_policy == 'always' %}selected{% endif %}>Always refresh</option>
+                    </select>
+                    <small>Only affects inventories of dependent steps. Cached source inventories are reused unless refresh is required.</small>
                 </label>
 
                 <label class="inventory-field">
@@ -593,10 +609,14 @@
             <small>Synchronizes this step's repository before previewing and snapshotting the job.</small>
         </label>
 
-        <label class="checkbox-label">
-            <input type="checkbox" class="step-refresh-inventory-after" name="step_refresh_inventory_after" value="0">
-            Refresh inventories after this step succeeds
-            <small>Re-resolves inventories used by dependent later steps so newly created or registered hosts can be used without starting a new Job.</small>
+        <label>
+            Inventory refresh after this step succeeds
+            <select class="step-refresh-inventory-after" name="step_inventory_refresh_after_policy">
+                <option value="never" selected>Never refresh</option>
+                <option value="if_missing">Refresh if cache missing</option>
+                <option value="always">Always refresh</option>
+            </select>
+            <small>Only affects inventories of dependent steps.</small>
         </label>
 
         <label class="inventory-field">

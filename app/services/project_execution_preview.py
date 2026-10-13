@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from flask import current_app
 
+from .inventory_refresh_policy import resolve_with_policy
 from .inventory_resolver import (
     InventoryResolutionError,
     refresh_inventory,
@@ -186,6 +187,7 @@ def build_project_execution_preview(
     step_limit_override=None,
     refresh_repositories=False,
     refresh_inventory_sources=False,
+    inventory_refresh_policy=None,
     inventory_bindings=None,
     progress=None,
 ):
@@ -361,23 +363,14 @@ def build_project_execution_preview(
                 'Resolving inventory "{}"'.format(inventory.name),
             )
         try:
-            if refresh_inventory_sources:
-                resolved_inventory_data[
-                    inventory_id
-                ] = refresh_inventory(
-                    inventory,
-                    refreshed_inventory_data=(
-                        refreshed_inventory_data
-                    ),
-                    bindings=inventory_bindings,
-                )
-            else:
-                resolved_inventory_data[
-                    inventory_id
-                ] = resolve_inventory(
-                    inventory,
-                    bindings=inventory_bindings,
-                )
+            policy = (
+                "always" if refresh_inventory_sources else
+                inventory_refresh_policy or "never"
+            )
+            resolved_inventory_data[inventory_id] = resolve_with_policy(
+                inventory, policy, bindings=inventory_bindings,
+                refreshed=refreshed_inventory_data,
+            )
 
         except InventoryResolutionError as exc:
             current_app.logger.warning(

@@ -128,7 +128,10 @@ def _normalise_steps(values, *, default_repository, default_inventory, default_e
             "continue_on_failure": bool(item.get("continue_on_failure", False)),
             "failure_only": bool(item.get("failure_only", False)),
             "refresh_repository": bool(item.get("refresh_repository", False)),
-            "refresh_inventory_after": bool(item.get("refresh_inventory_after", False)),
+            "refresh_inventory_after": (
+                item.get("inventory_refresh_after_policy", "always" if item.get("refresh_inventory_after") else "never") != "never"
+            ),
+            "inventory_refresh_after_policy": item.get("inventory_refresh_after_policy", "always" if item.get("refresh_inventory_after") else "never"),
             "oversight_after": bool(item.get("oversight_after", False)),
             "credentials_override": "credentials" in item,
             "dependency_positions": sorted(set(dependency_positions)),
@@ -167,6 +170,7 @@ def _project_state(project):
         "credentials": [row.name for row in project.credentials],
         "max_parallel_steps": project.max_parallel_steps,
         "concurrency_policy": project.concurrency_policy or "unrestricted",
+        "inventory_refresh_policy": project.inventory_refresh_policy or "if_missing",
         "oversight_required_between_all_steps": bool(project.oversight_required_between_all_steps),
         "enabled": bool(project.enabled),
         "steps": [
@@ -189,6 +193,7 @@ def _project_state(project):
                 "failure_only": bool(step.failure_only),
                 "refresh_repository": bool(step.refresh_repository),
                 "refresh_inventory_after": bool(step.refresh_inventory_after),
+                "inventory_refresh_after_policy": step.inventory_refresh_after_policy,
                 "oversight_after": bool(step.oversight_after),
                 "depends_on": step.get_dependency_positions(),
                 "enabled": bool(step.enabled),
@@ -248,6 +253,11 @@ def configure_project(values, *, owner="system"):
     except ValueError as exc:
         raise ProjectConfigurationError(str(exc)) from exc
 
+    if values.get("inventory_refresh_policy", "if_missing") not in {"never", "if_missing", "always"}:
+        raise ProjectConfigurationError("Invalid inventory refresh policy.")
+    if any(row["inventory_refresh_after_policy"] not in {"never", "if_missing", "always"} for row in steps):
+        raise ProjectConfigurationError("Invalid after-step inventory refresh policy.")
+
     desired = {
         "name": name,
         "description": _name(values.get("description")),
@@ -258,6 +268,7 @@ def configure_project(values, *, owner="system"):
         "credentials": [row.name for row in credentials],
         "max_parallel_steps": max_parallel_steps,
         "concurrency_policy": concurrency_policy,
+        "inventory_refresh_policy": values.get("inventory_refresh_policy", "if_missing"),
         "oversight_required_between_all_steps": bool(values.get("oversight_required_between_all_steps", False)),
         "enabled": bool(values.get("enabled", True)),
         "steps": [
@@ -280,6 +291,7 @@ def configure_project(values, *, owner="system"):
                 "failure_only": row["failure_only"],
                 "refresh_repository": row["refresh_repository"],
                 "refresh_inventory_after": row["refresh_inventory_after"],
+                "inventory_refresh_after_policy": row["inventory_refresh_after_policy"],
                 "oversight_after": row["oversight_after"],
                 "depends_on": row["dependency_positions"],
                 "enabled": row["enabled"],
@@ -306,6 +318,7 @@ def configure_project(values, *, owner="system"):
     project.credentials = credentials
     project.max_parallel_steps = max_parallel_steps
     project.concurrency_policy = desired["concurrency_policy"]
+    project.inventory_refresh_policy = desired["inventory_refresh_policy"]
     project.oversight_required_between_all_steps = desired["oversight_required_between_all_steps"]
     project.enabled = desired["enabled"]
 
@@ -334,6 +347,7 @@ def configure_project(values, *, owner="system"):
             failure_only=row["failure_only"],
             refresh_repository=row["refresh_repository"],
             refresh_inventory_after=row["refresh_inventory_after"],
+            inventory_refresh_after_policy=row["inventory_refresh_after_policy"],
             oversight_after=row["oversight_after"],
             credentials_override=row["credentials_override"],
             enabled=row["enabled"],

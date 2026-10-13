@@ -90,6 +90,7 @@ def _step_snapshot(step):
         "failure_only": bool(step.failure_only),
         "refresh_repository": bool(step.refresh_repository),
         "refresh_inventory_after": bool(step.refresh_inventory_after),
+        "inventory_refresh_after_policy": step.inventory_refresh_after_policy,
         "oversight_after": bool(step.oversight_after),
         "credentials_override": bool(step.credentials_override),
         "depends_on": step.get_dependency_positions(),
@@ -140,6 +141,7 @@ def build_project_revision_snapshot(project):
             "execution_type": project.execution_type,
             "max_parallel_steps": project.max_parallel_steps,
             "concurrency_policy": project.concurrency_policy,
+            "inventory_refresh_policy": project.inventory_refresh_policy,
             "oversight_required_between_all_steps": bool(
                 project.oversight_required_between_all_steps
             ),

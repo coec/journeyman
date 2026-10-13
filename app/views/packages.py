@@ -873,7 +873,8 @@ def project_package_launch(package_id):
             legacy_routes.build_project_execution_preview(
                 package.project,
                 refresh_repositories=True,
-                refresh_inventory_sources=True,
+                refresh_inventory_sources=False,
+                inventory_refresh_policy=(package.project.inventory_refresh_policy or "if_missing"),
                 step_limit_override=(
                     prepared_launch
                     .execution_data

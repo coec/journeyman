@@ -518,6 +518,7 @@ def project_new():
         "credential_ids": [],
         "max_parallel_steps": 4,
         "concurrency_policy": CONCURRENCY_EXCLUSIVE,
+        "inventory_refresh_policy": "if_missing",
         "check_mode": False,
         "oversight_required_between_all_steps": False,
         "runner_routing": "local",
@@ -546,6 +547,7 @@ def project_new():
                 "failure_only": False,
                 "refresh_repository": False,
                 "refresh_inventory_after": False,
+                "inventory_refresh_after_policy": "never",
                 "credentials_override": False,
                 "dependency_positions": [],
                 "enabled": True,
@@ -568,6 +570,7 @@ def project_new():
             "credential_ids": _credential_ids("credential_ids"),
             "max_parallel_steps": _parallel_step_limit(),
             "concurrency_policy": _concurrency_policy(),
+            "inventory_refresh_policy": request.form.get("inventory_refresh_policy", "if_missing"),
             "check_mode": request.form.get("check_mode") == "on",
             "oversight_required_between_all_steps": False,
             "runner_routing": "local",
@@ -618,6 +621,8 @@ def project_new():
                 errors.append(reserved_error)
         if form_data["execution_type"] is None:
             errors.append("Project type is invalid.")
+        if form_data["inventory_refresh_policy"] not in {"never", "if_missing", "always"}:
+            errors.append("Invalid inventory refresh policy.")
         if form_data["concurrency_policy"] is None:
             errors.append("Project concurrency policy is invalid.")
 
@@ -715,6 +720,7 @@ def project_new():
             environment_id=form_data["environment_id"],
             max_parallel_steps=form_data["max_parallel_steps"],
             concurrency_policy=form_data["concurrency_policy"],
+            inventory_refresh_policy=form_data["inventory_refresh_policy"],
             oversight_required_between_all_steps=(
                 form_data["oversight_required_between_all_steps"]
             ),
@@ -780,6 +786,7 @@ def project_new():
                     failure_only=row["failure_only"],
                     refresh_repository=row["refresh_repository"],
                     refresh_inventory_after=row["refresh_inventory_after"],
+                    inventory_refresh_after_policy=row.get("inventory_refresh_after_policy", "never"),
                     oversight_after=row.get("oversight_after", False),
                     credentials_override=row["credentials_override"],
                     depends_on_json=json.dumps(row["dependency_positions"]),
@@ -999,6 +1006,7 @@ def project_edit(project_id):
         "credential_ids": [credential.id for credential in project.credentials],
         "max_parallel_steps": project.max_parallel_steps,
         "concurrency_policy": project.concurrency_policy or CONCURRENCY_EXCLUSIVE,
+        "inventory_refresh_policy": project.inventory_refresh_policy or "if_missing",
         "check_mode": any(bool(step.check_mode) for step in project.steps),
         "oversight_required_between_all_steps": (
             project.oversight_required_between_all_steps
@@ -1032,6 +1040,7 @@ def project_edit(project_id):
             "credential_ids": _credential_ids("credential_ids"),
             "max_parallel_steps": _parallel_step_limit(),
             "concurrency_policy": _concurrency_policy(),
+            "inventory_refresh_policy": request.form.get("inventory_refresh_policy", "if_missing"),
             "check_mode": request.form.get("check_mode") == "on",
             "oversight_required_between_all_steps": False,
             "runner_routing": "local",
@@ -1092,6 +1101,8 @@ def project_edit(project_id):
 
         if form_data["execution_type"] is None:
             errors.append("Project type is invalid.")
+        if form_data["inventory_refresh_policy"] not in {"never", "if_missing", "always"}:
+            errors.append("Invalid inventory refresh policy.")
         if form_data["concurrency_policy"] is None:
             errors.append("Project concurrency policy is invalid.")
 
@@ -1188,6 +1199,7 @@ def project_edit(project_id):
         project.environment_id = form_data["environment_id"]
         project.max_parallel_steps = form_data["max_parallel_steps"]
         project.concurrency_policy = form_data["concurrency_policy"]
+        project.inventory_refresh_policy = form_data["inventory_refresh_policy"]
         project.oversight_required_between_all_steps = (
             form_data["oversight_required_between_all_steps"]
         )
@@ -1268,6 +1280,7 @@ def project_edit(project_id):
                     failure_only=row["failure_only"],
                     refresh_repository=row["refresh_repository"],
                     refresh_inventory_after=row["refresh_inventory_after"],
+                    inventory_refresh_after_policy=row.get("inventory_refresh_after_policy", "never"),
                     oversight_after=row.get("oversight_after", False),
                     credentials_override=row["credentials_override"],
                     depends_on_json=json.dumps(row["dependency_positions"]),
@@ -1370,6 +1383,7 @@ def project_clone(project_id):
         execution_type=source.execution_type,
         max_parallel_steps=source.max_parallel_steps,
         concurrency_policy=source.concurrency_policy,
+        inventory_refresh_policy=source.inventory_refresh_policy,
         oversight_required_between_all_steps=(
             source.oversight_required_between_all_steps
         ),
@@ -1408,6 +1422,7 @@ def project_clone(project_id):
                 failure_only=source_step.failure_only,
                 refresh_repository=source_step.refresh_repository,
                 refresh_inventory_after=source_step.refresh_inventory_after,
+                inventory_refresh_after_policy=source_step.inventory_refresh_after_policy,
                 oversight_after=source_step.oversight_after,
                 credentials_override=source_step.credentials_override,
                 depends_on_json=source_step.depends_on_json,
@@ -1508,7 +1523,8 @@ def project_run_preview(project_id):
         preview = build_project_execution_preview(
             project,
             refresh_repositories=True,
-            refresh_inventory_sources=True,
+            refresh_inventory_sources=False,
+            inventory_refresh_policy=(project.inventory_refresh_policy or "if_missing"),
             progress=progress,
         )
 

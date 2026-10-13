@@ -1751,6 +1751,12 @@ def _project_steps_from_request():
         if str(value).isdigit()
     }
 
+    inventory_refresh_after_policies = request.form.getlist("step_inventory_refresh_after_policy")
+    inventory_refresh_after_policies = [
+        value if value in {"never", "if_missing", "always"} else "never"
+        for value in inventory_refresh_after_policies
+    ]
+
     refresh_inventory_after_indexes = {
         int(value)
         for value in request.form.getlist("step_refresh_inventory_after")
@@ -1909,8 +1915,16 @@ def _project_steps_from_request():
                 ),
                 "failure_only": index in failure_only_indexes,
                 "refresh_repository": index in refresh_repository_indexes,
+                "inventory_refresh_after_policy": (
+                    inventory_refresh_after_policies[index]
+                    if index < len(inventory_refresh_after_policies)
+                    and inventory_refresh_after_policies[index] in {"never", "if_missing", "always"}
+                    else ("always" if index in refresh_inventory_after_indexes else "never")
+                ),
                 "refresh_inventory_after": (
-                    index in refresh_inventory_after_indexes
+                    inventory_refresh_after_policies[index] != "never"
+                    if index < len(inventory_refresh_after_policies)
+                    else index in refresh_inventory_after_indexes
                 ),
                 "oversight_after": index in oversight_after_indexes,
                 "credentials_override": (

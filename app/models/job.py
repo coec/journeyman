@@ -461,6 +461,10 @@ class JobStep(db.Model):
         default=False,
     )
 
+    inventory_refresh_after_policy = db.Column(
+        db.String(16), nullable=False, default="never"
+    )
+
     refresh_inventory_after = db.Column(
         db.Boolean,
         nullable=False,
