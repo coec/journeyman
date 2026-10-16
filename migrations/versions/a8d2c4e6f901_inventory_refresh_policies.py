@@ -7,7 +7,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "a8d2c4e6f901"
-down_revision = "e5a9d3b7c124"
+down_revision = "a3f5b81c9d72"
 branch_labels = None
 depends_on = None
 
@@ -22,7 +22,7 @@ def upgrade():
                                        nullable=False, server_default="never"))
         op.execute(sa.text(
             "UPDATE {} SET inventory_refresh_after_policy = 'always' "
-            "WHERE refresh_inventory_after = 1".format(table)
+            "WHERE refresh_inventory_after = TRUE".format(table)
         ))
 
 
