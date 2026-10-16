@@ -1,7 +1,7 @@
 """Three-state inventory refresh policies.
 
 Revision ID: a8d2c4e6f901
-Revises: e5a9d3b7c124
+Revises: a3f5b81c9d72
 """
 from alembic import op
 import sqlalchemy as sa
