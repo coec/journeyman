@@ -72,6 +72,9 @@ def test_runner_management_playbook_updates_signal_capable_runner_components():
         encoding="utf-8"
     )
     runner = (ROOT / "bin" / "journeyman-remote-runner").read_text(encoding="utf-8")
+    unit = (ROOT / "deploy" / "systemd" / "journeyman-remote-runner.service").read_text(
+        encoding="utf-8"
+    )
 
     assert_output_contains(
         playbook,
@@ -85,12 +88,33 @@ def test_runner_management_playbook_updates_signal_capable_runner_components():
     )
     assert_output_contains(
         playbook,
-        "ProtectSystem=full",
+        "src: /opt/journeyman/deploy/systemd/journeyman-remote-runner.service",
+        purpose="Install/update deploys the canonical remote runner service unit",
+    )
+    assert_output_contains(
+        playbook,
+        "dest: /etc/systemd/system/journeyman-remote-runner.service",
+        purpose="Install/update installs the canonical unit at the systemd service path",
+    )
+    assert_output_contains(
+        unit,
+        "ProtectSystem=strict",
         purpose=(
-            "Updated runner service protects system paths while permitting "
-            "general-purpose automation writes"
+            "The canonical runner service protects the filesystem while allowing "
+            "explicitly configured writable paths"
         ),
     )
+    writable_paths = next(
+        line for line in unit.splitlines() if line.startswith("ReadWritePaths=")
+    ).split("=", 1)[1].split()
+    for path in (
+        "/var/lib/journeyman/remote-runner",
+        "/var/lib/journeyman/remote-jobs",
+        "/var/spool/journeyman/signals",
+        "/opt/journeyman/environments",
+        "/etc/journeyman/runner-pki",
+    ):
+        assert path in writable_paths, "Runner service must permit writes to {}".format(path)
     assert_output_contains(
         playbook,
         "--expected-version",

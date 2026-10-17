@@ -148,8 +148,8 @@ def test_refresh_creates_new_snapshot_for_pending_descendants_only(
 
         monkeypatch.setattr(
             job_inventory_refresh,
-            "refresh_inventory",
-            lambda _inventory, **_kwargs: _inventory_data(
+            "resolve_with_policy",
+            lambda _inventory, _policy, **_kwargs: _inventory_data(
                 "old-host",
                 "new-host",
             ),
@@ -231,8 +231,8 @@ def test_refresh_updates_transitive_descendants(
 
         monkeypatch.setattr(
             job_inventory_refresh,
-            "refresh_inventory",
-            lambda _inventory, **_kwargs: _inventory_data(
+            "resolve_with_policy",
+            lambda _inventory, _policy, **_kwargs: _inventory_data(
                 "new-host"
             ),
         )
@@ -282,7 +282,7 @@ def test_refresh_disabled_is_noop(
 
         monkeypatch.setattr(
             job_inventory_refresh,
-            "refresh_inventory",
+            "resolve_with_policy",
             lambda _inventory: (_ for _ in ()).throw(
                 AssertionError(
                     "refresh should not run"
@@ -369,8 +369,8 @@ def test_sliced_refresh_replans_pending_descendant_hosts_by_runner(
 
         monkeypatch.setattr(
             job_inventory_refresh,
-            "refresh_inventory",
-            lambda _inventory, **_kwargs: refreshed_data,
+            "resolve_with_policy",
+            lambda _inventory, _policy, **_kwargs: refreshed_data,
         )
         monkeypatch.setattr(
             job_inventory_refresh,
@@ -438,8 +438,8 @@ def test_sliced_refresh_rejects_replan_after_descendant_slice_dispatch(
 
         monkeypatch.setattr(
             job_inventory_refresh,
-            "refresh_inventory",
-            lambda _inventory, **_kwargs: _inventory_data("new-host"),
+            "resolve_with_policy",
+            lambda _inventory, _policy, **_kwargs: _inventory_data("new-host"),
         )
 
         try:

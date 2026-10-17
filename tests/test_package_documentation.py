@@ -14,7 +14,7 @@ def test_package_form_uses_runtime_variable_terminology():
 
     assert "Runtime variable" in template
     assert "Ansible extra variable" not in template
-    assert "Validation examples" in template
+    assert "Validation options" in template
 
 
 def test_readme_documents_package_as_user_input_layer():

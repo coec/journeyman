@@ -1,3 +1,7 @@
+import base64
+from pathlib import Path
+import re
+
 from app import db
 from app.models import Runner
 
@@ -25,7 +29,25 @@ def test_resource_admin_can_generate_manual_runner_bootstrap(app, client):
     assert "journeyman-remote-runner register" in body
     assert "JOURNEYMAN_REGISTRATION_TOKEN=" in body
     assert "https_proxy=http://proxy.example:3128" in body
-    assert "ReadWritePaths=" in body
+    unit_payload = re.search(
+        r"cat > /tmp/journeyman-remote-runner-service[.]b64 <<'JOURNEYMAN_PAYLOAD'\n"
+        r"([A-Za-z0-9+/=\n]+)\nJOURNEYMAN_PAYLOAD\n"
+        r"base64 -d /tmp/journeyman-remote-runner-service[.]b64 > "
+        r"/etc/systemd/system/journeyman-remote-runner[.]service\n",
+        body,
+    )
+    assert unit_payload is not None, "Bootstrap must install the embedded runner service unit"
+    unit = base64.b64decode(unit_payload.group(1)).decode("utf-8")
+    canonical_unit = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "systemd" / "journeyman-remote-runner.service"
+    ).read_text(encoding="utf-8")
+    assert unit == canonical_unit
+    assert "ProtectSystem=strict" in unit
+    writable_paths = next(
+        line for line in unit.splitlines() if line.startswith("ReadWritePaths=")
+    ).split("=", 1)[1].split()
+    assert "/etc/journeyman/runner-pki" in writable_paths
     assert "/etc/journeyman/runner-pki" in body
     assert "umask 027" in body
     assert "chown -R root:journeyman /opt/journeyman/venv" in body

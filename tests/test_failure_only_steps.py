@@ -1,16 +1,22 @@
+import sys
 from pathlib import Path
 from runpy import run_path
 from types import SimpleNamespace
 
 
 def _runner():
-    return run_path(
-        str(
-            Path(__file__).resolve().parents[1]
-            / "bin"
-            / "journeyman-runner"
-        )
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / "bin"
+        / "journeyman-runner"
     )
+    bin_dir = str(runner_path.parent)
+
+    sys.path.insert(0, bin_dir)
+    try:
+        return run_path(str(runner_path))
+    finally:
+        sys.path.remove(bin_dir)
 
 
 def _step(position, status, dependencies=None, failure_only=False):

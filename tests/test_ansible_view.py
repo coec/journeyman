@@ -31,6 +31,7 @@ def test_project_configuration_params_preserve_credential_inheritance():
         failure_only=False,
         refresh_repository=False,
         refresh_inventory_after=False,
+        inventory_refresh_after_policy="never",
         oversight_after=False,
         enabled=True,
         get_extra_vars=lambda: {},
@@ -53,6 +54,7 @@ def test_project_configuration_params_preserve_credential_inheritance():
         failure_only=False,
         refresh_repository=False,
         refresh_inventory_after=False,
+        inventory_refresh_after_policy="never",
         oversight_after=False,
         enabled=True,
         get_extra_vars=lambda: {"mode": "test"},
@@ -69,6 +71,7 @@ def test_project_configuration_params_preserve_credential_inheritance():
         max_parallel_steps=4,
         concurrency_policy="exclusive",
         oversight_required_between_all_steps=False,
+        inventory_refresh_policy="if_missing",
         enabled=True,
         steps=[inherited, overridden],
     )

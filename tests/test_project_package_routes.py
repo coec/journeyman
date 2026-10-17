@@ -349,7 +349,7 @@ def test_step_limit_is_optional_for_package_dispatch_even_when_marked_required(
         assert response.status_code == 200
         assert "Review Package Dispatch" in response_text(response)
         preview_call = app.test_preview_calls[-1]
-        assert preview_call["refresh_inventory_sources"] is True
+        assert preview_call["refresh_inventory_sources"] is False
         assert preview_call["raw_step_limit_override"] is None
         assert preview_call["step_limit_override"] == ""
 
@@ -360,7 +360,7 @@ def test_step_limit_is_optional_for_package_dispatch_even_when_marked_required(
     )
     assert response.status_code == 200
     preview_call = app.test_preview_calls[-1]
-    assert preview_call["refresh_inventory_sources"] is True
+    assert preview_call["refresh_inventory_sources"] is False
     assert preview_call["raw_step_limit_override"] == "execution-host.example"
     assert preview_call["step_limit_override"] == "execution-host.example"
 
@@ -481,7 +481,7 @@ def test_package_preview_refreshes_inventory_sources_once_before_review(
 
     assert app.test_preview_calls[-1][
         "refresh_inventory_sources"
-    ] is True
+    ] is False
 
 
 def test_package_launch_preview_redacts_secret(

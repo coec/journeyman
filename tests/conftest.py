@@ -382,6 +382,7 @@ def app(
         step_limit_override=None,
         refresh_repositories=False,
         refresh_inventory_sources=False,
+        inventory_refresh_policy=None,
         inventory_bindings=None,
         progress=None,
     ):

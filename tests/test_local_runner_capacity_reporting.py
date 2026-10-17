@@ -1,15 +1,21 @@
+import sys
 from pathlib import Path
 from runpy import run_path
 
 
 def _runner():
-    return run_path(
-        str(
-            Path(__file__).resolve().parents[1]
-            / "bin"
-            / "journeyman-runner"
-        )
+    runner_path = (
+        Path(__file__).resolve().parents[1]
+        / "bin"
+        / "journeyman-runner"
     )
+    bin_dir = str(runner_path.parent)
+
+    sys.path.insert(0, bin_dir)
+    try:
+        return run_path(str(runner_path))
+    finally:
+        sys.path.remove(bin_dir)
 
 
 def test_local_runner_execution_transitions_publish_capacity_immediately():
