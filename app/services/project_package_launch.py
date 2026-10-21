@@ -794,25 +794,18 @@ def package_launch_fields(package, *, runtime_values=None, inventory_hostvars=No
 
         required = _input_required(package_input, visible, values_by_variable)
 
-        value = None
+        # Render configured defaults even for initially hidden fields.  The
+        # browser may reveal them after an earlier Choice changes.  Only
+        # visible fields contribute to condition evaluation or execution.
+        value = _substitute_runtime_values(
+            package_input.get_default_value(),
+            runtime_values,
+        )
+        if package_input.input_type == PACKAGE_INPUT_BOOLEAN and value is None:
+            value = False
 
-        if visible:
-            value = _substitute_runtime_values(
-                package_input.get_default_value(),
-                runtime_values,
-            )
-
-            if (
-                package_input.input_type
-                == PACKAGE_INPUT_BOOLEAN
-                and value is None
-            ):
-                value = False
-
-            if value is not None:
-                values_by_variable[
-                    package_input.variable_name
-                ] = value
+        if visible and value is not None:
+            values_by_variable[package_input.variable_name] = value
 
         current_choices = _choices_for_input(
             package_input, values_by_variable, inventory_hostvars
@@ -1163,16 +1156,15 @@ def package_inventory_binding_fields(package, binding_names, *, runtime_values=N
         )
         required = _input_required(package_input, visible, values_by_variable)
 
-        value = None
-        if visible:
-            value = _substitute_runtime_values(
-                package_input.get_default_value(),
-                runtime_values,
-            )
-            if package_input.input_type == PACKAGE_INPUT_BOOLEAN and value is None:
-                value = False
-            if value is not None:
-                values_by_variable[package_input.variable_name] = value
+        # Inspect forms use the same conditional-default rendering semantics.
+        value = _substitute_runtime_values(
+            package_input.get_default_value(),
+            runtime_values,
+        )
+        if package_input.input_type == PACKAGE_INPUT_BOOLEAN and value is None:
+            value = False
+        if visible and value is not None:
+            values_by_variable[package_input.variable_name] = value
 
         fields.append(
             _field_for_template(

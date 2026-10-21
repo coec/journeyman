@@ -625,7 +625,7 @@
                     <span><b>Text:</b> minimum_length, maximum_length, pattern.</span>
                     <span><b>Integer:</b> minimum, maximum.</span>
                     <span><b>Date:</b> minimum_date, maximum_date (YYYY-MM-DD), output_format (Python strftime). Default output is YYYY-MM-DD; the playbook or script receives a formatted string.</span>
-                    <span><b>Choice:</b> multiple (true/false), minimum_selections, maximum_selections; static choices or choices_from_hostvar for inventory-derived choices.</span>
+                    <span><b>Choice:</b> multiple (true/false), minimum_selections, maximum_selections; static choices (optionally mark one with default: true; multiple: true permits several defaults) or choices_from_hostvar for inventory-derived choices.</span>
                     <span><b>Email address(es):</b> supplied addresses are validated automatically.</span>
                     <code>minimum_length: 3
 maximum_length: 40
@@ -993,7 +993,7 @@ visible_when:
                     <span><b>Text:</b> minimum_length, maximum_length, pattern.</span>
                     <span><b>Integer:</b> minimum, maximum.</span>
                     <span><b>Date:</b> minimum_date, maximum_date (YYYY-MM-DD), output_format (Python strftime). Default output is YYYY-MM-DD; the playbook or script receives a formatted string.</span>
-                    <span><b>Choice:</b> multiple (true/false), minimum_selections, maximum_selections; static choices or choices_from_hostvar for inventory-derived choices.</span>
+                    <span><b>Choice:</b> multiple (true/false), minimum_selections, maximum_selections; static choices (optionally mark one with default: true; multiple: true permits several defaults) or choices_from_hostvar for inventory-derived choices.</span>
                     <span><b>Email address(es):</b> supplied addresses are validated automatically.</span>
                     <code>minimum_length: 3
 maximum_length: 40

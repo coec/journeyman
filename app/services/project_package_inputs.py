@@ -389,6 +389,7 @@ def _normalise_choice(
             - {
                 "value",
                 "label",
+                "default",
             }
         )
 
@@ -408,6 +409,9 @@ def _normalise_choice(
                 "{} choice requires a value."
                 .format(field_label)
             )
+
+        if "default" in item and not isinstance(item["default"], bool):
+            raise ValueError("{} choice default must be true or false.".format(field_label))
 
         value = item["value"]
         label = item.get(
@@ -1193,6 +1197,7 @@ def validate_package_input_rows(
 
         choices = []
         choice_keys = set()
+        marked_defaults = []
 
         for raw_choice in raw_choices:
             try:
@@ -1219,6 +1224,18 @@ def validate_package_input_rows(
 
             choice_keys.add(key)
             choices.append(choice)
+            if isinstance(raw_choice, dict) and raw_choice.get("default") is True:
+                marked_defaults.append(choice["value"])
+
+        if marked_defaults:
+            if input_type != PACKAGE_INPUT_CHOICE:
+                errors.append("{} choice defaults require a Choice input.".format(prefix))
+            elif default_value is not None:
+                errors.append("{} cannot combine choice-level defaults with an input-level default value.".format(prefix))
+            else:
+                # Choice defaults are stored in the existing input-level field,
+                # so dispatch, API and exported configuration behave identically.
+                default_value = marked_defaults[0] if len(marked_defaults) == 1 else list(marked_defaults)
 
         if (
             input_type
@@ -1275,6 +1292,10 @@ def validate_package_input_rows(
                 )
             )
 
+        if input_type == PACKAGE_INPUT_CHOICE and len(marked_defaults) > 1 and not validation.get("multiple"):
+            errors.append("{} has multiple default choices but multiple is not enabled.".format(prefix))
+        if input_type == PACKAGE_INPUT_CHOICE and validation.get("multiple") and len(marked_defaults) == 1 and row.get("default_value_yaml", "").strip() == "":
+            default_value = list(marked_defaults)
         if input_type == PACKAGE_INPUT_CHOICE and isinstance(default_value, list) and not validation.get("multiple"):
             errors.append("{} list default requires multiple: true.".format(prefix))
         if input_type == PACKAGE_INPUT_CHOICE and validation.get("multiple") and default_value is not None and not isinstance(default_value, list):
