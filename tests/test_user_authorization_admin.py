@@ -149,3 +149,50 @@ def test_auditor_form_submission_does_not_gain_user(app, client):
     with app.app_context():
         account = UserAccount.query.filter_by(username="auditor.only").one()
         assert {role.name for role in account.roles} == {ROLE_AUDITOR}
+
+
+def test_admin_can_delete_local_user(app, client):
+    with app.app_context():
+        account = UserAccount(username="delete.me", display_name="Disposable")
+        db.session.add(account)
+        db.session.commit()
+        user_id = account.id
+
+    response = client.get("/users", headers=identity_headers("admin"))
+    assert response.status_code == 200
+    assert b"action-menu-trigger" in response.data
+    assert f"/users/{user_id}/delete".encode() in response.data
+
+    response = client.post(
+        f"/users/{user_id}/delete",
+        headers=identity_headers("admin"),
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    with app.app_context():
+        assert db.session.get(UserAccount, user_id) is None
+        assert AuditLog.query.filter_by(action="user.authorization.delete", object_name="delete.me").count() == 1
+
+
+def test_non_admin_cannot_delete_local_user(app, client):
+    with app.app_context():
+        account = UserAccount(username="protected.user")
+        db.session.add(account)
+        db.session.commit()
+        user_id = account.id
+    response = client.post(f"/users/{user_id}/delete", headers=identity_headers("alice"))
+    assert response.status_code == 403
+    with app.app_context():
+        assert db.session.get(UserAccount, user_id) is not None
+
+
+def test_admin_cannot_delete_self(app, client):
+    with app.app_context():
+        account = UserAccount(username="admin")
+        db.session.add(account)
+        db.session.commit()
+        user_id = account.id
+    response = client.post(f"/users/{user_id}/delete", headers=identity_headers("admin"))
+    assert response.status_code == 403
+    with app.app_context():
+        assert db.session.get(UserAccount, user_id) is not None

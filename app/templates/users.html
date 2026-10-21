@@ -58,7 +58,25 @@
               {{ package_names|join(', ') if package_names else '—' }}
             </td>
             <td>{{ user.last_login_at.strftime('%Y-%m-%d %H:%M:%S') if user.last_login_at else 'Never' }}</td>
-            <td>{% if journeyman_is_admin %}<a class="button" href="{{ url_for('main.user_edit', user_id=user.id) }}">Edit</a>{% else %}<span class="muted">Read only</span>{% endif %}</td>
+            <td>
+              {% if journeyman_is_admin %}
+                <details class="action-menu">
+                  <summary class="button action-menu-trigger">Actions <span aria-hidden="true">▾</span></summary>
+                  <div class="action-menu-items">
+                    <a class="action-menu-item" href="{{ url_for('main.user_edit', user_id=user.id) }}">Edit</a>
+                    {% if user.username|lower == current_username|lower %}
+                      <button class="action-menu-item" type="button" disabled title="You cannot delete your own account">Delete</button>
+                    {% else %}
+                      <form method="post" action="{{ url_for('main.user_delete', user_id=user.id) }}"
+                            data-confirm="Delete the local authorization record for {{ user.username }}? This cannot be undone.">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="action-menu-item danger" type="submit">Delete</button>
+                      </form>
+                    {% endif %}
+                  </div>
+                </details>
+              {% else %}<span class="muted">Read only</span>{% endif %}
+            </td>
           </tr>
         {% endfor %}
       </tbody>

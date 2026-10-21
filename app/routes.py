@@ -2682,6 +2682,7 @@ def users():
             if user.enabled and user.has_role("Admin")
         ),
         user_package_grants=package_grants["users"],
+        current_username=current_username(),
     )
 
 
@@ -2754,6 +2755,30 @@ def user_new():
         form_data=form_data,
         errors=errors,
     )
+
+
+@bp.route("/users/<int:user_id>/delete", methods=["POST"])
+def user_delete(user_id):
+    if not current_user_is_admin():
+        abort(403)
+
+    account = db.session.get(UserAccount, user_id)
+    if account is None:
+        abort(404)
+    if account.username.casefold() == current_username().casefold():
+        abort(403, description="You cannot delete your own account.")
+
+    username = account.username
+    db.session.delete(account)
+    db.session.commit()
+    record_audit_event(
+        "user.authorization.delete",
+        object_type="user_account",
+        object_id=user_id,
+        object_name=username,
+    )
+    flash("Journeyman user authorization record deleted.", "success")
+    return redirect(url_for("main.users"))
 
 
 @bp.route("/users/<int:user_id>/edit", methods=["GET", "POST"])
