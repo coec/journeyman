@@ -765,7 +765,8 @@ def _validate_validation_rules(
                     )
                 )
             unsupported_dynamic = set(dynamic_choices) - {
-                "host_input", "path", "value_key", "label_keys"
+                "host_input", "path", "value_key", "label_keys",
+                "key_pattern", "extract_group", "distinct", "sort"
             }
             if unsupported_dynamic:
                 errors.append(
@@ -777,6 +778,44 @@ def _validate_validation_rules(
                     errors.append(
                         "Input {} choices_from_hostvar {} must not be blank."
                         .format(row_number, key)
+                    )
+            pattern = dynamic_choices.get("key_pattern")
+            if pattern is not None:
+                try:
+                    validate_safe_regex(pattern)
+                except UnsafeRegexError as exc:
+                    errors.append(
+                        "Input {} choices_from_hostvar key_pattern: {}."
+                        .format(row_number, exc)
+                    )
+            group = dynamic_choices.get("extract_group")
+            if group is not None:
+                if (isinstance(group, bool) or not isinstance(group, int)
+                        or group < 0):
+                    errors.append(
+                        "Input {} choices_from_hostvar extract_group must be a non-negative integer."
+                        .format(row_number)
+                    )
+                elif pattern is None:
+                    errors.append(
+                        "Input {} choices_from_hostvar extract_group requires key_pattern."
+                        .format(row_number)
+                    )
+                else:
+                    try:
+                        compiled = re.compile(pattern)
+                        if group > compiled.groups:
+                            errors.append(
+                                "Input {} choices_from_hostvar extract_group exceeds capture groups."
+                                .format(row_number)
+                            )
+                    except (re.error, TypeError):
+                        pass  # Invalid patterns are reported above.
+            for flag in ("distinct", "sort"):
+                if flag in dynamic_choices and not isinstance(dynamic_choices[flag], bool):
+                    errors.append(
+                        "Input {} choices_from_hostvar {} must be true or false."
+                        .format(row_number, flag)
                     )
             label_keys = dynamic_choices.get("label_keys", [])
             if not isinstance(label_keys, list) or any(

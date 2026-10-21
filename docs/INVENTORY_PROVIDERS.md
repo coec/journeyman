@@ -46,6 +46,9 @@ facts used by filtered inventories and Package inputs. In particular:
 - `zabbix.network_interfaces` reconstructs discovered `net.if.*` interface
   facts and preserves interface `name` and `alias`, allowing a dependent
   Package Choice input to present switch ports for the selected device.
+- `zabbix.selected_items` optionally exposes explicitly selected item keys,
+  including low-level-discovery (LLD) items and their latest values. This is
+  opt-in because retrieving many items can be expensive.
 
 The provider requests host groups, monitoring interfaces, host inventory,
 tags, linked templates and item fields required for ICMP/interface enrichment.
@@ -55,3 +58,7 @@ The Ansible controller used for inventory refresh must have the
 `community.zabbix` collection installed and a supported Python version. The
 Zabbix API token is passed through an environment lookup and is not written to
 the temporary inventory source.
+
+For an end-to-end example of using selected Zabbix items to populate Package
+choices and display current values, see
+[Dynamic Package inputs](DYNAMIC_PACKAGE_INPUTS.md).

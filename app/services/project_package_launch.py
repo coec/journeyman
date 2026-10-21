@@ -567,6 +567,11 @@ def _dynamic_choices_by_host(package_input, inventory_hostvars):
         if str(key or "").strip()
     ] or [value_key]
 
+    pattern = spec.get("key_pattern")
+    extract_group = spec.get("extract_group")
+    distinct = spec.get("distinct", True)
+    sort = spec.get("sort", False)
+
     choices_by_host = {}
     for hostname, hostvars in (inventory_hostvars or {}).items():
         rows = _path_value(hostvars, path)
@@ -580,8 +585,24 @@ def _dynamic_choices_by_host(package_input, inventory_hostvars):
             value = row.get(value_key)
             if value is None or str(value).strip() == "":
                 continue
+            if pattern is not None:
+                # Match the selected source field, not the human-readable label.
+                # Invalid patterns are rejected when the Package is saved.
+                try:
+                    match = safe_fullmatch(pattern, value)
+                except UnsafeRegexError:
+                    continue
+                if match is None:
+                    continue
+                if extract_group is not None:
+                    try:
+                        value = match.group(extract_group)
+                    except (IndexError, TypeError):
+                        continue
+                    if value is None or not str(value).strip():
+                        continue
             key = _choice_key(value)
-            if key in seen:
+            if distinct and key in seen:
                 continue
             seen.add(key)
             label_parts = [
@@ -589,12 +610,18 @@ def _dynamic_choices_by_host(package_input, inventory_hostvars):
                 for label_key in label_keys
                 if str(row.get(label_key) or "").strip()
             ]
+            # An extracted identifier must also be the displayed label;
+            # otherwise Zabbix's original size/usage labels leak through.
+            label = (str(value) if extract_group is not None
+                     else " — ".join(label_parts) or str(value))
             choices.append({
                 "key": key,
                 "value": value,
-                "label": " — ".join(label_parts) or str(value),
+                "label": label,
             })
         if choices:
+            if sort:
+                choices.sort(key=lambda choice: (choice["label"].casefold(), choice["key"]))
             choices_by_host[str(hostname)] = choices
     return choices_by_host
 

@@ -549,3 +549,32 @@ def test_editing_zabbix_inventory_updates_connection_settings(
         config = json.loads(inventory.config_json)
         assert config["tag_name"] == "journeyman"
         assert config["tag_value"] == "yes"
+
+
+def test_selected_zabbix_items_include_lld_and_filter_patterns(monkeypatch):
+    from app.services.zabbix_inventory import _request_selected_items
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            body = json.loads(request.data)
+            assert body["method"] == "item.get"
+            assert body["params"]["hostids"] == ["12"]
+            return _FakeResponse({"result": [
+                {"hostid": "12", "itemid": "1", "key_": "pgsql.tablespace.size[USERS]", "flags": "4", "status": "0", "state": "0", "lastvalue": "1024"},
+                {"hostid": "12", "itemid": "2", "key_": "system.cpu.load", "flags": "0", "status": "0", "state": "0"},
+                {"hostid": "12", "itemid": "3", "key_": "pgsql.tablespace.size[SYSTEM]", "flags": "4", "status": "1", "state": "0"},
+            ]})
+
+    monkeypatch.setattr("app.services.zabbix_inventory.build_opener", lambda *args: FakeOpener())
+    rows = _request_selected_items(endpoint="https://zabbix.example", token="token", hostids=[12],
+                                   patterns=["pgsql.*"], discovered_only=True)
+    assert [item["key"] for item in rows["12"]] == ["pgsql.tablespace.size[USERS]"]
+    assert rows["12"][0]["last_value"] == "1024"
+
+
+def test_selected_zabbix_items_are_opt_in_hostvars():
+    host = {"hostid": "12", "host": "db.example", "name": "Database", "status": "0"}
+    ordinary = _canonical_inventory([host])
+    assert "selected_items" not in ordinary["_meta"]["hostvars"]["db.example"]["zabbix"]
+    enriched = _canonical_inventory([host], selected_items={"12": [{"key": "pgsql.size[USERS]"}]})
+    assert enriched["_meta"]["hostvars"]["db.example"]["zabbix"]["selected_items"][0]["key"] == "pgsql.size[USERS]"

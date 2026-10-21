@@ -789,6 +789,12 @@ def _inventory_form_data(inventory=None):
             "zabbix_tag_name": "",
             "zabbix_tag_value": "journeyman",
             "zabbix_include_disabled": False,
+            "zabbix_item_patterns": "",
+            "zabbix_item_discovered_only": False,
+            "zabbix_item_include_values": True,
+            "zabbix_item_include_disabled": False,
+            "zabbix_item_include_unsupported": False,
+            "zabbix_item_max_per_host": 500,
             "netbox_status": "active",
             "netbox_tag": "",
             "netbox_site": "",
@@ -856,6 +862,12 @@ def _inventory_form_data(inventory=None):
             "tag_value",
             "journeyman",
         ),
+        "zabbix_item_patterns": "\n".join(config.get("item_patterns", [])),
+        "zabbix_item_discovered_only": bool(config.get("item_discovered_only", False)),
+        "zabbix_item_include_values": bool(config.get("item_include_values", True)),
+        "zabbix_item_include_disabled": bool(config.get("item_include_disabled", False)),
+        "zabbix_item_include_unsupported": bool(config.get("item_include_unsupported", False)),
+        "zabbix_item_max_per_host": config.get("item_max_per_host", 500),
         "zabbix_include_disabled": bool(
             config.get(
                 "include_disabled",
@@ -1018,6 +1030,12 @@ def _inventory_form_from_request():
                 "zabbix_tag_value"
             )
         ),
+        "zabbix_item_patterns": _clean(request.form.get("zabbix_item_patterns")),
+        "zabbix_item_discovered_only": request.form.get("zabbix_item_discovered_only") == "on",
+        "zabbix_item_include_values": request.form.get("zabbix_item_include_values") == "on",
+        "zabbix_item_include_disabled": request.form.get("zabbix_item_include_disabled") == "on",
+        "zabbix_item_include_unsupported": request.form.get("zabbix_item_include_unsupported") == "on",
+        "zabbix_item_max_per_host": _clean(request.form.get("zabbix_item_max_per_host")) or "500",
         "zabbix_include_disabled": (
             request.form.get(
                 "zabbix_include_disabled"
@@ -1579,6 +1597,12 @@ def _inventory_config_from_form(form_data):
             "tag_name": form_data["zabbix_tag_name"],
             "tag_value": form_data["zabbix_tag_value"],
             "include_disabled": form_data["zabbix_include_disabled"],
+            "item_patterns": form_data["zabbix_item_patterns"].splitlines(),
+            "item_discovered_only": form_data["zabbix_item_discovered_only"],
+            "item_include_values": form_data["zabbix_item_include_values"],
+            "item_include_disabled": form_data["zabbix_item_include_disabled"],
+            "item_include_unsupported": form_data["zabbix_item_include_unsupported"],
+            "item_max_per_host": form_data["zabbix_item_max_per_host"],
         }
     elif inventory_type == "netbox":
         config = {

@@ -643,6 +643,14 @@ maximum_selections: 5</code>
   path: zabbix.network_interfaces
   value_key: name
   label_keys: [name, alias]</code>
+                    <code>choices_from_hostvar:
+  host_input: device
+  path: zabbix.selected_items
+  value_key: key
+  key_pattern: '^oracle\.tablespace\.size\[([^,]+),size\]$'
+  extract_group: 1
+  distinct: true
+  sort: true</code>
                 </span>
               </span>
 
@@ -1003,6 +1011,14 @@ maximum_selections: 5</code>
   path: zabbix.network_interfaces
   value_key: name
   label_keys: [name, alias]</code>
+                    <code>choices_from_hostvar:
+  host_input: device
+  path: zabbix.selected_items
+  value_key: key
+  key_pattern: '^oracle\.tablespace\.size\[([^,]+),size\]$'
+  extract_group: 1
+  distinct: true
+  sort: true</code>
           </span>
         </span>
         <textarea

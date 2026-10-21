@@ -436,6 +436,18 @@
 
                 Include disabled Zabbix hosts
             </label>
+            <fieldset>
+                <legend>Additional Zabbix items (optional)</legend>
+                <p class="help-text">One item key glob per line (e.g. vfs.fs.* or pgsql.*). Empty means no additional API query. Results appear in zabbix.selected_items.</p>
+                <label>Item key patterns
+                    <textarea name="zabbix_item_patterns" rows="4" placeholder="pgsql.*&#10;vfs.fs.*">{{ form_data.zabbix_item_patterns }}</textarea>
+                </label>
+                <label><input type="checkbox" name="zabbix_item_discovered_only" {% if form_data.zabbix_item_discovered_only %}checked{% endif %}> Only LLD-discovered items</label>
+                <label><input type="checkbox" name="zabbix_item_include_values" {% if form_data.zabbix_item_include_values %}checked{% endif %}> Include latest values</label>
+                <label><input type="checkbox" name="zabbix_item_include_disabled" {% if form_data.zabbix_item_include_disabled %}checked{% endif %}> Include disabled items</label>
+                <label><input type="checkbox" name="zabbix_item_include_unsupported" {% if form_data.zabbix_item_include_unsupported %}checked{% endif %}> Include unsupported items</label>
+                <label>Maximum selected items per host <input type="number" min="1" max="5000" name="zabbix_item_max_per_host" value="{{ form_data.zabbix_item_max_per_host }}"></label>
+            </fieldset>
         </div>
 
         <div class="inventory-type-fields" data-inventory-type="ovirt" {% if form_data.inventory_type != 'ovirt' %}hidden{% endif %}>

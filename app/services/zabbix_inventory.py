@@ -882,7 +882,7 @@ def _group_key(group_id):
     )
 
 
-def _canonical_inventory(hosts, icmp_items=None, network_interface_items=None):
+def _canonical_inventory(hosts, icmp_items=None, network_interface_items=None, selected_items=None):
     """
     Convert Zabbix host objects to canonical Ansible inventory JSON.
     """
@@ -1077,6 +1077,9 @@ def _canonical_inventory(hosts, icmp_items=None, network_interface_items=None):
         # different identity from Satellite/static inventories and bypasses
         # normal hostname-based matching.  Interface IP/DNS details remain
         # available under ``zabbix.interfaces`` for filtering/inspection.
+        if selected_items is not None:
+            hostvars["zabbix"]["selected_items"] = selected_items.get(str(host.get("hostid", "")), [])
+
         hostvars["ansible_host"] = hostname
 
         runner_values = tags_by_name.get(
@@ -1176,6 +1179,70 @@ def _canonical_inventory(hosts, icmp_items=None, network_interface_items=None):
     return inventory
 
 
+def _request_selected_items(*, endpoint, token, hostids, patterns, include_disabled=False,
+                            include_unsupported=False, discovered_only=False,
+                            include_values=True, max_per_host=500, verify_tls=True,
+                            timeout=30, proxy_url=None):
+    """Retrieve explicitly selected Zabbix items, including LLD-created items."""
+    from fnmatch import fnmatchcase
+    hostids = sorted({str(value) for value in hostids if value})
+    if not hostids or not patterns:
+        return {}
+    endpoint = validate_outbound_url(endpoint, purpose="Zabbix API")
+    params = {
+        "output": ["itemid", "hostid", "name", "key_", "status", "state", "error",
+                   "units", "value_type", "flags"] + (["lastvalue", "lastclock"] if include_values else []),
+        "hostids": hostids,
+        "sortfield": "itemid",
+    }
+    if not include_disabled:
+        params["filter"] = {"status": "0"}
+    payload = {"jsonrpc": "2.0", "method": "item.get", "params": params, "id": 4}
+    request = Request(_normalise_api_url(endpoint),
+                      data=json.dumps(payload).encode("utf-8"),
+                      headers={"Authorization": "Bearer {}".format(token),
+                               "Content-Type": "application/json-rpc", "Accept": "application/json"},
+                      method="POST")
+    try:
+        handlers = [HTTPSHandler(context=_ssl_context(verify_tls)), _NoRedirect()]
+        if proxy_url:
+            handlers.append(ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        with build_opener(*handlers).open(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ZabbixInventoryError("Unable to retrieve selected Zabbix items: {}".format(exc)) from exc
+    if result.get("error"):
+        raise ZabbixInventoryError("Zabbix item.get failed: {}".format(result["error"]))
+    if not isinstance(result.get("result"), list):
+        raise ZabbixInventoryError("Zabbix item.get returned an invalid item list.")
+    selected = {hostid: [] for hostid in hostids}
+    for item in result["result"]:
+        if not isinstance(item, dict):
+            continue
+        hostid = str(item.get("hostid", ""))
+        key = str(item.get("key_", ""))
+        if hostid not in selected or not any(fnmatchcase(key, pattern) for pattern in patterns):
+            continue
+        if discovered_only and str(item.get("flags", "")) != "4":
+            continue
+        if not include_disabled and str(item.get("status", "1")) != "0":
+            continue
+        if not include_unsupported and str(item.get("state", "1")) != "0":
+            continue
+        if len(selected[hostid]) >= max_per_host:
+            raise ZabbixInventoryError("Selected Zabbix items exceed the per-host limit ({}) for hostid {}".format(max_per_host, hostid))
+        record = {"itemid": str(item.get("itemid", "")), "name": item.get("name", ""),
+                  "key": key, "discovered": str(item.get("flags", "")) == "4",
+                  "units": item.get("units", ""), "value_type": item.get("value_type", ""),
+                  "enabled": str(item.get("status", "1")) == "0",
+                  "supported": str(item.get("state", "1")) == "0",
+                  "error": item.get("error", "")}
+        if include_values:
+            record.update(last_value=item.get("lastvalue", ""), last_clock=item.get("lastclock", ""))
+        selected[hostid].append(record)
+    return selected
+
+
 def resolve_zabbix_inventory(
     *,
     endpoint,
@@ -1186,6 +1253,12 @@ def resolve_zabbix_inventory(
     include_disabled=False,
     timeout=30,
     proxy_url=None,
+    item_patterns=None,
+    item_discovered_only=False,
+    item_include_values=True,
+    item_include_disabled=False,
+    item_include_unsupported=False,
+    item_max_per_host=500,
 ):
     """
     Query Zabbix and return canonical Ansible inventory JSON.
@@ -1220,8 +1293,20 @@ def resolve_zabbix_inventory(
         proxy_url=proxy_url,
     )
 
+    selected_items = None
+    if item_patterns:
+        selected_items = _request_selected_items(
+            endpoint=endpoint, token=token,
+            hostids=[host.get("hostid") for host in hosts if isinstance(host, dict)],
+            patterns=item_patterns, discovered_only=item_discovered_only,
+            include_values=item_include_values, include_disabled=item_include_disabled,
+            include_unsupported=item_include_unsupported, max_per_host=item_max_per_host,
+            verify_tls=verify_tls, timeout=timeout, proxy_url=proxy_url,
+        )
+
     return _canonical_inventory(
         hosts,
         icmp_items=icmp_items,
         network_interface_items=network_interface_items,
+        selected_items=selected_items,
     )

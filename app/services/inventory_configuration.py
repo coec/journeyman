@@ -182,10 +182,28 @@ def _normalise(inventory, values):
             raise InventoryConfigurationError("Zabbix host tag name is required.")
         if not tag_value:
             raise InventoryConfigurationError("Zabbix host tag value is required.")
+        try:
+            item_max_per_host = int(values.get("item_max_per_host") or 500)
+        except (ValueError, TypeError) as exc:
+            raise InventoryConfigurationError("Zabbix item limit must be an integer.") from exc
+        if not 1 <= item_max_per_host <= 5000:
+            raise InventoryConfigurationError("Zabbix item limit must be between 1 and 5000.")
+        item_patterns = values.get("item_patterns") or []
+        if isinstance(item_patterns, str):
+            item_patterns = item_patterns.splitlines()
+        item_patterns = [str(line).strip() for line in item_patterns if str(line).strip()]
+        if len(item_patterns) > 50 or any(len(pattern) > 256 for pattern in item_patterns):
+            raise InventoryConfigurationError("Zabbix allows up to 50 item patterns of 256 characters each.")
         config = {
             "tag_name": tag_name,
             "tag_value": tag_value,
             "include_disabled": bool(values.get("include_disabled", False)),
+            "item_patterns": item_patterns,
+            "item_discovered_only": bool(values.get("item_discovered_only", False)),
+            "item_include_values": bool(values.get("item_include_values", True)),
+            "item_include_disabled": bool(values.get("item_include_disabled", False)),
+            "item_include_unsupported": bool(values.get("item_include_unsupported", False)),
+            "item_max_per_host": item_max_per_host,
         }
 
     elif inventory_type == "netbox":

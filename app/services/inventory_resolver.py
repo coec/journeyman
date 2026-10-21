@@ -383,6 +383,12 @@ def _resolve_zabbix_inventory_live(inventory):
                     False,
                 )
             ),
+            item_patterns=config.get("item_patterns", []),
+            item_discovered_only=bool(config.get("item_discovered_only", False)),
+            item_include_values=bool(config.get("item_include_values", True)),
+            item_include_disabled=bool(config.get("item_include_disabled", False)),
+            item_include_unsupported=bool(config.get("item_include_unsupported", False)),
+            item_max_per_host=int(config.get("item_max_per_host", 500)),
         )
 
     except ZabbixInventoryError as exc:

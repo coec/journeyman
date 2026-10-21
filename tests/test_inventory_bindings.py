@@ -90,17 +90,17 @@ def test_filtered_inventory_substitutes_multiple_bindings_in_parameter_name(app)
     static_content = """---
 all:
   hosts:
-    dev02-poa-01:
+    dev02-01:
       foreman_params:
         flag_v687_provisioning_dev02_part1_complete: true
-    dev03-poa-01:
+    dev03-01:
       foreman_params:
         flag_v687_provisioning_dev03_part1_complete: true
 """
 
     with app.app_context():
         source = Inventory(
-            name="POA provisioning source",
+            name="Provisioning source",
             inventory_type="static",
             enabled=True,
             config_json=json.dumps({"content": static_content}),
@@ -109,7 +109,7 @@ all:
         db.session.flush()
 
         filtered = Inventory(
-            name="POA cluster provisioning complete",
+            name="Cluster provisioning complete",
             inventory_type="filtered",
             enabled=True,
             config_json=json.dumps(
@@ -122,7 +122,7 @@ all:
                                 {
                                     "field": "foreman_param",
                                     "parameter": (
-                                        "flag_v{{ target_poa_version }}_"
+                                        "flag_v{{ target_version }}_"
                                         "provisioning_{{ clustername }}_"
                                         "part1_complete"
                                     ),
@@ -142,13 +142,13 @@ all:
         resolved = resolve_inventory(
             filtered,
             bindings={
-                "target_poa_version": "687",
+                "target_version": "687",
                 "clustername": "dev02",
             },
         )
 
         assert set(resolved["_meta"]["hostvars"]) == {
-            "dev02-poa-01"
+            "dev02-01"
         }
 
 def test_filtered_inventory_missing_binding_fails_explicitly(app):

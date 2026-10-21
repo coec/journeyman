@@ -131,6 +131,12 @@ conditions are stored as YAML so the rules remain explicit and reviewable.
 Examples are provided in the administration UI rather than hiding the
 underlying rule syntax.
 
+Package Choice inputs can derive options from inventory host variables, including
+Zabbix low-level-discovery items. Text and other Package inputs can also show
+contextual, read-only help from the selected inventory resource without changing
+the submitted value. See [Dynamic Package inputs](docs/DYNAMIC_PACKAGE_INPUTS.md)
+for a complete Zabbix Oracle tablespace walkthrough and configuration examples.
+
 A normal Package input uses the **Runtime variable** binding. For Ansible
 Projects the value is supplied as an Ansible extra variable. Script-based
 execution receives declared Package input values through the
