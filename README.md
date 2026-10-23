@@ -95,7 +95,11 @@ is printed to the container log on first start.
 - **Credentials** are encrypted and snapshotted for queued Jobs.
   Machine and Windows credentials are separate types so a mixed Linux/Windows step
   can safely use both; Windows identity is exposed as `win_ansible_user` and
-  `win_ansible_password` for explicit activation by the playbook. Machine and
+  `win_ansible_password` for explicit activation by the playbook. Machine
+  connection variables (`ansible_*`) are inventory defaults, so inventory host
+  settings and explicit play/task variables can override them, including on
+  delegated Windows tasks. Namespaced and other machine credential variables
+  remain extra vars. Machine and
   Windows credentials may also define credential-scoped extra vars using the
   restricted `{{ user }}` and `{{ passwd }}` placeholders; Journeyman renders
   these only in the private execution workspace. Custom credentials provide a

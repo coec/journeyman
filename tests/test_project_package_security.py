@@ -827,9 +827,15 @@ def load_runner_module():
         / "journeyman-runner"
     )
 
-    return runpy.run_path(
-        str(runner_path)
-    )
+    # run_path does not add the script's directory to sys.path. Resolve the
+    # sibling bootstrap as normal script execution does, but keep pytest in
+    # its current interpreter instead of re-execing the production venv.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.syspath_prepend(str(runner_path.parent))
+        import _journeyman_app_bootstrap as bootstrap
+
+        patch.setattr(bootstrap, "ensure_application_venv", lambda: None)
+        return runpy.run_path(str(runner_path))
 
 
 
@@ -1674,7 +1680,8 @@ def test_runner_materializes_machine_credential_without_command_line_secrets(
     assert password not in command_text
     assert become_password not in command_text
     assert private_key not in command_text
-    assert "@{}".format(variables_path) in command
+    assert "@{}".format(variables_path.with_suffix(".extra-vars.json")) in command
+    assert str(variables_path.with_suffix(".inventory.json")) in command
 
 
 def test_runner_namespaces_linux_machine_credential_when_environment_credential_is_also_selected(

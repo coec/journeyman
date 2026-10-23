@@ -389,7 +389,7 @@ def test_environment_sync_accepts_python_patch_drift_within_release_series():
     assert "def _python_release_series(version_output):" in remote_runner
     assert "actual_python_series == expected_python_series" in remote_runner
     assert "Python major.minor release does not match" in remote_runner
-    assert 'VERSION = "0.24"' in remote_runner
+    assert 'VERSION = "0.25"' in remote_runner
 
 
 def test_environment_sync_accepts_ansible_patch_drift_within_release_series():

@@ -1641,6 +1641,39 @@ def script_command(artifact):
     )
 
 
+def machine_credential_command_files(variables_path):
+    """Keep machine connection defaults below explicit play/task variables.
+
+    Inventory group variables also cover delegate_to hosts outside the primary
+    play's limit. Namespaced and custom non-connection variables remain extras.
+    Never put credential values on the process command line.
+    """
+    variables_path = Path(variables_path)
+    variables = json.loads(variables_path.read_text(encoding="utf-8"))
+    defaults = {
+        key: value for key, value in variables.items()
+        if key.startswith("ansible_")
+    }
+    extras = {
+        key: value for key, value in variables.items()
+        if not key.startswith("ansible_")
+    }
+    inventory_path = variables_path.with_suffix(".inventory.json")
+    extras_path = variables_path.with_suffix(".extra-vars.json")
+    for path, content in (
+        (inventory_path, {"all": {"vars": defaults}}),
+        (extras_path, extras),
+    ):
+        # The parent is the job's mode-0700 private directory. Create files
+        # mode 0600 from the outset, regardless of the runner's umask.
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(content, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+        os.chmod(path, 0o600)
+    return inventory_path, extras_path
+
+
 def build_command(
     step,
     repository_path,
@@ -1752,19 +1785,17 @@ def build_command(
 
     if machine_extra_vars_path is not None:
         machine_extra_vars_path = Path(machine_extra_vars_path)
-
         if not machine_extra_vars_path.is_file():
             raise RuntimeError(
                 "Machine credential extra-vars file does not exist: {}"
                 .format(machine_extra_vars_path)
             )
-
-        command.extend(
-            [
-                "--extra-vars",
-                "@{}".format(machine_extra_vars_path),
-            ]
+        machine_inventory, machine_extras = machine_credential_command_files(
+            machine_extra_vars_path
         )
+        # Load defaults before the real inventory so its all-group vars win.
+        command[1:1] = ["--inventory", str(machine_inventory)]
+        command.extend(["--extra-vars", "@{}".format(machine_extras)])
 
     if windows_extra_vars_path is not None:
         windows_extra_vars_path = Path(windows_extra_vars_path)
